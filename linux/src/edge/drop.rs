@@ -60,8 +60,10 @@ pub fn decode_text(target: &str, data: &[u8]) -> String {
             || (data.len() >= 2 && data.iter().skip(1).step_by(2).all(|&b| b == 0)));
     let text = if utf16 {
         let units: Vec<u16> = data
-            .chunks_exact(2)
-            .map(|c| u16::from_le_bytes([c[0], c[1]]))
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|c| u16::from_le_bytes(*c))
             .collect();
         String::from_utf16_lossy(&units)
     } else {
