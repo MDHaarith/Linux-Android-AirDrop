@@ -1,0 +1,70 @@
+[package]
+name = "airbridge"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.80"
+description = "AirDrop-style file and text sharing between Linux and Android (LocalSend protocol compatible)"
+license = "MIT"
+repository = "https://github.com/MDHaarith/Linux-Android-AirDrop"
+readme = "../README.md"
+keywords = ["airdrop", "localsend", "file-sharing", "android", "linux"]
+
+[features]
+default = ["tray"]
+# System tray icon (StatusNotifierItem over D-Bus, no C libraries needed).
+tray = ["dep:ksni"]
+# Native app window (needs libwebkit2gtk-4.1-dev and libgtk-3-dev to build).
+# Without it the UI opens as a Chromium app window or in the default browser.
+webview = ["dep:wry", "dep:tao"]
+
+[dependencies]
+anyhow = "1"
+axum = { version = "0.8", features = ["ws"] }
+bytes = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+clap = { version = "4", features = ["derive"] }
+dirs = "6"
+filetime = "0.2"
+futures-util = "0.3"
+http-body-util = "0.1"
+hyper = { version = "1", features = ["client", "http1", "server"] }
+hyper-util = { version = "0.1", features = ["tokio", "server-auto", "service", "http1", "http2"] }
+if-addrs = "0.15"
+mime_guess = "2"
+nix = { version = "0.30", default-features = false, features = ["fs"] }
+qrcode = { version = "0.14", default-features = false, features = ["svg"] }
+rand = "0.8"
+rcgen = { version = "0.14", default-features = false, features = ["crypto", "pem", "ring"] }
+rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "tokio"] }
+rsa = { version = "0.9", features = ["sha2"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "tls12", "std", "logging"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_urlencoded = "0.7"
+sha2 = "0.10"
+socket2 = { version = "0.6", features = ["all"] }
+tokio = { version = "1", features = ["full"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12", "logging"] }
+tokio-util = { version = "0.7", features = ["io", "rt"] }
+tower = { version = "0.5", features = ["util"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+uuid = { version = "1", features = ["v4"] }
+x509-parser = { version = "0.18", features = ["verify"] }
+zbus = { version = "5", default-features = false, features = ["tokio"] }
+
+ksni = { version = "0.3", optional = true }
+tao = { version = "0.34", optional = true }
+wry = { version = "0.53", optional = true }
+
+[dev-dependencies]
+tempfile = "3"
+
+# RSA key generation (once, on first start) is painfully slow without optimizations.
+[profile.dev.package."*"]
+opt-level = 2
+
+[profile.release]
+lto = "thin"
+strip = true
+codegen-units = 4

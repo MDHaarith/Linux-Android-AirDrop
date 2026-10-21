@@ -1,0 +1,17 @@
+# Rust
+linux/target/
+
+# Android / Gradle
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+android/.idea/
+android/*.iml
+android/captures/
+android/.kotlin/
+
+# Editors / OS
+.DS_Store
+*.swp
+.vscode/
