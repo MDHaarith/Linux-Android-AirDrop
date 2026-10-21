@@ -55,6 +55,7 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/peers/{id}/trust", post(trust))
         .route("/qr.svg", get(qr))
         .route("/copy", post(copy))
+        .route("/open-downloads", post(open_downloads))
         .route("/show", post(show))
         .route("/quit", post(quit))
         .layer(middleware::from_fn_with_state(app.clone(), auth));
@@ -510,6 +511,13 @@ struct CopyRequest {
 
 async fn copy(Json(request): Json<CopyRequest>) -> Json<Value> {
     Json(json!({ "ok": desktop::copy_text(&request.text).await }))
+}
+
+async fn open_downloads(State(app): State<Arc<App>>) -> StatusCode {
+    let dir = app.settings().download_dir.clone();
+    let _ = std::fs::create_dir_all(&dir);
+    desktop::open_path(&dir);
+    StatusCode::NO_CONTENT
 }
 
 async fn show(State(app): State<Arc<App>>) -> StatusCode {

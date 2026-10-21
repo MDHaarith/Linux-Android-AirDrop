@@ -1,1 +1,109 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AirBridge</title>
+  <link rel="icon" href="/assets/icon.svg">
+  <link rel="stylesheet" href="/assets/shared.css">
+  <link rel="stylesheet" href="/assets/app.css">
+</head>
+<body>
+  <div class="aurora" aria-hidden="true"><span></span><span></span><span></span></div>
+  <canvas id="fx" aria-hidden="true"></canvas>
 
+  <header class="topbar">
+    <div class="brand">
+      <img src="/assets/icon.svg" alt="">
+      <span>AirBridge</span>
+    </div>
+    <button class="me-chip" id="meChip" title="This computer — click to rename">
+      <span class="pulse-dot" id="liveDot"></span>
+      <span class="me-name" id="meName">…</span>
+      <span class="me-ip" id="meIp"></span>
+    </button>
+    <div class="top-actions">
+      <button class="icon-btn" id="btnScan" title="Scan the network for devices"></button>
+      <button class="icon-btn" id="btnPair" title="Pair a phone's browser (QR code)"></button>
+      <button class="icon-btn" id="btnActivity" title="Activity"><span class="badge" id="activityBadge" hidden></span></button>
+      <button class="icon-btn" id="btnSettings" title="Settings"></button>
+    </div>
+  </header>
+
+  <main class="stage" id="stage">
+    <div class="radar" id="radar">
+      <div class="ring-orbit r1"></div>
+      <div class="ring-orbit r2"></div>
+      <div class="pulses"><i></i><i></i><i></i></div>
+      <div class="sweep"></div>
+      <div class="me-node" id="meNode">
+        <div class="me-glow"></div>
+        <div class="avatar me-avatar" id="meAvatar"></div>
+      </div>
+      <div class="peers" id="peers"></div>
+    </div>
+
+    <div class="empty" id="empty">
+      <h2>Looking for nearby devices<span class="dots"><i>.</i><i>.</i><i>.</i></span></h2>
+      <p>Open <b>AirBridge</b> or <b>LocalSend</b> on your phone (same Wi‑Fi), or pair your phone's browser.</p>
+      <div class="row">
+        <button class="btn" id="emptyPair"></button>
+        <button class="btn ghost" id="emptyScan"></button>
+      </div>
+    </div>
+
+    <p class="hint" id="hint">Drop files anywhere · click a device to share</p>
+  </main>
+
+  <section class="tray glass" id="tray" hidden>
+    <div class="tray-head">
+      <div>
+        <b id="trayTitle">Ready to send</b>
+        <span class="muted" id="traySub">Click a device</span>
+      </div>
+      <button class="icon-btn small" id="trayClear" title="Clear"></button>
+    </div>
+    <div class="tray-files" id="trayFiles"></div>
+  </section>
+
+  <aside class="activity" id="activity" aria-label="Activity">
+    <div class="activity-head">
+      <h3>Activity</h3>
+      <div class="row">
+        <button class="btn ghost small" id="openDownloads">Received files</button>
+        <button class="icon-btn small" id="clearHistory" title="Clear finished"></button>
+        <button class="icon-btn small" id="closeActivity" title="Close"></button>
+      </div>
+    </div>
+    <div class="activity-list" id="activityList"></div>
+    <div class="activity-empty" id="activityEmpty">Transfers will show up here.</div>
+  </aside>
+
+  <div class="drop-overlay" id="dropOverlay" aria-hidden="true">
+    <div class="drop-card"><div class="drop-icon" id="dropIcon"></div><b>Drop to share</b><span>Release over a device to send right away</span></div>
+  </div>
+
+  <div class="sheet-backdrop" id="sheetBackdrop"></div>
+  <section class="sheet" id="incomingSheet" role="dialog" aria-modal="true" aria-labelledby="inTitle">
+    <div class="grabber"></div>
+    <div class="incoming">
+      <div class="in-avatar-wrap"><div class="in-ripple"></div><div class="avatar in-avatar" id="inAvatar"></div></div>
+      <h2 id="inTitle">…</h2>
+      <p class="muted" id="inSub"></p>
+      <div class="in-files" id="inFiles"></div>
+      <label class="trust-check"><input type="checkbox" id="inTrust"> Always accept from this device</label>
+      <div class="in-actions">
+        <button class="btn ghost" id="inDecline">Decline</button>
+        <button class="btn" id="inAccept">Accept</button>
+      </div>
+    </div>
+  </section>
+
+  <div class="popover glass" id="peerMenu" hidden></div>
+  <div class="modal" id="modal" hidden></div>
+  <div class="toasts" id="toasts"></div>
+
+  <script src="/assets/shared.js"></script>
+  <script src="/assets/app.js"></script>
+</body>
+</html>

@@ -98,6 +98,7 @@ pub fn router(app: Arc<App>) -> Router {
     Router::new()
         .route("/", get(page))
         .route("/assets/{*path}", get(asset))
+        .route("/hello", get(hello))
         .route("/ws", get(websocket))
         .route("/send", post(announce_files))
         .route("/upload", post(upload))
@@ -138,6 +139,15 @@ async fn page() -> Response {
 
 async fn asset(UrlPath(path): UrlPath<String>) -> Response {
     assets::response(&path)
+}
+
+/// Lets the page check its pairing key before connecting.
+async fn hello(State(app): State<Arc<App>>, Query(params): Params) -> Response {
+    if !authorized(&app, &params) {
+        return forbidden();
+    }
+    let me = app.me();
+    Json(json!({ "alias": me.alias, "deviceModel": me.device_model })).into_response()
 }
 
 async fn websocket(

@@ -188,7 +188,16 @@ impl Settings {
         let path = Self::path();
         match std::fs::read_to_string(&path) {
             Ok(text) => match serde_json::from_str::<Settings>(&text) {
-                Ok(settings) => return settings,
+                Ok(settings) => {
+                    // Persist defaults for missing keys (e.g. the pairing key)
+                    // so they stay stable across restarts.
+                    if serde_json::to_string_pretty(&settings).ok().as_deref() != Some(text.as_str()) {
+                        if let Err(err) = settings.save() {
+                            tracing::warn!("Could not save settings: {err}");
+                        }
+                    }
+                    return settings;
+                }
                 Err(err) => tracing::warn!("{}: {err}; using defaults", path.display()),
             },
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
