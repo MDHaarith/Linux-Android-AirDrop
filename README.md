@@ -83,13 +83,14 @@ links are downloaded first when they point to a file.
 
 ### Linux
 
-You need [Rust](https://rustup.rs) 1.89 or newer. For a native app window, also install WebKitGTK.
-Without it, AirBridge opens in a Chromium app window or your default browser.
+You need [Rust](https://rustup.rs) 1.89 or newer and the Wayland client headers
+(`libwayland-dev` / `wayland-devel`, used by the file picker). For a native app window, also
+install WebKitGTK. Without it, AirBridge opens in a Chromium app window or your default browser.
 
 ```bash
 # Debian/Ubuntu (optional: native window + screen-edge drop zone)
-sudo apt install libwebkit2gtk-4.1-dev libgtk-3-dev libxdo-dev libgtk-layer-shell-dev
-# Fedora:  sudo dnf install webkit2gtk4.1-devel gtk3-devel libxdo-devel gtk-layer-shell-devel
+sudo apt install libwayland-dev libwebkit2gtk-4.1-dev libgtk-3-dev libxdo-dev libgtk-layer-shell-dev
+# Fedora:  sudo dnf install wayland-devel webkit2gtk4.1-devel gtk3-devel libxdo-devel gtk-layer-shell-devel
 # Arch:    sudo pacman -S webkit2gtk-4.1 gtk3 xdotool gtk-layer-shell
 
 git clone https://github.com/MDHaarith/Linux-Android-AirDrop

@@ -31,7 +31,7 @@ jobs:
       - run: cargo clippy --all-targets --locked --features webview,edge -- -D warnings
       - run: cargo test --locked
       # The drop zone's pure logic and its offscreen renders (snapshots are uploaded).
-      - run: cargo test --locked --features edge edge::
+      - run: "cargo test --locked --features edge edge::"
       - run: cargo build --release --locked --features webview,edge
       - uses: actions/upload-artifact@v4
         with:
@@ -57,7 +57,7 @@ jobs:
         with:
           workspaces: linux
       - name: Build the Linux binary for the interop test
-        run: cargo build --locked
+        run: sudo apt-get update && sudo apt-get install -y libwayland-dev && cargo build --locked
         working-directory: linux
       - name: Unit, interop and screenshot tests
         working-directory: android
