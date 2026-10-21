@@ -39,9 +39,10 @@ Quick Share is Android's built-in AirDrop. Open re-implementations: [NearDrop][n
 How it works on Wi-Fi LAN ([NearDrop's protocol notes][neardrop-proto]):
 
 - **Discovery.** mDNS service `_FC9F5ED42C8A._tcp`. The service name encodes an endpoint ID, and
-  the TXT record carries the device name and type. Android only starts looking after it sees a
-  **BLE advertisement** with service UUID `0xFE2C`. That is why the Linux apps need Bluetooth on
-  for discovery.
+  the TXT record carries the device name and type. A phone that *sends* browses mDNS and finds a
+  PC on its own. A phone only *advertises* (to receive) while its receive screen is open, or
+  after it hears a **BLE advertisement** with service UUID `0xFE2C`, which is why sending to a
+  phone works best with Bluetooth on.
 - **Security.** A UKEY2 handshake (P-256 ECDH) derives keys with HKDF. Every frame is
   AES-256-CBC plus HMAC-SHA256, and a 4-digit PIN is shown for verification.
 - **Framing.** Length-prefixed protobuf "offline frames". Payloads arrive as chunked `BYTES`/`FILE`
@@ -120,8 +121,11 @@ official repository):
 
 ### Possible future work
 
-- Optional **Quick Share receive mode** (like Packet or rquickshare), so a stock Android phone
-  could send to Linux with no app installed.
+- ~~Quick Share receive mode~~: done. AirBridge now speaks Quick Share over Wi-Fi LAN in both
+  directions (`linux/src/quickshare/`), written from the protobufs and NearDrop's notes, with a
+  BlueZ advertisement to wake phones. Its key derivation is checked against an independent
+  implementation and the client/server pair against each other; it still needs testing against
+  many real phones.
 - Resumable transfers, IPv6 multicast (`ff12::fb`-style groups, as newer LocalSend versions use),
   and protocol v3 once it is published.
 
