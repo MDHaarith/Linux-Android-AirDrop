@@ -534,6 +534,19 @@ async fn update_settings(State(app): State<Arc<App>>, Json(changes): Json<Value>
             let app = app.clone();
             tokio::spawn(async move { discovery.announce_burst(&app).await });
         }
+        let service = app.quick_share.lock().unwrap().clone();
+        if let Some(service) = service {
+            if let Err(err) = service.advertise(&app.settings().alias) {
+                tracing::warn!("Could not update the Quick Share name: {err}");
+            }
+        }
+    }
+    if changed.contains(&"quickShare") {
+        if app.settings().quick_share {
+            crate::start_quick_share(&app).await;
+        } else {
+            crate::stop_quick_share(&app);
+        }
     }
     if changed.contains(&"notifications") || changed.contains(&"webCompanion") {
         app.bus

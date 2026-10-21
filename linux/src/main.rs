@@ -15,6 +15,7 @@ mod identity;
 mod net;
 mod peers;
 mod protocol;
+mod quickshare;
 mod receiver;
 mod sender;
 mod storage;
@@ -229,6 +230,22 @@ fn listener_port(listener: &TcpListener) -> Result<u16> {
     Ok(listener.local_addr()?.port())
 }
 
+pub async fn start_quick_share(app: &std::sync::Arc<App>) {
+    if app.quick_share.lock().unwrap().is_some() {
+        return;
+    }
+    match quickshare::Service::start(app).await {
+        Ok(service) => *app.quick_share.lock().unwrap() = Some(service),
+        Err(err) => tracing::warn!("Quick Share unavailable: {err:#}"),
+    }
+}
+
+pub fn stop_quick_share(app: &App) {
+    if let Some(service) = app.quick_share.lock().unwrap().take() {
+        service.stop();
+    }
+}
+
 async fn serve(open_window: bool) -> Result<ExitCode> {
     if running_instance().await.is_some() {
         if open_window {
@@ -258,6 +275,11 @@ async fn serve(open_window: bool) -> Result<ExitCode> {
     // Discovery (multicast + register).
     let discovery = Discovery::start(app.clone()).await;
     let _ = app.discovery.set(discovery);
+
+    // Google Quick Share, so stock Android phones see this computer.
+    if settings.quick_share {
+        start_quick_share(&app).await;
+    }
 
     // Desktop UI, reachable from this computer only.
     let (ui_listener, ui_port) = match bind(settings.ui_port, 1, "127.0.0.1").await {
@@ -319,6 +341,7 @@ async fn serve(open_window: bool) -> Result<ExitCode> {
         _ = app.shutdown.cancelled() => {}
     }
     app.shutdown.cancel();
+    stop_quick_share(&app);
     let _ = std::fs::remove_file(instance_path());
     tracing::info!("Bye");
     Ok(ExitCode::SUCCESS)

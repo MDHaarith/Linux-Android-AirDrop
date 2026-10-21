@@ -180,6 +180,8 @@ pub struct Settings {
     pub ui_port: u16,
     pub notifications: bool,
     pub theme: String,
+    /// Be visible to Android's built-in Quick Share (no app needed).
+    pub quick_share: bool,
 }
 
 impl Default for Settings {
@@ -202,6 +204,7 @@ impl Default for Settings {
             ui_port: 0,
             notifications: true,
             theme: "auto".into(),
+            quick_share: true,
         }
     }
 }
@@ -309,6 +312,7 @@ impl Settings {
         set_bool!("copyReceivedText", copy_received_text);
         set_bool!("webCompanion", web_companion);
         set_bool!("notifications", notifications);
+        set_bool!("quickShare", quick_share);
         changed
     }
 

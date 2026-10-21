@@ -21,6 +21,7 @@ use crate::identity::Identity;
 use crate::net;
 use crate::peers::{PeerKind, Registry};
 use crate::protocol::{DeviceInfo, PROTOCOL_VERSION};
+use crate::quickshare;
 use crate::sender::{self, SendItem};
 use crate::storage::Reservations;
 use crate::transfers::{Direction, Status, Transfers};
@@ -54,6 +55,8 @@ pub struct App {
     /// Open desktop UI windows (WebSocket connections).
     pub ui_clients: AtomicUsize,
     pub discovery: OnceLock<Arc<Discovery>>,
+    /// Google Quick Share interoperability, while enabled.
+    pub quick_share: Mutex<Option<Arc<quickshare::Service>>>,
     pub shutdown: CancellationToken,
 }
 
@@ -83,6 +86,7 @@ impl App {
             ui: OnceLock::new(),
             ui_clients: AtomicUsize::new(0),
             discovery: OnceLock::new(),
+            quick_share: Mutex::new(None),
             shutdown: CancellationToken::new(),
         }))
     }
@@ -159,7 +163,7 @@ impl App {
     /// Asks the user whether to accept an incoming transfer (window and/or
     /// notification). Trusted devices are accepted automatically.
     pub async fn ask_accept(self: &Arc<Self>, id: &str) -> bool {
-        let (peer_id, alias, summary_files) = {
+        let (peer_id, alias, summary_files, pin) = {
             let transfers = self.transfers.lock().unwrap();
             let Some(t) = transfers.get(id) else {
                 return false;
@@ -179,6 +183,10 @@ impl App {
                         .map(|f| (f.name.as_str(), f.size))
                         .collect::<Vec<_>>(),
                 ),
+                t.peer
+                    .get("pin")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
             )
         };
         if self.settings().auto_accept_trusted && self.registry.is_trusted(&peer_id) {
@@ -193,7 +201,11 @@ impl App {
         let question = if notify_enabled && self.notifier.available().await {
             let (app, id) = (self.clone(), id.to_string());
             let title = format!("{alias} wants to share {}", summary_files.0);
-            let body = summary_files.1.clone();
+            // Quick Share shows the same PIN on the phone.
+            let body = match &pin {
+                Some(pin) => format!("{} · PIN {pin}", summary_files.1),
+                None => summary_files.1.clone(),
+            };
             Some(tokio::spawn(async move {
                 let answer = app
                     .notifier
@@ -302,6 +314,7 @@ impl App {
         match peer.kind {
             PeerKind::LocalSend => sender::send_files(self, peer, items, pin),
             PeerKind::Web => self.companion.offer(self, &peer, items, None),
+            PeerKind::QuickShare => quickshare::send_files(self, peer, items),
         }
     }
 
@@ -322,6 +335,7 @@ impl App {
         match peer.kind {
             PeerKind::LocalSend => Ok(sender::send_text(self, peer, text, pin)),
             PeerKind::Web => self.companion.offer(self, &peer, Vec::new(), Some(text)),
+            PeerKind::QuickShare => Ok(quickshare::send_text(self, peer, text)),
         }
     }
 
@@ -422,7 +436,32 @@ impl App {
                 return;
             }
             let preview: String = text.chars().take(240).collect();
-            if copied {
+            let link = text.trim();
+            let link = ((link.starts_with("http://") || link.starts_with("https://"))
+                && !link.contains(char::is_whitespace))
+            .then(|| link.to_string());
+            if let Some(link) = link {
+                // Like AirDrop: a shared link opens in the browser in one click.
+                let title = if copied {
+                    format!("Copied link from {alias}")
+                } else {
+                    format!("Link from {alias}")
+                };
+                app.notifier
+                    .notify(
+                        &title,
+                        &preview,
+                        &[("default", "Open"), ("open", "Open link"), ("copy", "Copy")],
+                        move |action| {
+                            if action == "copy" {
+                                tokio::spawn(async move { desktop::copy_text(&link).await });
+                            } else {
+                                desktop::open_url(&link);
+                            }
+                        },
+                    )
+                    .await;
+            } else if copied {
                 app.notifier
                     .notify(&format!("Copied text from {alias}"), &preview, &[], |_| {})
                     .await;

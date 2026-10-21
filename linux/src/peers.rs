@@ -19,6 +19,8 @@ pub enum PeerKind {
     LocalSend,
     /// A phone browser connected to the web companion.
     Web,
+    /// An Android phone's built-in Quick Share, ready to receive.
+    QuickShare,
 }
 
 #[derive(Debug, Clone)]

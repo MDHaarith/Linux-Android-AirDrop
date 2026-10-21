@@ -452,6 +452,15 @@ body.dragging .drop-overlay { opacity: 1; transform: none; }
 .in-file small { color: var(--faint); }
 .trust-check { display: flex; gap: 8px; align-items: center; font-size: 13px; color: var(--muted); margin-bottom: 16px; cursor: pointer; }
 .trust-check input { accent-color: var(--accent); width: 16px; height: 16px; }
+.trust-check[hidden], .pin-chip[hidden] { display: none; }
+.pin-chip {
+  display: inline-flex; gap: 8px; align-items: baseline; margin: 2px 0 14px;
+  padding: 7px 14px; border-radius: 999px; font-size: 13px; color: var(--muted);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+}
+.pin-chip b { font-size: 17px; letter-spacing: .22em; color: var(--text); font-variant-numeric: tabular-nums; }
+.pin-chip span { font-size: 12px; }
 .in-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; width: 100%; }
 .in-actions .btn { height: 48px; font-size: 15px; }
 

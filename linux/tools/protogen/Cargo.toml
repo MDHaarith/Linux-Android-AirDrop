@@ -1,0 +1,13 @@
+[package]
+name = "protogen"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "Regenerates src/quickshare/proto/*.rs from proto/quickshare/*.proto"
+
+# Standalone: not part of the airbridge build.
+[workspace]
+
+[dependencies]
+prost-build = "0.14"
+protox = "0.10"

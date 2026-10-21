@@ -276,6 +276,12 @@ fn spawn_detached(program: &str, args: &[&str]) -> bool {
         .is_ok()
 }
 
+/// Opens a web link in the default browser.
+pub fn open_url(url: &str) -> bool {
+    (url.starts_with("http://") || url.starts_with("https://"))
+        && spawn_detached("xdg-open", &[url])
+}
+
 pub fn open_path(path: &Path) -> bool {
     path.exists() && spawn_detached("xdg-open", &[&path.to_string_lossy()])
 }

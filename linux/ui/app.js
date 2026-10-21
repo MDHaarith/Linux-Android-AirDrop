@@ -113,6 +113,7 @@ function flashMe() {
 /* ---------------------------------------------------------------- peers */
 function peerSubtitle(p) {
   if (p.kind === "web") return "Browser" + (p.deviceModel ? ` · ${p.deviceModel}` : "");
+  if (p.kind === "quickshare") return "Quick Share";
   return p.deviceModel || (p.deviceType === "mobile" ? "Phone" : "Computer");
 }
 
@@ -370,7 +371,10 @@ function renderItem(t, structural) {
 function statusText(t) {
   const when = ago(t.finished || t.created);
   if (t.status === "transferring") return `${bytes(t.done)} of ${bytes(t.total)} · ${bytes(t.speed)}/s`;
-  if (t.status === "waiting") return t.direction === "out" ? `Waiting for ${t.peer?.alias || "device"}…` : "Waiting for you";
+  if (t.status === "waiting") {
+    const pin = t.peer?.pin ? ` · PIN ${t.peer.pin}` : "";
+    return (t.direction === "out" ? `Waiting for ${t.peer?.alias || "device"}…` : "Waiting for you") + pin;
+  }
   if (t.status === "done") return `${t.message ? "" : bytes(t.total) + " · "}${when}`;
   return `${t.error || t.status} · ${when}`;
 }
@@ -413,6 +417,12 @@ function showNextIncoming() {
   $("inFiles").innerHTML = files.slice(0, 50).map((f, i) => `
     <div class="in-file" style="animation-delay:${Math.min(i, 8) * 45}ms">${fileIcon(f.type, f.name)}<span>${esc(f.name)}</span><small>${bytes(f.size)}</small></div>`).join("")
     + (files.length > 50 ? `<div class="faint">+ ${files.length - 50} more</div>` : "");
+  // Quick Share shows the same four digits on the phone; there is no
+  // lasting identity to trust, so no "always accept".
+  const pin = t.peer?.pin;
+  $("inPin").hidden = !pin;
+  $("inPin").innerHTML = pin ? `PIN <b>${esc(pin)}</b> <span>should match the phone</span>` : "";
+  $("inTrustRow").hidden = t.peer?.kind === "quickshare";
   $("inTrust").checked = false;
   $("sheetBackdrop").classList.add("open");
   $("incomingSheet").classList.add("open");
@@ -476,7 +486,7 @@ function openPeerMenu(id) {
     <button class="p-item" data-act="folder">${icons.folder} Send a folder…</button>
     <button class="p-item" data-act="text">${icons.message} Send a message…</button>
     <button class="p-item" data-act="clipboard">${icons.clipboard} Send clipboard</button>
-    ${web ? "" : `<button class="p-item" data-act="trust">${icons.shield} ${p.trusted ? "Stop trusting" : "Trust this device"}</button>`}`;
+    ${web || p.kind === "quickshare" ? "" : `<button class="p-item" data-act="trust">${icons.shield} ${p.trusted ? "Stop trusting" : "Trust this device"}</button>`}`;
   paintAvatar(menu.querySelector(".avatar"), p.id);
   menu.hidden = false;
   const r = node.querySelector(".bubble").getBoundingClientRect();
@@ -843,6 +853,7 @@ function openSettings() {
     ${settingSwitch("autoAcceptTrusted", "Auto-accept trusted devices", "No prompt for devices you marked as trusted")}
     ${settingSwitch("copyReceivedText", "Copy received text", "Text from trusted devices goes straight to your clipboard")}
     ${settingSwitch("notifications", "Notifications", "Desktop notifications with Accept / Decline")}
+    ${settingSwitch("quickShare", "Quick Share", "Android phones can share here from their built-in share sheet, no app needed")}
     ${settingSwitch("webCompanion", "Phone browser companion", "Phones without an app can pair with a QR code")}
     <div class="field"><label for="sPin">Require a PIN (optional)</label><input class="input" id="sPin" placeholder="No PIN" value="${esc(s.pin || "")}" autocomplete="off"></div>
     <p class="section-title">Appearance</p>

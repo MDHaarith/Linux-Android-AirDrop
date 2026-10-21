@@ -18,24 +18,32 @@ tray = ["dep:ksni"]
 webview = ["dep:wry", "dep:tao"]
 
 [dependencies]
+aes = "0.8"
 anyhow = "1"
 axum = { version = "0.8", features = ["ws"] }
+base64 = "0.22"
 bytes = "1"
+cbc = { version = "0.1", features = ["alloc"] }
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 clap = { version = "4", features = ["derive"] }
 dirs = "6"
 filetime = "0.2"
 futures-util = "0.3"
+hkdf = "0.12"
+hmac = "0.12"
 http-body-util = "0.1"
 hyper = { version = "1", features = ["client", "http1", "server"] }
 hyper-util = { version = "0.1", features = ["tokio", "server-auto", "service", "http1", "http2"] }
 if-addrs = "0.15"
+mdns-sd = "0.21"
 mime_guess = "2"
 nix = { version = "0.30", default-features = false, features = ["fs"] }
+prost = "0.14"
 qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 rand = "0.8"
 rcgen = { version = "0.14", default-features = false, features = ["crypto", "pem", "ring"] }
 rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "tokio"] }
+ring = "0.17"
 rsa = { version = "0.9", features = ["sha2"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "tls12", "std", "logging"] }
 serde = { version = "1", features = ["derive"] }

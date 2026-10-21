@@ -9,15 +9,15 @@ the share sheet on the phone and from anywhere on the desktop.
 A stock Android phone shares to the laptop from its built-in Quick Share
 sheet, with no app installed.
 
-- [ ] Vendored Nearby protobufs (Chromium, BSD) + generated prost code
-- [ ] UKEY2 handshake (P-256), SecureMessage (AES-256-CBC + HMAC-SHA256), PIN
-- [ ] mDNS advertisement `_FC9F5ED42C8A._tcp` with endpoint info
-- [ ] Inbound: files, text, URLs, Wi-Fi credentials (shown, not applied)
-- [ ] Transfers show up in the same UI, notifications and history as LocalSend ones
-- [ ] Outbound: discover phones in receive mode, send files and text
+- [x] Vendored Nearby protobufs (Chromium, BSD) + generated prost code
+- [x] UKEY2 handshake (P-256), SecureMessage (AES-256-CBC + HMAC-SHA256), PIN
+- [x] mDNS advertisement `_FC9F5ED42C8A._tcp` with endpoint info
+- [x] Inbound: files, text, URLs, Wi-Fi credentials (shown, not applied)
+- [x] Transfers show up in the same UI, notifications and history as LocalSend ones
+- [x] Outbound: discover phones in receive mode, send files and text
 - [ ] BLE "someone is sharing" trigger via BlueZ so phones start advertising
-- [ ] Settings: Quick Share on/off, visibility, device name
-- [ ] Tests: crypto known answers, inbound/outbound loopback through the
+- [x] Settings: Quick Share on/off, visibility, device name
+- [x] Tests: crypto known answers, inbound/outbound loopback through the
       real code paths
 
 ## 2. Drop zone on the screen edge (KDE Plasma, Wayland and X11)
