@@ -22,6 +22,14 @@ class AirBridgeApp : Application() {
     override fun onCreate() {
         super.onCreate()
         instance = this
+        io.github.mdhaarith.airbridge.core.Log.sink = io.github.mdhaarith.airbridge.core.Log.Sink { priority, tag, message, error ->
+            when (priority) {
+                'D' -> android.util.Log.d(tag, message, error)
+                'I' -> android.util.Log.i(tag, message, error)
+                'W' -> android.util.Log.w(tag, message, error)
+                else -> android.util.Log.e(tag, message, error)
+            }
+        }
         Notifications.createChannels(this)
     }
 

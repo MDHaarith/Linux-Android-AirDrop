@@ -82,20 +82,31 @@ pub async fn serve(app: Arc<App>, listener: TcpListener, tls: Option<Arc<ServerC
         tokio::spawn(async move {
             let ip = net::canonical(addr.ip());
             let (io, cert_fingerprint): (Box<dyn Io>, Option<String>) = match acceptor {
-                Some(acceptor) => match tokio::time::timeout(Duration::from_secs(10), acceptor.accept(tcp)).await {
-                    Ok(Ok(stream)) => {
-                        let fp = stream.get_ref().1.peer_certificates().and_then(|c| c.first()).map(|c| fingerprint(c));
-                        (Box::new(stream), fp)
+                Some(acceptor) => {
+                    match tokio::time::timeout(Duration::from_secs(10), acceptor.accept(tcp)).await
+                    {
+                        Ok(Ok(stream)) => {
+                            let fp = stream
+                                .get_ref()
+                                .1
+                                .peer_certificates()
+                                .and_then(|c| c.first())
+                                .map(|c| fingerprint(c));
+                            (Box::new(stream), fp)
+                        }
+                        Ok(Err(err)) => {
+                            tracing::debug!("TLS handshake with {ip} failed: {err}");
+                            return;
+                        }
+                        Err(_) => return,
                     }
-                    Ok(Err(err)) => {
-                        tracing::debug!("TLS handshake with {ip} failed: {err}");
-                        return;
-                    }
-                    Err(_) => return,
-                },
+                }
                 None => (Box::new(tcp), None),
             };
-            let conn = ConnInfo { ip, cert_fingerprint };
+            let conn = ConnInfo {
+                ip,
+                cert_fingerprint,
+            };
             let service = router.map_request(move |mut request: Request<Incoming>| {
                 request.extensions_mut().insert(conn.clone());
                 request
@@ -115,12 +126,19 @@ fn parse_info(app: &App, conn: &ConnInfo, info: DeviceInfo) -> Option<DeviceInfo
     if let Some(fp) = &conn.cert_fingerprint {
         // The certificate proves who they are; a different claim is spoofed.
         if !info.fingerprint.is_empty() && !info.fingerprint.eq_ignore_ascii_case(fp) {
-            tracing::warn!("{}: claimed fingerprint does not match its certificate", conn.ip);
+            tracing::warn!(
+                "{}: claimed fingerprint does not match its certificate",
+                conn.ip
+            );
             return None;
         }
         info.fingerprint = fp.clone();
     }
-    if info.fingerprint.is_empty() || info.fingerprint.eq_ignore_ascii_case(&app.identity.fingerprint) {
+    if info.fingerprint.is_empty()
+        || info
+            .fingerprint
+            .eq_ignore_ascii_case(&app.identity.fingerprint)
+    {
         return None;
     }
     Some(info)
@@ -130,8 +148,14 @@ async fn info(State(app): State<Arc<App>>) -> Response {
     Json(app.me().info_json()).into_response()
 }
 
-async fn register(State(app): State<Arc<App>>, Extension(conn): Extension<ConnInfo>, body: Bytes) -> Response {
-    let Ok(info) = serde_json::from_slice::<DeviceInfo>(&body) else { return error(400, "Invalid body") };
+async fn register(
+    State(app): State<Arc<App>>,
+    Extension(conn): Extension<ConnInfo>,
+    body: Bytes,
+) -> Response {
+    let Ok(info) = serde_json::from_slice::<DeviceInfo>(&body) else {
+        return error(400, "Invalid body");
+    };
     if let Some(info) = parse_info(&app, &conn, info) {
         app.registry.upsert(info, conn.ip, PeerKind::LocalSend);
     }
@@ -174,7 +198,11 @@ struct WaitGuard {
 impl Drop for WaitGuard {
     fn drop(&mut self) {
         if self.armed {
-            self.app.finish(&self.id, Status::Cancelled, Some("The sender cancelled".into()));
+            self.app.finish(
+                &self.id,
+                Status::Cancelled,
+                Some("The sender cancelled".into()),
+            );
         }
     }
 }
@@ -191,17 +219,35 @@ async fn prepare_upload(
     let Ok(request) = serde_json::from_slice::<PrepareUploadRequest>(&body) else {
         return error(400, "Invalid body");
     };
-    let Some(info) = parse_info(&app, &conn, request.info) else { return error(400, "Invalid sender") };
-    let files: Result<Vec<FileDto>, _> = request.files.into_values().map(FileDto::sanitized).collect();
-    let Ok(files) = files else { return error(400, "Invalid files") };
+    let Some(info) = parse_info(&app, &conn, request.info) else {
+        return error(400, "Invalid sender");
+    };
+    let files: Result<Vec<FileDto>, _> = request
+        .files
+        .into_values()
+        .map(FileDto::sanitized)
+        .collect();
+    let Ok(files) = files else {
+        return error(400, "Invalid files");
+    };
     if files.is_empty() {
         return error(400, "No files provided");
     }
 
     let peer = app.registry.upsert(info, conn.ip, PeerKind::LocalSend);
-    let message = (files.len() == 1 && files[0].is_text_message()).then(|| files[0].preview.clone()).flatten();
-    let states = files.into_iter().map(|dto| FileState::new(dto, None)).collect();
-    let mut transfer = Transfer::new(Direction::In, peer.id(), app.registry.peer_json(&peer), states);
+    let message = (files.len() == 1 && files[0].is_text_message())
+        .then(|| files[0].preview.clone())
+        .flatten();
+    let states = files
+        .into_iter()
+        .map(|dto| FileState::new(dto, None))
+        .collect();
+    let mut transfer = Transfer::new(
+        Direction::In,
+        peer.id(),
+        app.registry.peer_json(&peer),
+        states,
+    );
     transfer.peer_ip = Some(conn.ip);
 
     if let Some(text) = message {
@@ -228,11 +274,21 @@ async fn prepare_upload(
         transfers.add(transfer)
     };
 
-    let mut guard = WaitGuard { app: app.clone(), id: id.clone(), armed: true };
+    let mut guard = WaitGuard {
+        app: app.clone(),
+        id: id.clone(),
+        armed: true,
+    };
     let accepted = app.ask_accept(&id).await;
     guard.armed = false;
 
-    if app.transfers.lock().unwrap().get(&id).is_none_or(|t| t.status.is_final()) {
+    if app
+        .transfers
+        .lock()
+        .unwrap()
+        .get(&id)
+        .is_none_or(|t| t.status.is_final())
+    {
         return error(403, "Cancelled");
     }
     if !accepted {
@@ -247,7 +303,9 @@ async fn prepare_upload(
     }
 
     let mut transfers = app.transfers.lock().unwrap();
-    let Some(transfer) = transfers.get_mut(&id) else { return error(500, "Session lost") };
+    let Some(transfer) = transfers.get_mut(&id) else {
+        return error(500, "Session lost");
+    };
     let mut tokens = HashMap::new();
     for f in transfer.files.iter_mut() {
         let token = Alphanumeric.sample_string(&mut rand::thread_rng(), 24);
@@ -267,22 +325,31 @@ async fn upload(
     Query(query): Query<HashMap<String, String>>,
     body: Body,
 ) -> Response {
-    let (Some(session), Some(file_id), Some(token)) =
-        (query.get("sessionId"), query.get("fileId"), query.get("token"))
-    else {
+    let (Some(session), Some(file_id), Some(token)) = (
+        query.get("sessionId"),
+        query.get("fileId"),
+        query.get("token"),
+    ) else {
         return error(400, "Missing parameters");
     };
     let (transfer_id, dto) = {
         let transfers = app.transfers.lock().unwrap();
-        let Some(t) = transfers.active_incoming() else { return error(403, "Invalid session") };
+        let Some(t) = transfers.active_incoming() else {
+            return error(403, "Invalid session");
+        };
         if t.session_id.as_deref() != Some(session.as_str()) {
             return error(403, "Invalid session");
         }
         if t.peer_ip != Some(conn.ip) {
             return error(403, "Invalid IP address");
         }
-        let Some(f) = t.file(file_id) else { return error(403, "Invalid file") };
-        let valid = f.token.as_deref().is_some_and(|expected| constant_time_eq(expected.as_bytes(), token.as_bytes()));
+        let Some(f) = t.file(file_id) else {
+            return error(403, "Invalid file");
+        };
+        let valid = f
+            .token
+            .as_deref()
+            .is_some_and(|expected| constant_time_eq(expected.as_bytes(), token.as_bytes()));
         if !valid {
             return error(403, "Invalid token");
         }
@@ -307,12 +374,16 @@ async fn cancel(
     Extension(conn): Extension<ConnInfo>,
     Query(query): Query<HashMap<String, String>>,
 ) -> Response {
-    let Some(session) = query.get("sessionId") else { return error(400, "Missing parameters") };
+    let Some(session) = query.get("sessionId") else {
+        return error(400, "Missing parameters");
+    };
     let incoming = {
         let transfers = app.transfers.lock().unwrap();
         transfers
             .active_incoming()
-            .filter(|t| t.session_id.as_deref() == Some(session.as_str()) && t.peer_ip == Some(conn.ip))
+            .filter(|t| {
+                t.session_id.as_deref() == Some(session.as_str()) && t.peer_ip == Some(conn.ip)
+            })
             .map(|t| t.id.clone())
     };
     if let Some(id) = incoming {

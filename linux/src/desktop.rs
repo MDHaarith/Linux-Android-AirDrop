@@ -82,7 +82,14 @@ impl Notifier {
         self.proxy().await.is_some()
     }
 
-    async fn show(&self, proxy: &NotificationsProxy<'static>, summary: &str, body: &str, actions: &[(&str, &str)], critical: bool) -> Option<u32> {
+    async fn show(
+        &self,
+        proxy: &NotificationsProxy<'static>,
+        summary: &str,
+        body: &str,
+        actions: &[(&str, &str)],
+        critical: bool,
+    ) -> Option<u32> {
         let mut flat = Vec::new();
         for (key, label) in actions {
             flat.push(*key);
@@ -92,7 +99,19 @@ impl Notifier {
         hints.insert("desktop-entry", Value::from("airbridge"));
         hints.insert("urgency", Value::U8(if critical { 2 } else { 1 }));
         let timeout = if critical { 0 } else { -1 };
-        match proxy.notify("AirBridge", 0, "airbridge", summary, body, &flat, hints, timeout).await {
+        match proxy
+            .notify(
+                "AirBridge",
+                0,
+                "airbridge",
+                summary,
+                body,
+                &flat,
+                hints,
+                timeout,
+            )
+            .await
+        {
             Ok(id) => Some(id),
             Err(err) => {
                 tracing::debug!("notification failed: {err}");
@@ -106,12 +125,16 @@ impl Notifier {
     where
         F: FnOnce(String) + Send + 'static,
     {
-        let Some(proxy) = self.proxy().await else { return };
+        let Some(proxy) = self.proxy().await else {
+            return;
+        };
         let mut stream = match proxy.receive_action_invoked().await {
             Ok(s) => s,
             Err(_) => return,
         };
-        let Some(id) = self.show(&proxy, summary, body, actions, false).await else { return };
+        let Some(id) = self.show(&proxy, summary, body, actions, false).await else {
+            return;
+        };
         if actions.is_empty() {
             return;
         }
@@ -139,7 +162,10 @@ impl Notifier {
         let mut invoked = proxy.receive_action_invoked().await.ok()?;
         let mut closed = proxy.receive_notification_closed().await.ok()?;
         let id = self.show(&proxy, summary, body, actions, true).await?;
-        let _guard = CloseOnDrop { proxy: proxy.clone(), id };
+        let _guard = CloseOnDrop {
+            proxy: proxy.clone(),
+            id,
+        };
         loop {
             tokio::select! {
                 Some(signal) = invoked.next() => {
@@ -166,7 +192,9 @@ impl Notifier {
 
 fn which(binary: &str) -> Option<PathBuf> {
     std::env::var_os("PATH").and_then(|paths| {
-        std::env::split_paths(&paths).map(|dir| dir.join(binary)).find(|p| p.is_file())
+        std::env::split_paths(&paths)
+            .map(|dir| dir.join(binary))
+            .find(|p| p.is_file())
     })
 }
 
@@ -186,7 +214,10 @@ fn clipboard_commands(copy: bool) -> Vec<Vec<&'static str>> {
         candidates.push(vec!["xclip", "-selection", "clipboard", "-o"]);
         candidates.push(vec!["xsel", "--clipboard", "--output"]);
     }
-    candidates.into_iter().filter(|c| which(c[0]).is_some()).collect()
+    candidates
+        .into_iter()
+        .filter(|c| which(c[0]).is_some())
+        .collect()
 }
 
 pub async fn copy_text(text: &str) -> bool {
@@ -217,7 +248,11 @@ pub async fn read_clipboard() -> Option<String> {
     for cmd in clipboard_commands(false) {
         let output = tokio::time::timeout(
             Duration::from_secs(5),
-            Command::new(cmd[0]).args(&cmd[1..]).stdin(Stdio::null()).stderr(Stdio::null()).output(),
+            Command::new(cmd[0])
+                .args(&cmd[1..])
+                .stdin(Stdio::null())
+                .stderr(Stdio::null())
+                .output(),
         )
         .await;
         if let Ok(Ok(output)) = output {
@@ -278,7 +313,11 @@ pub async fn reveal_path(path: &Path) -> bool {
             return true;
         }
     }
-    let folder = if path.is_dir() { path } else { path.parent().unwrap_or(path) };
+    let folder = if path.is_dir() {
+        path
+    } else {
+        path.parent().unwrap_or(path)
+    };
     open_path(folder)
 }
 
@@ -307,8 +346,15 @@ pub async fn pick(directory: bool) -> Vec<PathBuf> {
 // -------------------------------------------------------------------- window
 
 const BROWSERS: &[&str] = &[
-    "chromium", "chromium-browser", "google-chrome", "google-chrome-stable", "brave-browser", "brave",
-    "microsoft-edge", "microsoft-edge-stable", "vivaldi",
+    "chromium",
+    "chromium-browser",
+    "google-chrome",
+    "google-chrome-stable",
+    "brave-browser",
+    "brave",
+    "microsoft-edge",
+    "microsoft-edge-stable",
+    "vivaldi",
 ];
 
 /// Opens the UI in the nicest available way; returns what was used.
@@ -335,7 +381,14 @@ pub fn open_window(url: &str, profile_dir: &Path) -> &'static str {
             let profile = format!("--user-data-dir={}", profile_dir.display());
             if spawn_detached(
                 name,
-                &[&app, "--class=AirBridge", &profile, "--window-size=1120,780", "--no-first-run", "--no-default-browser-check"],
+                &[
+                    &app,
+                    "--class=AirBridge",
+                    &profile,
+                    "--window-size=1120,780",
+                    "--no-first-run",
+                    "--no-default-browser-check",
+                ],
             ) {
                 return name;
             }

@@ -11,13 +11,15 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
-use rustls::crypto::{verify_tls12_signature, verify_tls13_signature, CryptoProvider, WebPkiSupportedAlgorithms};
+use rustls::crypto::{
+    verify_tls12_signature, verify_tls13_signature, CryptoProvider, WebPkiSupportedAlgorithms,
+};
 use rustls::pki_types::pem::PemObject;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName, UnixTime};
 use rustls::server::danger::{ClientCertVerified, ClientCertVerifier};
 use rustls::{
-    CertificateError, ClientConfig, DigitallySignedStruct, DistinguishedName, Error, OtherError, ServerConfig,
-    SignatureScheme,
+    CertificateError, ClientConfig, DigitallySignedStruct, DistinguishedName, Error, OtherError,
+    ServerConfig, SignatureScheme,
 };
 use sha2::{Digest, Sha256};
 
@@ -27,7 +29,10 @@ use crate::config::write_private;
 pub const PIN_MISMATCH: &str = "certificate fingerprint mismatch";
 
 pub fn fingerprint(der: &[u8]) -> String {
-    Sha256::digest(der).iter().map(|b| format!("{b:02X}")).collect()
+    Sha256::digest(der)
+        .iter()
+        .map(|b| format!("{b:02X}"))
+        .collect()
 }
 
 fn provider() -> Arc<CryptoProvider> {
@@ -78,9 +83,13 @@ impl ServerCertVerifier for PinnedServerVerifier {
         if let Some(expected) = &self.expected {
             let actual = fingerprint(end_entity);
             if &actual != expected {
-                return Err(Error::InvalidCertificate(CertificateError::Other(OtherError(Arc::new(
-                    PinMismatch(format!("expected {}…, got {}…", &expected[..12.min(expected.len())], &actual[..12])),
-                )))));
+                return Err(Error::InvalidCertificate(CertificateError::Other(
+                    OtherError(Arc::new(PinMismatch(format!(
+                        "expected {}…, got {}…",
+                        &expected[..12.min(expected.len())],
+                        &actual[..12]
+                    )))),
+                )));
             }
         }
         Ok(ServerCertVerified::assertion())
@@ -191,7 +200,12 @@ impl Identity {
             .with_single_cert(vec![cert.clone()], key.clone_key())?;
         server_config.alpn_protocols = vec![b"http/1.1".to_vec()];
 
-        Ok(Self { cert, key, fingerprint, server_config: Arc::new(server_config) })
+        Ok(Self {
+            cert,
+            key,
+            fingerprint,
+            server_config: Arc::new(server_config),
+        })
     }
 
     pub fn server_config(&self) -> Arc<ServerConfig> {
@@ -228,7 +242,9 @@ fn generate(cert_path: &Path, key_path: &Path) -> Result<()> {
 
     let mut params = rcgen::CertificateParams::default();
     params.distinguished_name = rcgen::DistinguishedName::new();
-    params.distinguished_name.push(rcgen::DnType::CommonName, "AirBridge User");
+    params
+        .distinguished_name
+        .push(rcgen::DnType::CommonName, "AirBridge User");
     let cert = params.self_signed(&key_pair)?;
 
     write_private(key_path, key_pem.as_bytes())?;
@@ -263,7 +279,10 @@ fEztiV0xKfcPVx4d6dqRt/NMElK1Ivw2vUuxTymphZkkFOzht9m73/kyKaeFp8Ij
 VRus1zGVD8IVpIdPMyz01WJyS7M0fWaHXKWo+Bo=
 -----END CERTIFICATE-----";
         let der = CertificateDer::from_pem_slice(CERT.as_bytes()).unwrap();
-        assert_eq!(fingerprint(&der), "4BADDE53A7F7CDEEED93189FD898E02BF6B4806CA4C05DE0ACE08319B86552FA");
+        assert_eq!(
+            fingerprint(&der),
+            "4BADDE53A7F7CDEEED93189FD898E02BF6B4806CA4C05DE0ACE08319B86552FA"
+        );
         check_self_signed(&der).unwrap();
     }
 

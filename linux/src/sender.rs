@@ -30,26 +30,41 @@ pub struct SendItem {
 /// Files are sent as-is; folders are sent recursively with relative names.
 pub fn expand_paths(paths: &[PathBuf]) -> Vec<SendItem> {
     fn walk(dir: &Path, prefix: &str, out: &mut Vec<SendItem>) {
-        let Ok(entries) = std::fs::read_dir(dir) else { return };
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
         let mut entries: Vec<_> = entries.flatten().collect();
         entries.sort_by_key(|e| e.file_name());
         for entry in entries {
-            let Ok(kind) = entry.file_type() else { continue };
+            let Ok(kind) = entry.file_type() else {
+                continue;
+            };
             let name = format!("{prefix}/{}", entry.file_name().to_string_lossy());
             if kind.is_dir() {
                 walk(&entry.path(), &name, out);
             } else if kind.is_file() {
-                out.push(SendItem { path: entry.path(), name, temporary: false });
+                out.push(SendItem {
+                    path: entry.path(),
+                    name,
+                    temporary: false,
+                });
             }
         }
     }
     let mut items = Vec::new();
     for path in paths {
-        let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "file".into());
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "file".into());
         if path.is_dir() {
             walk(path, &name, &mut items);
         } else if path.is_file() {
-            items.push(SendItem { path: path.clone(), name, temporary: false });
+            items.push(SendItem {
+                path: path.clone(),
+                name,
+                temporary: false,
+            });
         }
     }
     items
@@ -67,24 +82,47 @@ impl From<PeerError> for Outcome {
     }
 }
 
-pub fn send_files(app: &Arc<App>, peer: Peer, items: Vec<SendItem>, pin: Option<String>) -> Result<String, String> {
+pub fn send_files(
+    app: &Arc<App>,
+    peer: Peer,
+    items: Vec<SendItem>,
+    pin: Option<String>,
+) -> Result<String, String> {
     if items.is_empty() {
         return Err("Nothing to send".into());
     }
     let mut files = Vec::with_capacity(items.len());
     for item in &items {
-        let dto = FileDto::for_path(&item.path, &item.name).map_err(|e| format!("{}: {e}", item.path.display()))?;
-        files.push(FileState::new(dto, Some(item.path.to_string_lossy().into_owned())));
+        let dto = FileDto::for_path(&item.path, &item.name)
+            .map_err(|e| format!("{}: {e}", item.path.display()))?;
+        files.push(FileState::new(
+            dto,
+            Some(item.path.to_string_lossy().into_owned()),
+        ));
     }
-    let mut transfer = Transfer::new(Direction::Out, peer.id(), app.registry.peer_json(&peer), files);
+    let mut transfer = Transfer::new(
+        Direction::Out,
+        peer.id(),
+        app.registry.peer_json(&peer),
+        files,
+    );
     transfer.peer_ip = Some(peer.ip);
-    transfer.cleanup = items.iter().filter(|i| i.temporary).map(|i| i.path.clone()).collect();
+    transfer.cleanup = items
+        .iter()
+        .filter(|i| i.temporary)
+        .map(|i| i.path.clone())
+        .collect();
     Ok(start(app, transfer, peer, pin))
 }
 
 pub fn send_text(app: &Arc<App>, peer: Peer, text: String, pin: Option<String>) -> String {
     let dto = FileDto::for_text(&text);
-    let mut transfer = Transfer::new(Direction::Out, peer.id(), app.registry.peer_json(&peer), vec![FileState::new(dto, None)]);
+    let mut transfer = Transfer::new(
+        Direction::Out,
+        peer.id(),
+        app.registry.peer_json(&peer),
+        vec![FileState::new(dto, None)],
+    );
     transfer.peer_ip = Some(peer.ip);
     transfer.message = Some(text);
     start(app, transfer, peer, pin)
@@ -106,7 +144,11 @@ fn start(app: &Arc<App>, transfer: Transfer, peer: Peer, pin: Option<String>) ->
             match outcome {
                 Some(Outcome::Done) => {
                     if let Some(t) = transfers.get_mut(&transfer_id) {
-                        for f in t.files.iter_mut().filter(|f| f.status != FileStatus::Skipped) {
+                        for f in t
+                            .files
+                            .iter_mut()
+                            .filter(|f| f.status != FileStatus::Skipped)
+                        {
                             f.status = FileStatus::Done;
                             f.done = f.size;
                         }
@@ -124,9 +166,15 @@ fn start(app: &Arc<App>, transfer: Transfer, peer: Peer, pin: Option<String>) ->
                     None
                 }
                 None => {
-                    let remote = transfers.get(&transfer_id).and_then(|t| t.remote_session_id.clone());
+                    let remote = transfers
+                        .get(&transfer_id)
+                        .and_then(|t| t.remote_session_id.clone());
                     let reason = transfers.get(&transfer_id).and_then(|t| t.error.clone());
-                    transfers.finish(&transfer_id, Status::Cancelled, reason.or(Some("Cancelled".into())));
+                    transfers.finish(
+                        &transfer_id,
+                        Status::Cancelled,
+                        reason.or(Some("Cancelled".into())),
+                    );
                     remote
                 }
             }
@@ -141,12 +189,19 @@ fn start(app: &Arc<App>, transfer: Transfer, peer: Peer, pin: Option<String>) ->
 async fn run(app: &Arc<App>, id: &str, peer: &Peer, pin: Option<String>) -> Outcome {
     let body = {
         let transfers = app.transfers.lock().unwrap();
-        let Some(t) = transfers.get(id) else { return Outcome::Failed("Transfer vanished".into()) };
+        let Some(t) = transfers.get(id) else {
+            return Outcome::Failed("Transfer vanished".into());
+        };
         let files: serde_json::Map<String, serde_json::Value> = t
             .files
             .iter()
             .filter_map(|f| f.dto.as_ref())
-            .map(|dto| (dto.id.clone(), serde_json::to_value(dto).expect("serializable")))
+            .map(|dto| {
+                (
+                    dto.id.clone(),
+                    serde_json::to_value(dto).expect("serializable"),
+                )
+            })
             .collect();
         json!({ "info": app.me().register_json(), "files": files })
     };
@@ -156,8 +211,20 @@ async fn run(app: &Arc<App>, id: &str, peer: &Peer, pin: Option<String>) -> Outc
         path.push_str(&serde_urlencoded::to_string([("pin", pin)]).unwrap_or_default());
     }
     // Blocks until the receiver accepts or declines.
-    let options = Options { connect_timeout: Duration::from_secs(6), response_timeout: None };
-    let response = match client::request(&app.identity, &peer.target(), Method::POST, &path, Body::json(&body), options).await {
+    let options = Options {
+        connect_timeout: Duration::from_secs(6),
+        response_timeout: None,
+    };
+    let response = match client::request(
+        &app.identity,
+        &peer.target(),
+        Method::POST,
+        &path,
+        Body::json(&body),
+        options,
+    )
+    .await
+    {
         Ok(r) => r,
         Err(err) => return err.into(),
     };
@@ -165,7 +232,16 @@ async fn run(app: &Arc<App>, id: &str, peer: &Peer, pin: Option<String>) -> Outc
         200 => {}
         204 => return Outcome::Done,
         403 => return Outcome::Declined,
-        401 => return Outcome::Failed(if pin.is_some() { "Wrong PIN" } else { "This device requires a PIN" }.into()),
+        401 => {
+            return Outcome::Failed(
+                if pin.is_some() {
+                    "Wrong PIN"
+                } else {
+                    "This device requires a PIN"
+                }
+                .into(),
+            )
+        }
         409 => return Outcome::Failed("The device is busy with another transfer".into()),
         429 => return Outcome::Failed("Too many attempts, try again later".into()),
         code => return Outcome::Failed(format!("Refused (HTTP {code})")),
@@ -191,10 +267,15 @@ async fn run(app: &Arc<App>, id: &str, peer: &Peer, pin: Option<String>) -> Outc
     // Upload in the order the user picked the files.
     let order: Vec<String> = {
         let transfers = app.transfers.lock().unwrap();
-        transfers.get(id).map(|t| t.files.iter().map(|f| f.id.clone()).collect()).unwrap_or_default()
+        transfers
+            .get(id)
+            .map(|t| t.files.iter().map(|f| f.id.clone()).collect())
+            .unwrap_or_default()
     };
     for file_id in order {
-        let Some(token) = accepted.files.get(&file_id) else { continue };
+        let Some(token) = accepted.files.get(&file_id) else {
+            continue;
+        };
         if let Err(outcome) = upload(app, id, peer, &accepted.session_id, &file_id, token).await {
             return outcome;
         }
@@ -202,12 +283,23 @@ async fn run(app: &Arc<App>, id: &str, peer: &Peer, pin: Option<String>) -> Outc
     Outcome::Done
 }
 
-async fn upload(app: &Arc<App>, id: &str, peer: &Peer, session: &str, file_id: &str, token: &str) -> Result<(), Outcome> {
+async fn upload(
+    app: &Arc<App>,
+    id: &str,
+    peer: &Peer,
+    session: &str,
+    file_id: &str,
+    token: &str,
+) -> Result<(), Outcome> {
     let (path, size, content_type, message) = {
         let mut transfers = app.transfers.lock().unwrap();
-        let t = transfers.get_mut(id).ok_or_else(|| Outcome::Failed("Transfer vanished".into()))?;
+        let t = transfers
+            .get_mut(id)
+            .ok_or_else(|| Outcome::Failed("Transfer vanished".into()))?;
         let message = t.message.clone();
-        let f = t.file_mut(file_id).ok_or_else(|| Outcome::Failed("Unknown file".into()))?;
+        let f = t
+            .file_mut(file_id)
+            .ok_or_else(|| Outcome::Failed("Unknown file".into()))?;
         f.status = FileStatus::Transferring;
         f.token = Some(token.to_string());
         let info = (f.path.clone(), f.size, f.file_type.clone(), message);
@@ -215,9 +307,13 @@ async fn upload(app: &Arc<App>, id: &str, peer: &Peer, session: &str, file_id: &
         info
     };
     let stream: ByteStream = match (message, path) {
-        (Some(text), _) => Box::pin(futures_util::stream::once(async move { Ok(Bytes::from(text)) })),
+        (Some(text), _) => Box::pin(futures_util::stream::once(
+            async move { Ok(Bytes::from(text)) },
+        )),
         (None, Some(path)) => {
-            let file = tokio::fs::File::open(&path).await.map_err(|e| Outcome::Failed(format!("{path}: {e}")))?;
+            let file = tokio::fs::File::open(&path)
+                .await
+                .map_err(|e| Outcome::Failed(format!("{path}: {e}")))?;
             Box::pin(ReaderStream::with_capacity(file, CHUNK))
         }
         (None, None) => return Err(Outcome::Failed("No data".into())),
@@ -232,14 +328,26 @@ async fn upload(app: &Arc<App>, id: &str, peer: &Peer, session: &str, file_id: &
             transfers.emit(&id, false);
         })
     };
-    let query = serde_urlencoded::to_string([("sessionId", session), ("fileId", file_id), ("token", token)]).unwrap_or_default();
+    let query = serde_urlencoded::to_string([
+        ("sessionId", session),
+        ("fileId", file_id),
+        ("token", token),
+    ])
+    .unwrap_or_default();
     let response = client::request(
         &app.identity,
         &peer.target(),
         Method::POST,
         &format!("{API}/upload?{query}"),
-        Body::Stream { len: size, content_type, stream: client::with_progress(stream, progress) },
-        Options { connect_timeout: Duration::from_secs(6), response_timeout: None },
+        Body::Stream {
+            len: size,
+            content_type,
+            stream: client::with_progress(stream, progress),
+        },
+        Options {
+            connect_timeout: Duration::from_secs(6),
+            response_timeout: None,
+        },
     )
     .await?;
 
@@ -256,14 +364,29 @@ async fn upload(app: &Arc<App>, id: &str, peer: &Peer, session: &str, file_id: &
     transfers.emit(id, true);
     match response.status {
         200 | 204 => Ok(()),
-        403 | 409 => Err(Outcome::Failed("The receiver cancelled the transfer".into())),
-        422 => Err(Outcome::Failed("The file was damaged in transit (checksum mismatch)".into())),
+        403 | 409 => Err(Outcome::Failed(
+            "The receiver cancelled the transfer".into(),
+        )),
+        422 => Err(Outcome::Failed(
+            "The file was damaged in transit (checksum mismatch)".into(),
+        )),
         code => Err(Outcome::Failed(format!("Upload refused (HTTP {code})"))),
     }
 }
 
 async fn cancel_remote(app: &App, peer: &Peer, session: &str) {
     let query = serde_urlencoded::to_string([("sessionId", session)]).unwrap_or_default();
-    let options = Options { connect_timeout: Duration::from_secs(3), response_timeout: Some(Duration::from_secs(5)) };
-    let _ = client::request(&app.identity, &peer.target(), Method::POST, &format!("{API}/cancel?{query}"), Body::Empty, options).await;
+    let options = Options {
+        connect_timeout: Duration::from_secs(3),
+        response_timeout: Some(Duration::from_secs(5)),
+    };
+    let _ = client::request(
+        &app.identity,
+        &peer.target(),
+        Method::POST,
+        &format!("{API}/cancel?{query}"),
+        Body::Empty,
+        options,
+    )
+    .await;
 }

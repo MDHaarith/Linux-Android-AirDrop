@@ -2,7 +2,7 @@
 name = "airbridge"
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.80"
+rust-version = "1.89"
 description = "AirDrop-style file and text sharing between Linux and Android (LocalSend protocol compatible)"
 license = "MIT"
 repository = "https://github.com/MDHaarith/Linux-Android-AirDrop"

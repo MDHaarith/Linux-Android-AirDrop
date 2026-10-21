@@ -83,7 +83,10 @@ impl FileState {
 }
 
 pub fn now() -> f64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs_f64()).unwrap_or_default()
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs_f64())
+        .unwrap_or_default()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -139,11 +142,19 @@ impl Transfer {
     }
 
     pub fn total(&self) -> u64 {
-        self.files.iter().filter(|f| f.status != FileStatus::Skipped).map(|f| f.size).sum()
+        self.files
+            .iter()
+            .filter(|f| f.status != FileStatus::Skipped)
+            .map(|f| f.size)
+            .sum()
     }
 
     pub fn done_bytes(&self) -> u64 {
-        self.files.iter().filter(|f| f.status != FileStatus::Skipped).map(|f| f.done).sum()
+        self.files
+            .iter()
+            .filter(|f| f.status != FileStatus::Skipped)
+            .map(|f| f.done)
+            .sum()
     }
 
     pub fn file_mut(&mut self, id: &str) -> Option<&mut FileState> {
@@ -156,8 +167,15 @@ impl Transfer {
 
     pub fn to_json(&self) -> Value {
         let mut value = serde_json::to_value(self).expect("serializable");
-        let elapsed = self.started.map(|s| self.finished.unwrap_or_else(now) - s).unwrap_or(0.0);
-        let speed = if elapsed > 0.2 { self.done_bytes() as f64 / elapsed } else { 0.0 };
+        let elapsed = self
+            .started
+            .map(|s| self.finished.unwrap_or_else(now) - s)
+            .unwrap_or(0.0);
+        let speed = if elapsed > 0.2 {
+            self.done_bytes() as f64 / elapsed
+        } else {
+            0.0
+        };
         value["total"] = json!(self.total());
         value["done"] = json!(self.done_bytes());
         value["speed"] = json!(speed);
@@ -174,13 +192,20 @@ pub struct Transfers {
 
 impl Transfers {
     pub fn new(bus: EventBus, history_path: PathBuf) -> Self {
-        let mut store = Self { items: HashMap::new(), order: Vec::new(), history_path, bus };
+        let mut store = Self {
+            items: HashMap::new(),
+            order: Vec::new(),
+            history_path,
+            bus,
+        };
         store.load_history();
         store
     }
 
     fn load_history(&mut self) {
-        let Ok(text) = std::fs::read_to_string(&self.history_path) else { return };
+        let Ok(text) = std::fs::read_to_string(&self.history_path) else {
+            return;
+        };
         match serde_json::from_str::<Vec<Transfer>>(&text) {
             Ok(list) => {
                 for mut transfer in list {
@@ -221,7 +246,13 @@ impl Transfers {
         self.items.insert(id.clone(), transfer);
         // Forget the oldest finished transfers.
         while self.order.len() > HISTORY_LIMIT + 20 {
-            let Some(pos) = self.order.iter().position(|id| self.items[id].status.is_final()) else { break };
+            let Some(pos) = self
+                .order
+                .iter()
+                .position(|id| self.items[id].status.is_final())
+            else {
+                break;
+            };
             let old = self.order.remove(pos);
             self.items.remove(&old);
         }
@@ -242,15 +273,22 @@ impl Transfers {
 
     /// The LocalSend session currently receiving (LocalSend allows one at a time).
     pub fn active_incoming(&self) -> Option<&Transfer> {
-        self.iter()
-            .find(|t| t.direction == Direction::In && t.session_id.is_some() && !t.status.is_final())
+        self.iter().find(|t| {
+            t.direction == Direction::In && t.session_id.is_some() && !t.status.is_final()
+        })
     }
 
     /// Notifies the UI, rate-limited unless `force`.
     pub fn emit(&mut self, id: &str, force: bool) {
-        let Some(transfer) = self.items.get_mut(id) else { return };
+        let Some(transfer) = self.items.get_mut(id) else {
+            return;
+        };
         let now = Instant::now();
-        if !force && transfer.last_emit.is_some_and(|t| now.duration_since(t) < PROGRESS_INTERVAL) {
+        if !force
+            && transfer
+                .last_emit
+                .is_some_and(|t| now.duration_since(t) < PROGRESS_INTERVAL)
+        {
             return;
         }
         transfer.last_emit = Some(now);
@@ -259,7 +297,9 @@ impl Transfers {
 
     /// Moves a transfer to a final state. Returns false if it already was final.
     pub fn finish(&mut self, id: &str, status: Status, error: Option<String>) -> bool {
-        let Some(transfer) = self.items.get_mut(id) else { return false };
+        let Some(transfer) = self.items.get_mut(id) else {
+            return false;
+        };
         if transfer.status.is_final() {
             return false;
         }
@@ -278,8 +318,12 @@ impl Transfers {
     }
 
     pub fn clear_history(&mut self) {
-        let finished: Vec<String> =
-            self.items.values().filter(|t| t.status.is_final()).map(|t| t.id.clone()).collect();
+        let finished: Vec<String> = self
+            .items
+            .values()
+            .filter(|t| t.status.is_final())
+            .map(|t| t.id.clone())
+            .collect();
         for id in &finished {
             self.items.remove(id);
         }

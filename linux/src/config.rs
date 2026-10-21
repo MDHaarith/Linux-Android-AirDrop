@@ -18,16 +18,31 @@ const ADJECTIVES: &[&str] = &[
 ];
 const NOUNS: &[&str] = &[
     "Falcon", "Otter", "Comet", "Maple", "Panda", "Lynx", "Nebula", "Pebble", "Koala", "Orbit",
-    "Willow", "Harbor", "Meadow", "Aurora", "Badger", "Cedar", "Dolphin", "Ember", "Fox", "Juniper",
+    "Willow", "Harbor", "Meadow", "Aurora", "Badger", "Cedar", "Dolphin", "Ember", "Fox",
+    "Juniper",
 ];
 const GENERIC_HOSTNAMES: &[&str] = &[
-    "localhost", "fedora", "ubuntu", "debian", "archlinux", "manjaro", "linux", "pop-os", "kali",
-    "raspberrypi", "endeavouros", "nixos",
+    "localhost",
+    "fedora",
+    "ubuntu",
+    "debian",
+    "archlinux",
+    "manjaro",
+    "linux",
+    "pop-os",
+    "kali",
+    "raspberrypi",
+    "endeavouros",
+    "nixos",
 ];
 
 pub fn random_alias() -> String {
     let mut rng = rand::thread_rng();
-    format!("{} {}", ADJECTIVES.choose(&mut rng).unwrap(), NOUNS.choose(&mut rng).unwrap())
+    format!(
+        "{} {}",
+        ADJECTIVES.choose(&mut rng).unwrap(),
+        NOUNS.choose(&mut rng).unwrap()
+    )
 }
 
 fn hostname() -> String {
@@ -62,8 +77,10 @@ pub fn default_device_model() -> String {
     std::fs::read_to_string("/etc/os-release")
         .ok()
         .and_then(|text| {
-            text.lines()
-                .find_map(|l| l.strip_prefix("NAME=").map(|v| v.trim_matches('"').to_string()))
+            text.lines().find_map(|l| {
+                l.strip_prefix("NAME=")
+                    .map(|v| v.trim_matches('"').to_string())
+            })
         })
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "Linux".into())
@@ -76,19 +93,27 @@ fn base_override() -> Option<PathBuf> {
 pub fn config_dir() -> PathBuf {
     base_override()
         .map(|b| b.join("config"))
-        .unwrap_or_else(|| dirs::config_dir().unwrap_or_else(|| home().join(".config")).join(APP_ID))
+        .unwrap_or_else(|| {
+            dirs::config_dir()
+                .unwrap_or_else(|| home().join(".config"))
+                .join(APP_ID)
+        })
 }
 
 pub fn data_dir() -> PathBuf {
-    base_override()
-        .map(|b| b.join("data"))
-        .unwrap_or_else(|| dirs::data_dir().unwrap_or_else(|| home().join(".local/share")).join(APP_ID))
+    base_override().map(|b| b.join("data")).unwrap_or_else(|| {
+        dirs::data_dir()
+            .unwrap_or_else(|| home().join(".local/share"))
+            .join(APP_ID)
+    })
 }
 
 pub fn cache_dir() -> PathBuf {
-    base_override()
-        .map(|b| b.join("cache"))
-        .unwrap_or_else(|| dirs::cache_dir().unwrap_or_else(|| home().join(".cache")).join(APP_ID))
+    base_override().map(|b| b.join("cache")).unwrap_or_else(|| {
+        dirs::cache_dir()
+            .unwrap_or_else(|| home().join(".cache"))
+            .join(APP_ID)
+    })
 }
 
 pub fn runtime_dir() -> PathBuf {
@@ -104,7 +129,9 @@ pub fn runtime_dir() -> PathBuf {
 fn current_uid() -> u32 {
     // Avoid a libc dependency just for getuid(): /proc/self is owned by our uid.
     use std::os::unix::fs::MetadataExt;
-    std::fs::metadata("/proc/self").map(|m| m.uid()).unwrap_or(0)
+    std::fs::metadata("/proc/self")
+        .map(|m| m.uid())
+        .unwrap_or(0)
 }
 
 fn home() -> PathBuf {
@@ -191,7 +218,9 @@ impl Settings {
                 Ok(settings) => {
                     // Persist defaults for missing keys (e.g. the pairing key)
                     // so they stay stable across restarts.
-                    if serde_json::to_string_pretty(&settings).ok().as_deref() != Some(text.as_str()) {
+                    if serde_json::to_string_pretty(&settings).ok().as_deref()
+                        != Some(text.as_str())
+                    {
                         if let Err(err) = settings.save() {
                             tracing::warn!("Could not save settings: {err}");
                         }
@@ -227,7 +256,9 @@ impl Settings {
     /// Applies edits coming from the UI; returns the names of changed keys.
     pub fn apply(&mut self, changes: &Value) -> Vec<&'static str> {
         let mut changed = Vec::new();
-        let Some(map) = changes.as_object() else { return changed };
+        let Some(map) = changes.as_object() else {
+            return changed;
+        };
         macro_rules! set_bool {
             ($key:literal, $field:ident) => {
                 if let Some(v) = map.get($key).and_then(Value::as_bool) {
@@ -240,7 +271,11 @@ impl Settings {
         }
         if let Some(alias) = map.get("alias").and_then(Value::as_str) {
             let alias: String = alias.trim().chars().take(64).collect();
-            let alias = if alias.is_empty() { default_alias() } else { alias };
+            let alias = if alias.is_empty() {
+                default_alias()
+            } else {
+                alias
+            };
             if self.alias != alias {
                 self.alias = alias;
                 changed.push("alias");
@@ -254,7 +289,11 @@ impl Settings {
             }
         }
         if let Some(pin) = map.get("pin").and_then(Value::as_str) {
-            let pin: String = pin.chars().filter(|c| c.is_ascii_alphanumeric()).take(32).collect();
+            let pin: String = pin
+                .chars()
+                .filter(|c| c.is_ascii_alphanumeric())
+                .take(32)
+                .collect();
             if self.pin != pin {
                 self.pin = pin;
                 changed.push("pin");

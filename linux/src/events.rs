@@ -24,7 +24,9 @@ impl Event {
 
 impl Default for EventBus {
     fn default() -> Self {
-        Self { tx: broadcast::channel(1024).0 }
+        Self {
+            tx: broadcast::channel(1024).0,
+        }
     }
 }
 

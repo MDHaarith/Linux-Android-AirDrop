@@ -1,0 +1,7 @@
+[Nemo Action]
+Name=Send with AirBridge
+Comment=Send to a nearby phone or computer
+Exec=airbridge send %F
+Icon-Name=airbridge
+Selection=notnone
+Extensions=any;

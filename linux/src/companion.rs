@@ -47,14 +47,24 @@ impl Hub {
     }
 
     /// Offers files or text from the desktop to a connected browser.
-    pub fn offer(&self, app: &Arc<App>, peer: &Peer, items: Vec<SendItem>, text: Option<String>) -> Result<String, String> {
+    pub fn offer(
+        &self,
+        app: &Arc<App>,
+        peer: &Peer,
+        items: Vec<SendItem>,
+        text: Option<String>,
+    ) -> Result<String, String> {
         if !self.clients.lock().unwrap().contains_key(peer.id()) {
             return Err("That browser is no longer connected".into());
         }
         let mut files = Vec::new();
         for item in &items {
-            let dto = FileDto::for_path(&item.path, &item.name).map_err(|e| format!("{}: {e}", item.path.display()))?;
-            files.push(FileState::new(dto, Some(item.path.to_string_lossy().into_owned())));
+            let dto = FileDto::for_path(&item.path, &item.name)
+                .map_err(|e| format!("{}: {e}", item.path.display()))?;
+            files.push(FileState::new(
+                dto,
+                Some(item.path.to_string_lossy().into_owned()),
+            ));
         }
         if let Some(text) = &text {
             files.push(FileState::new(FileDto::for_text(text), None));
@@ -62,10 +72,19 @@ impl Hub {
         if files.is_empty() {
             return Err("Nothing to send".into());
         }
-        let mut transfer = Transfer::new(Direction::Out, peer.id(), app.registry.peer_json(peer), files);
+        let mut transfer = Transfer::new(
+            Direction::Out,
+            peer.id(),
+            app.registry.peer_json(peer),
+            files,
+        );
         transfer.peer_ip = Some(peer.ip);
         transfer.message = text;
-        transfer.cleanup = items.iter().filter(|i| i.temporary).map(|i| i.path.clone()).collect();
+        transfer.cleanup = items
+            .iter()
+            .filter(|i| i.temporary)
+            .map(|i| i.path.clone())
+            .collect();
         let offer = json!({
             "type": "offer",
             "id": transfer.id,
@@ -75,7 +94,11 @@ impl Hub {
         });
         let id = app.transfers.lock().unwrap().add(transfer);
         if !self.push(peer.id(), offer) {
-            app.finish(&id, Status::Failed, Some("That browser is no longer connected".into()));
+            app.finish(
+                &id,
+                Status::Failed,
+                Some("That browser is no longer connected".into()),
+            );
             return Err("That browser is no longer connected".into());
         }
         Ok(id)
@@ -87,7 +110,12 @@ impl Hub {
     }
 
     pub fn cancel_offer(&self, app: &App, transfer_id: &str) {
-        let peer_id = app.transfers.lock().unwrap().get(transfer_id).map(|t| t.peer_id.clone());
+        let peer_id = app
+            .transfers
+            .lock()
+            .unwrap()
+            .get(transfer_id)
+            .map(|t| t.peer_id.clone());
         if let Some(peer_id) = peer_id {
             self.push(&peer_id, json!({ "type": "cancel", "id": transfer_id }));
         }
@@ -117,19 +145,29 @@ pub async fn serve(app: Arc<App>, listener: tokio::net::TcpListener) {
 }
 
 fn forbidden() -> Response {
-    (StatusCode::FORBIDDEN, Json(json!({ "message": "Scan the QR code in AirBridge on your computer" }))).into_response()
+    (
+        StatusCode::FORBIDDEN,
+        Json(json!({ "message": "Scan the QR code in AirBridge on your computer" })),
+    )
+        .into_response()
 }
 
 fn authorized(app: &App, params: &HashMap<String, String>) -> bool {
     let settings = app.settings();
     settings.web_companion
-        && params.get("k").is_some_and(|k| constant_time_eq(k.as_bytes(), settings.web_key.as_bytes()))
+        && params
+            .get("k")
+            .is_some_and(|k| constant_time_eq(k.as_bytes(), settings.web_key.as_bytes()))
 }
 
 /// "web-" + the random id the page keeps in localStorage.
 fn client_id(params: &HashMap<String, String>) -> Option<String> {
     let raw = params.get("id")?;
-    let clean: String = raw.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-').take(40).collect();
+    let clean: String = raw
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '-')
+        .take(40)
+        .collect();
     (clean.len() >= 8).then(|| format!("web-{clean}"))
 }
 
@@ -159,18 +197,41 @@ async fn websocket(
     if !authorized(&app, &params) {
         return forbidden();
     }
-    let Some(peer_id) = client_id(&params) else { return (StatusCode::BAD_REQUEST, "missing id").into_response() };
-    let name: String = params.get("name").map(|n| n.trim().chars().take(48).collect()).unwrap_or_default();
-    let model: Option<String> = params.get("model").map(|m| m.chars().take(64).collect()).filter(|m: &String| !m.is_empty());
+    let Some(peer_id) = client_id(&params) else {
+        return (StatusCode::BAD_REQUEST, "missing id").into_response();
+    };
+    let name: String = params
+        .get("name")
+        .map(|n| n.trim().chars().take(48).collect())
+        .unwrap_or_default();
+    let model: Option<String> = params
+        .get("model")
+        .map(|m| m.chars().take(64).collect())
+        .filter(|m: &String| !m.is_empty());
     let ip = net::canonical(addr.ip());
     ws.on_upgrade(move |socket| client_session(app, socket, ip, peer_id, name, model))
 }
 
-async fn client_session(app: Arc<App>, socket: WebSocket, ip: IpAddr, peer_id: String, name: String, model: Option<String>) {
+async fn client_session(
+    app: Arc<App>,
+    socket: WebSocket,
+    ip: IpAddr,
+    peer_id: String,
+    name: String,
+    model: Option<String>,
+) {
     let (tx, mut rx) = mpsc::unbounded_channel::<String>();
-    app.companion.clients.lock().unwrap().insert(peer_id.clone(), tx.clone());
+    app.companion
+        .clients
+        .lock()
+        .unwrap()
+        .insert(peer_id.clone(), tx.clone());
     let info = DeviceInfo {
-        alias: if name.is_empty() { "Phone (browser)".into() } else { name },
+        alias: if name.is_empty() {
+            "Phone (browser)".into()
+        } else {
+            name
+        },
         version: "web".into(),
         device_model: model,
         device_type: Some("web".into()),
@@ -182,7 +243,8 @@ async fn client_session(app: Arc<App>, socket: WebSocket, ip: IpAddr, peer_id: S
     app.registry.upsert(info, ip, PeerKind::Web);
 
     let (mut sink, mut stream) = socket.split();
-    let hello = json!({ "type": "hello", "alias": app.me().alias, "deviceModel": app.me().device_model });
+    let hello =
+        json!({ "type": "hello", "alias": app.me().alias, "deviceModel": app.me().device_model });
     let _ = sink.send(Message::Text(hello.to_string().into())).await;
     let mut ping = tokio::time::interval(Duration::from_secs(20));
     loop {
@@ -250,7 +312,9 @@ async fn announce_files(
     if !authorized(&app, &params) {
         return forbidden();
     }
-    let Some(peer_id) = client_id(&params) else { return (StatusCode::BAD_REQUEST, "missing id").into_response() };
+    let Some(peer_id) = client_id(&params) else {
+        return (StatusCode::BAD_REQUEST, "missing id").into_response();
+    };
     if body.files.is_empty() || body.files.len() > 10_000 {
         return (StatusCode::BAD_REQUEST, "no files").into_response();
     }
@@ -268,7 +332,11 @@ async fn announce_files(
                 id: uuid::Uuid::new_v4().to_string(),
                 file_name: f.name.chars().take(1024).collect(),
                 size: f.size,
-                file_type: if f.file_type.is_empty() { "application/octet-stream".into() } else { f.file_type },
+                file_type: if f.file_type.is_empty() {
+                    "application/octet-stream".into()
+                } else {
+                    f.file_type
+                },
                 ..Default::default()
             };
             FileState::new(dto, None)
@@ -283,9 +351,17 @@ async fn announce_files(
     let download_dir = app.settings().download_dir.clone();
     let _ = std::fs::create_dir_all(&download_dir);
     if storage::free_space(&download_dir).is_some_and(|free| free < total) {
-        return (StatusCode::INSUFFICIENT_STORAGE, Json(json!({ "message": "Not enough space on the computer" }))).into_response();
+        return (
+            StatusCode::INSUFFICIENT_STORAGE,
+            Json(json!({ "message": "Not enough space on the computer" })),
+        )
+            .into_response();
     }
-    let ids: Vec<Value> = transfer.files.iter().map(|f| json!({ "id": f.id, "name": f.name })).collect();
+    let ids: Vec<Value> = transfer
+        .files
+        .iter()
+        .map(|f| json!({ "id": f.id, "name": f.name }))
+        .collect();
     let id = app.transfers.lock().unwrap().add(transfer);
     Json(json!({ "transfer": id, "files": ids })).into_response()
 }
@@ -294,13 +370,18 @@ async fn upload(State(app): State<Arc<App>>, Query(params): Params, body: Body) 
     if !authorized(&app, &params) {
         return forbidden();
     }
-    let (Some(peer_id), Some(transfer_id), Some(file_id)) = (client_id(&params), params.get("transfer"), params.get("file"))
-    else {
+    let (Some(peer_id), Some(transfer_id), Some(file_id)) = (
+        client_id(&params),
+        params.get("transfer"),
+        params.get("file"),
+    ) else {
         return (StatusCode::BAD_REQUEST, "missing parameters").into_response();
     };
     let dto = {
         let transfers = app.transfers.lock().unwrap();
-        let Some(t) = transfers.get(transfer_id) else { return forbidden() };
+        let Some(t) = transfers.get(transfer_id) else {
+            return forbidden();
+        };
         if t.direction != Direction::In || t.peer_id != peer_id || t.status.is_final() {
             return (StatusCode::CONFLICT, "transfer is over").into_response();
         }
@@ -325,7 +406,9 @@ async fn text(
     if !authorized(&app, &params) {
         return forbidden();
     }
-    let Some(peer_id) = client_id(&params) else { return (StatusCode::BAD_REQUEST, "missing id").into_response() };
+    let Some(peer_id) = client_id(&params) else {
+        return (StatusCode::BAD_REQUEST, "missing id").into_response();
+    };
     if body.is_empty() {
         return (StatusCode::BAD_REQUEST, "empty").into_response();
     }
@@ -355,10 +438,14 @@ async fn answer_offer(
     if !authorized(&app, &params) {
         return forbidden();
     }
-    let Some(peer_id) = client_id(&params) else { return (StatusCode::BAD_REQUEST, "missing id").into_response() };
+    let Some(peer_id) = client_id(&params) else {
+        return (StatusCode::BAD_REQUEST, "missing id").into_response();
+    };
     let is_text = {
         let mut transfers = app.transfers.lock().unwrap();
-        let Some(t) = transfers.get_mut(&id) else { return (StatusCode::NOT_FOUND, "unknown").into_response() };
+        let Some(t) = transfers.get_mut(&id) else {
+            return (StatusCode::NOT_FOUND, "unknown").into_response();
+        };
         if t.peer_id != peer_id || t.direction != Direction::Out {
             return forbidden();
         }
@@ -396,11 +483,29 @@ async fn answer_offer(
 }
 
 fn content_disposition(name: &str) -> String {
-    let base = safe_relative_path(name).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "file".into());
-    let ascii: String = base.chars().map(|c| if c.is_ascii_graphic() && c != '"' && c != '\\' || c == ' ' { c } else { '_' }).collect();
+    let base = safe_relative_path(name)
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "file".into());
+    let ascii: String = base
+        .chars()
+        .map(|c| {
+            if c.is_ascii_graphic() && c != '"' && c != '\\' || c == ' ' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
     let encoded: String = base
         .bytes()
-        .map(|b| if b.is_ascii_alphanumeric() || b"-._~".contains(&b) { (b as char).to_string() } else { format!("%{b:02X}") })
+        .map(|b| {
+            if b.is_ascii_alphanumeric() || b"-._~".contains(&b) {
+                (b as char).to_string()
+            } else {
+                format!("%{b:02X}")
+            }
+        })
         .collect();
     format!("attachment; filename=\"{ascii}\"; filename*=UTF-8''{encoded}")
 }
@@ -415,12 +520,19 @@ async fn download(
     }
     let (path, name, size, mime) = {
         let transfers = app.transfers.lock().unwrap();
-        let Some(t) = transfers.get(&id) else { return (StatusCode::NOT_FOUND, "unknown").into_response() };
-        if t.direction != Direction::Out || !matches!(t.status, Status::Transferring | Status::Done) {
+        let Some(t) = transfers.get(&id) else {
+            return (StatusCode::NOT_FOUND, "unknown").into_response();
+        };
+        if t.direction != Direction::Out || !matches!(t.status, Status::Transferring | Status::Done)
+        {
             return (StatusCode::CONFLICT, "not accepted").into_response();
         }
-        let Some(f) = t.file(&file_id) else { return (StatusCode::NOT_FOUND, "unknown file").into_response() };
-        let Some(path) = f.path.clone() else { return (StatusCode::NOT_FOUND, "no data").into_response() };
+        let Some(f) = t.file(&file_id) else {
+            return (StatusCode::NOT_FOUND, "unknown file").into_response();
+        };
+        let Some(path) = f.path.clone() else {
+            return (StatusCode::NOT_FOUND, "no data").into_response();
+        };
         (path, f.name.clone(), f.size, f.file_type.clone())
     };
     if size == 0 {
@@ -429,7 +541,11 @@ async fn download(
             if let Some(f) = transfers.get_mut(&id).and_then(|t| t.file_mut(&file_id)) {
                 f.status = FileStatus::Done;
             }
-            transfers.get(&id).is_some_and(|t| t.files.iter().all(|f| f.status == FileStatus::Done || f.path.is_none()))
+            transfers.get(&id).is_some_and(|t| {
+                t.files
+                    .iter()
+                    .all(|f| f.status == FileStatus::Done || f.path.is_none())
+            })
         };
         if complete {
             app.finish(&id, Status::Done, None);
@@ -446,7 +562,10 @@ async fn download(
         sent += chunk.len() as u64;
         let complete = {
             let mut transfers = progress_app.transfers.lock().unwrap();
-            if let Some(f) = transfers.get_mut(&progress_id).and_then(|t| t.file_mut(&progress_file)) {
+            if let Some(f) = transfers
+                .get_mut(&progress_id)
+                .and_then(|t| t.file_mut(&progress_file))
+            {
                 f.done = sent.min(f.size);
                 if sent >= f.size {
                     f.status = FileStatus::Done;
@@ -456,9 +575,11 @@ async fn download(
             }
             transfers.emit(&progress_id, sent >= size);
             sent >= size
-                && transfers
-                    .get(&progress_id)
-                    .is_some_and(|t| t.files.iter().all(|f| f.status == FileStatus::Done || f.path.is_none()))
+                && transfers.get(&progress_id).is_some_and(|t| {
+                    t.files
+                        .iter()
+                        .all(|f| f.status == FileStatus::Done || f.path.is_none())
+                })
         };
         if complete {
             progress_app.finish(&progress_id, Status::Done, None);

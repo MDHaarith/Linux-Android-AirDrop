@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=AirBridge
+Comment=Stay visible to your phone in the background
+Exec=airbridge --background
+Icon=airbridge
+Terminal=false
+X-GNOME-Autostart-enabled=true
+NoDisplay=true

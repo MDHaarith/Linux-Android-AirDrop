@@ -1,6 +1,5 @@
 package io.github.mdhaarith.airbridge.core
 
-import android.util.Log
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers

@@ -44,8 +44,14 @@ pub struct Reservations(Mutex<HashSet<PathBuf>>);
 impl Reservations {
     fn claim(&self, path: &Path) -> PathBuf {
         let mut names = self.0.lock().unwrap();
-        let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
-        let ext = path.extension().map(|e| format!(".{}", e.to_string_lossy())).unwrap_or_default();
+        let stem = path
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let ext = path
+            .extension()
+            .map(|e| format!(".{}", e.to_string_lossy()))
+            .unwrap_or_default();
         let mut candidate = path.to_path_buf();
         let mut n = 1;
         while names.contains(&candidate) || candidate.exists() {
@@ -86,7 +92,10 @@ impl Drop for UploadGuard {
         let _ = std::fs::remove_file(&self.part);
         {
             let mut transfers = self.app.transfers.lock().unwrap();
-            if let Some(f) = transfers.get_mut(&self.transfer_id).and_then(|t| t.file_mut(&self.file_id)) {
+            if let Some(f) = transfers
+                .get_mut(&self.transfer_id)
+                .and_then(|t| t.file_mut(&self.file_id))
+            {
                 f.status = FileStatus::Failed;
             }
         }
@@ -120,7 +129,10 @@ where
     if !parent.starts_with(&download_dir) {
         return Err(SaveError::Io("invalid file name".into()));
     }
-    let file_name = wanted.file_name().map(|n| n.to_os_string()).unwrap_or_else(|| "file".into());
+    let file_name = wanted
+        .file_name()
+        .map(|n| n.to_os_string())
+        .unwrap_or_else(|| "file".into());
     let target = app.reservations.claim(&parent.join(file_name));
     let part = target.with_file_name(format!(
         ".{}.airbridge-part",
@@ -137,7 +149,10 @@ where
 
     {
         let mut transfers = app.transfers.lock().unwrap();
-        if let Some(f) = transfers.get_mut(transfer_id).and_then(|t| t.file_mut(&dto.id)) {
+        if let Some(f) = transfers
+            .get_mut(transfer_id)
+            .and_then(|t| t.file_mut(&dto.id))
+        {
             f.status = FileStatus::Transferring;
             f.done = 0;
         }
@@ -169,10 +184,17 @@ where
     drop(file);
 
     if received != dto.size {
-        return Err(SaveError::Io(format!("expected {} bytes, received {received}", dto.size)));
+        return Err(SaveError::Io(format!(
+            "expected {} bytes, received {received}",
+            dto.size
+        )));
     }
     if let (Some(hasher), Some(expected)) = (hasher, dto.sha256.as_ref()) {
-        let actual: String = hasher.finalize().iter().map(|b| format!("{b:02x}")).collect();
+        let actual: String = hasher
+            .finalize()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
         if !actual.eq_ignore_ascii_case(expected) {
             return Err(SaveError::ChecksumMismatch);
         }
@@ -191,7 +213,10 @@ where
 
     {
         let mut transfers = app.transfers.lock().unwrap();
-        if let Some(f) = transfers.get_mut(transfer_id).and_then(|t| t.file_mut(&dto.id)) {
+        if let Some(f) = transfers
+            .get_mut(transfer_id)
+            .and_then(|t| t.file_mut(&dto.id))
+        {
             f.status = FileStatus::Done;
             f.done = f.size;
             f.path = Some(target.to_string_lossy().into_owned());
@@ -206,21 +231,32 @@ where
 pub fn finish_if_complete(app: &Arc<App>, transfer_id: &str) {
     let status = {
         let transfers = app.transfers.lock().unwrap();
-        let Some(t) = transfers.get(transfer_id) else { return };
+        let Some(t) = transfers.get(transfer_id) else {
+            return;
+        };
         if t.status.is_final()
-            || t.files.iter().any(|f| matches!(f.status, FileStatus::Queued | FileStatus::Transferring))
+            || t.files
+                .iter()
+                .any(|f| matches!(f.status, FileStatus::Queued | FileStatus::Transferring))
         {
             return;
         }
-        if t.files.iter().all(|f| matches!(f.status, FileStatus::Done | FileStatus::Skipped)) {
+        if t.files
+            .iter()
+            .all(|f| matches!(f.status, FileStatus::Done | FileStatus::Skipped))
+        {
             Status::Done
         } else {
             Status::Failed
         }
     };
     let finished = {
-        let error = (status == Status::Failed).then(|| "Some files could not be received".to_string());
-        app.transfers.lock().unwrap().finish(transfer_id, status, error)
+        let error =
+            (status == Status::Failed).then(|| "Some files could not be received".to_string());
+        app.transfers
+            .lock()
+            .unwrap()
+            .finish(transfer_id, status, error)
     };
     if finished && status == Status::Done {
         app.on_files_received(transfer_id);

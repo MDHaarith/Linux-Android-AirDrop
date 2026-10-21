@@ -29,7 +29,11 @@ use crate::sender::{expand_paths, SendItem};
 const COOKIE: &str = "airbridge_token";
 
 fn bad_request(message: impl Into<String>) -> Response {
-    (StatusCode::BAD_REQUEST, Json(json!({ "message": message.into() }))).into_response()
+    (
+        StatusCode::BAD_REQUEST,
+        Json(json!({ "message": message.into() })),
+    )
+        .into_response()
 }
 
 pub fn router(app: Arc<App>) -> Router {
@@ -61,7 +65,10 @@ pub fn router(app: Arc<App>) -> Router {
         .layer(middleware::from_fn_with_state(app.clone(), auth));
     Router::new()
         .route("/", get(index))
-        .route("/assets/{*path}", get(|UrlPath(path): UrlPath<String>| async move { assets::response(&path) }))
+        .route(
+            "/assets/{*path}",
+            get(|UrlPath(path): UrlPath<String>| async move { assets::response(&path) }),
+        )
         .nest("/api", api)
         .with_state(app)
 }
@@ -75,7 +82,10 @@ fn has_token(app: &App, headers: &HeaderMap) -> bool {
     if expected.is_empty() {
         return false;
     }
-    if let Some(value) = headers.get("x-airbridge-token").and_then(|v| v.to_str().ok()) {
+    if let Some(value) = headers
+        .get("x-airbridge-token")
+        .and_then(|v| v.to_str().ok())
+    {
         return constant_time_eq(value.as_bytes(), expected);
     }
     headers
@@ -83,15 +93,27 @@ fn has_token(app: &App, headers: &HeaderMap) -> bool {
         .iter()
         .filter_map(|v| v.to_str().ok())
         .flat_map(|v| v.split(';'))
-        .filter_map(|pair| pair.trim().strip_prefix(&format!("{COOKIE}=")).map(str::to_string))
+        .filter_map(|pair| {
+            pair.trim()
+                .strip_prefix(&format!("{COOKIE}="))
+                .map(str::to_string)
+        })
         .any(|value| constant_time_eq(value.as_bytes(), expected))
 }
 
 /// Blocks DNS-rebinding: the page must be addressed as localhost.
 fn host_ok(app: &App, headers: &HeaderMap) -> bool {
     let port = app.ui.get().map(|ui| ui.port).unwrap_or(0);
-    let Some(host) = headers.get(header::HOST).and_then(|h| h.to_str().ok()) else { return false };
-    [format!("127.0.0.1:{port}"), format!("localhost:{port}"), format!("[::1]:{port}")].iter().any(|h| h == host)
+    let Some(host) = headers.get(header::HOST).and_then(|h| h.to_str().ok()) else {
+        return false;
+    };
+    [
+        format!("127.0.0.1:{port}"),
+        format!("localhost:{port}"),
+        format!("[::1]:{port}"),
+    ]
+    .iter()
+    .any(|h| h == host)
 }
 
 async fn auth(State(app): State<Arc<App>>, request: Request, next: Next) -> Response {
@@ -109,7 +131,11 @@ struct IndexQuery {
     token: Option<String>,
 }
 
-async fn index(State(app): State<Arc<App>>, headers: HeaderMap, Query(query): Query<IndexQuery>) -> Response {
+async fn index(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    Query(query): Query<IndexQuery>,
+) -> Response {
     if !host_ok(&app, &headers) {
         return (StatusCode::FORBIDDEN, "bad host").into_response();
     }
@@ -286,13 +312,21 @@ async fn stage(State(app): State<Arc<App>>, headers: HeaderMap, body: Body) -> R
     .await;
     match result {
         Ok(size) => {
-            let item = SendItem { path, name: name.clone(), temporary: true };
+            let item = SendItem {
+                path,
+                name: name.clone(),
+                temporary: true,
+            };
             app.staged.lock().unwrap().insert(id.clone(), item);
             Json(json!({ "id": id, "name": name, "size": size })).into_response()
         }
         Err(err) => {
             let _ = tokio::fs::remove_dir_all(&dir).await;
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "message": err.to_string() }))).into_response()
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "message": err.to_string() })),
+            )
+                .into_response()
         }
     }
 }
@@ -334,7 +368,10 @@ struct PathsRequest {
 }
 
 /// From the CLI / file manager: show the files in the window, ready to send.
-async fn stage_paths(State(app): State<Arc<App>>, Json(request): Json<PathsRequest>) -> Json<Value> {
+async fn stage_paths(
+    State(app): State<Arc<App>>,
+    Json(request): Json<PathsRequest>,
+) -> Json<Value> {
     let files = describe_paths(&request.paths);
     app.open_window();
     app.bus.emit("staged", json!({ "files": files }));
@@ -377,12 +414,18 @@ async fn transfer_action(
     let request = body.map(|Json(b)| b).unwrap_or_default();
     let (peer_id, message, path) = {
         let transfers = app.transfers.lock().unwrap();
-        let Some(t) = transfers.get(&id) else { return StatusCode::NOT_FOUND.into_response() };
+        let Some(t) = transfers.get(&id) else {
+            return StatusCode::NOT_FOUND.into_response();
+        };
         let file = match &request.file {
             Some(fid) => t.file(fid),
             None => t.files.iter().find(|f| f.path.is_some()),
         };
-        (t.peer_id.clone(), t.message.clone(), file.and_then(|f| f.path.clone()).map(PathBuf::from))
+        (
+            t.peer_id.clone(),
+            t.message.clone(),
+            file.and_then(|f| f.path.clone()).map(PathBuf::from),
+        )
     };
     let ok = match action.as_str() {
         "accept" => {
@@ -411,7 +454,10 @@ async fn transfer_action(
 }
 
 /// Image preview for the activity list (only files that belong to a transfer).
-async fn preview(State(app): State<Arc<App>>, UrlPath((id, file)): UrlPath<(String, String)>) -> Response {
+async fn preview(
+    State(app): State<Arc<App>>,
+    UrlPath((id, file)): UrlPath<(String, String)>,
+) -> Response {
     let path = {
         let transfers = app.transfers.lock().unwrap();
         transfers
@@ -420,11 +466,23 @@ async fn preview(State(app): State<Arc<App>>, UrlPath((id, file)): UrlPath<(Stri
             .filter(|f| f.file_type.starts_with("image/") && f.size < 64 * 1024 * 1024)
             .and_then(|f| f.path.clone())
     };
-    let Some(path) = path else { return StatusCode::NOT_FOUND.into_response() };
+    let Some(path) = path else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
     match tokio::fs::read(&path).await {
         Ok(bytes) => {
-            let mime = mime_guess::from_path(&path).first_or_octet_stream().essence_str().to_string();
-            ([(header::CONTENT_TYPE, mime), (header::CACHE_CONTROL, "max-age=3600".into())], bytes).into_response()
+            let mime = mime_guess::from_path(&path)
+                .first_or_octet_stream()
+                .essence_str()
+                .to_string();
+            (
+                [
+                    (header::CONTENT_TYPE, mime),
+                    (header::CACHE_CONTROL, "max-age=3600".into()),
+                ],
+                bytes,
+            )
+                .into_response()
         }
         Err(_) => StatusCode::NOT_FOUND.into_response(),
     }
@@ -458,7 +516,11 @@ struct TrustRequest {
     trusted: bool,
 }
 
-async fn trust(State(app): State<Arc<App>>, UrlPath(id): UrlPath<String>, Json(request): Json<TrustRequest>) -> StatusCode {
+async fn trust(
+    State(app): State<Arc<App>>,
+    UrlPath(id): UrlPath<String>,
+    Json(request): Json<TrustRequest>,
+) -> StatusCode {
     app.set_trusted(&id, request.trusted);
     StatusCode::NO_CONTENT
 }
@@ -474,7 +536,8 @@ async fn update_settings(State(app): State<Arc<App>>, Json(changes): Json<Value>
         }
     }
     if changed.contains(&"notifications") || changed.contains(&"webCompanion") {
-        app.bus.emit("companion", json!({ "url": app.companion_url() }));
+        app.bus
+            .emit("companion", json!({ "url": app.companion_url() }));
     }
     Json(app.settings().public_json())
 }
@@ -488,7 +551,9 @@ async fn reset_pairing(State(app): State<Arc<App>>) -> Json<Value> {
 }
 
 async fn qr(State(app): State<Arc<App>>) -> Response {
-    let Some(url) = app.companion_url() else { return StatusCode::NOT_FOUND.into_response() };
+    let Some(url) = app.companion_url() else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
     match qrcode::QrCode::new(url.as_bytes()) {
         Ok(code) => {
             let svg = code
@@ -498,7 +563,14 @@ async fn qr(State(app): State<Arc<App>>) -> Response {
                 .dark_color(qrcode::render::svg::Color("#0b0d17"))
                 .light_color(qrcode::render::svg::Color("#ffffff"))
                 .build();
-            ([(header::CONTENT_TYPE, "image/svg+xml"), (header::CACHE_CONTROL, "no-store")], svg).into_response()
+            (
+                [
+                    (header::CONTENT_TYPE, "image/svg+xml"),
+                    (header::CACHE_CONTROL, "no-store"),
+                ],
+                svg,
+            )
+                .into_response()
         }
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     }

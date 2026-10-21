@@ -111,7 +111,13 @@ impl Registry {
             }
             None => {
                 tracing::info!("Found {} ({ip}, {kind:?})", info.alias);
-                let peer = Peer { info, ip, kind, last_seen: Instant::now(), failures: 0 };
+                let peer = Peer {
+                    info,
+                    ip,
+                    kind,
+                    last_seen: Instant::now(),
+                    failures: 0,
+                };
                 peers.insert(id, peer.clone());
                 (peer, true)
             }
@@ -155,7 +161,7 @@ impl Registry {
 
     pub fn list(&self) -> Vec<Peer> {
         let mut list: Vec<Peer> = self.peers.lock().unwrap().values().cloned().collect();
-        list.sort_by(|a, b| a.info.alias.to_lowercase().cmp(&b.info.alias.to_lowercase()));
+        list.sort_by_key(|p| p.info.alias.to_lowercase());
         list
     }
 
@@ -168,7 +174,10 @@ impl Registry {
         }) {
             return Some(p.clone());
         }
-        let matches: Vec<&Peer> = list.iter().filter(|p| p.info.alias.to_lowercase().contains(&q)).collect();
+        let matches: Vec<&Peer> = list
+            .iter()
+            .filter(|p| p.info.alias.to_lowercase().contains(&q))
+            .collect();
         (matches.len() == 1).then(|| matches[0].clone())
     }
 

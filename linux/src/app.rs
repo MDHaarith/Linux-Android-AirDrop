@@ -118,7 +118,9 @@ impl App {
     }
 
     pub fn ui_url(&self) -> Option<String> {
-        self.ui.get().map(|ui| format!("http://127.0.0.1:{}/?token={}", ui.port, ui.token))
+        self.ui
+            .get()
+            .map(|ui| format!("http://127.0.0.1:{}/?token={}", ui.port, ui.token))
     }
 
     pub fn companion_url(&self) -> Option<String> {
@@ -159,9 +161,25 @@ impl App {
     pub async fn ask_accept(self: &Arc<Self>, id: &str) -> bool {
         let (peer_id, alias, summary_files) = {
             let transfers = self.transfers.lock().unwrap();
-            let Some(t) = transfers.get(id) else { return false };
-            let alias = t.peer.get("alias").and_then(Value::as_str).unwrap_or("A device").to_string();
-            (t.peer_id.clone(), alias, describe_files(&t.files.iter().map(|f| (f.name.as_str(), f.size)).collect::<Vec<_>>()))
+            let Some(t) = transfers.get(id) else {
+                return false;
+            };
+            let alias = t
+                .peer
+                .get("alias")
+                .and_then(Value::as_str)
+                .unwrap_or("A device")
+                .to_string();
+            (
+                t.peer_id.clone(),
+                alias,
+                describe_files(
+                    &t.files
+                        .iter()
+                        .map(|f| (f.name.as_str(), f.size))
+                        .collect::<Vec<_>>(),
+                ),
+            )
         };
         if self.settings().auto_accept_trusted && self.registry.is_trusted(&peer_id) {
             return true;
@@ -179,7 +197,15 @@ impl App {
             Some(tokio::spawn(async move {
                 let answer = app
                     .notifier
-                    .ask(&title, &body, &[("accept", "Accept"), ("decline", "Decline"), ("default", "Show")])
+                    .ask(
+                        &title,
+                        &body,
+                        &[
+                            ("accept", "Accept"),
+                            ("decline", "Decline"),
+                            ("default", "Show"),
+                        ],
+                    )
                     .await;
                 match answer.as_deref() {
                     Some("accept") => {
@@ -212,8 +238,15 @@ impl App {
                 }
             }
         }
-        let _cleanup = Cleanup { app: self, id, question };
-        matches!(tokio::time::timeout(DECISION_TIMEOUT, rx).await, Ok(Ok(true)))
+        let _cleanup = Cleanup {
+            app: self,
+            id,
+            question,
+        };
+        matches!(
+            tokio::time::timeout(DECISION_TIMEOUT, rx).await,
+            Ok(Ok(true))
+        )
     }
 
     /// Answers a pending incoming request. Returns false if none was pending.
@@ -255,19 +288,37 @@ impl App {
 
     // ------------------------------------------------------------- sending
 
-    pub fn send_files(self: &Arc<Self>, peer_query: &str, items: Vec<SendItem>, pin: Option<String>) -> Result<String, String> {
-        let peer = self.registry.get(peer_query).or_else(|| self.registry.find(peer_query)).ok_or("Device not found")?;
+    pub fn send_files(
+        self: &Arc<Self>,
+        peer_query: &str,
+        items: Vec<SendItem>,
+        pin: Option<String>,
+    ) -> Result<String, String> {
+        let peer = self
+            .registry
+            .get(peer_query)
+            .or_else(|| self.registry.find(peer_query))
+            .ok_or("Device not found")?;
         match peer.kind {
             PeerKind::LocalSend => sender::send_files(self, peer, items, pin),
             PeerKind::Web => self.companion.offer(self, &peer, items, None),
         }
     }
 
-    pub fn send_text(self: &Arc<Self>, peer_query: &str, text: String, pin: Option<String>) -> Result<String, String> {
+    pub fn send_text(
+        self: &Arc<Self>,
+        peer_query: &str,
+        text: String,
+        pin: Option<String>,
+    ) -> Result<String, String> {
         if text.is_empty() {
             return Err("Nothing to send".into());
         }
-        let peer = self.registry.get(peer_query).or_else(|| self.registry.find(peer_query)).ok_or("Device not found")?;
+        let peer = self
+            .registry
+            .get(peer_query)
+            .or_else(|| self.registry.find(peer_query))
+            .ok_or("Device not found")?;
         match peer.kind {
             PeerKind::LocalSend => Ok(sender::send_text(self, peer, text, pin)),
             PeerKind::Web => self.companion.offer(self, &peer, Vec::new(), Some(text)),
@@ -290,28 +341,49 @@ impl App {
         let (alias, files) = {
             let transfers = self.transfers.lock().unwrap();
             let Some(t) = transfers.get(id) else { return };
-            let alias = t.peer.get("alias").and_then(Value::as_str).unwrap_or("A device").to_string();
-            let files: Vec<(String, u64, Option<String>)> =
-                t.files.iter().map(|f| (f.name.clone(), f.size, f.path.clone())).collect();
+            let alias = t
+                .peer
+                .get("alias")
+                .and_then(Value::as_str)
+                .unwrap_or("A device")
+                .to_string();
+            let files: Vec<(String, u64, Option<String>)> = t
+                .files
+                .iter()
+                .map(|f| (f.name.clone(), f.size, f.path.clone()))
+                .collect();
             (alias, files)
         };
         tracing::info!("Received {} file(s) from {alias}", files.len());
         if !self.settings().notifications {
             return;
         }
-        let (count, names) = describe_files(&files.iter().map(|(n, s, _)| (n.as_str(), *s)).collect::<Vec<_>>());
-        let first = files.first().and_then(|(_, _, p)| p.clone()).map(PathBuf::from);
+        let (count, names) = describe_files(
+            &files
+                .iter()
+                .map(|(n, s, _)| (n.as_str(), *s))
+                .collect::<Vec<_>>(),
+        );
+        let first = files
+            .first()
+            .and_then(|(_, _, p)| p.clone())
+            .map(PathBuf::from);
         let app = self.clone();
         tokio::spawn(async move {
             app.notifier
-                .notify(&format!("Received {count} from {alias}"), &names, &[("default", "Open"), ("reveal", "Show in folder")], move |action| {
-                    let Some(path) = first else { return };
-                    if action == "reveal" {
-                        tokio::spawn(async move { desktop::reveal_path(&path).await });
-                    } else {
-                        desktop::open_path(&path);
-                    }
-                })
+                .notify(
+                    &format!("Received {count} from {alias}"),
+                    &names,
+                    &[("default", "Open"), ("reveal", "Show in folder")],
+                    move |action| {
+                        let Some(path) = first else { return };
+                        if action == "reveal" {
+                            tokio::spawn(async move { desktop::reveal_path(&path).await });
+                        } else {
+                            desktop::open_path(&path);
+                        }
+                    },
+                )
                 .await;
         });
     }
@@ -320,15 +392,29 @@ impl App {
         let (alias, text, peer_id, web) = {
             let transfers = self.transfers.lock().unwrap();
             let Some(t) = transfers.get(id) else { return };
-            let alias = t.peer.get("alias").and_then(Value::as_str).unwrap_or("A device").to_string();
+            let alias = t
+                .peer
+                .get("alias")
+                .and_then(Value::as_str)
+                .unwrap_or("A device")
+                .to_string();
             let web = t.peer.get("kind").and_then(Value::as_str) == Some("web");
-            (alias, t.message.clone().unwrap_or_default(), t.peer_id.clone(), web)
+            (
+                alias,
+                t.message.clone().unwrap_or_default(),
+                t.peer_id.clone(),
+                web,
+            )
         };
         // Only devices you trust (or your own paired browser) may write to your
         // clipboard; anyone else's text waits for you to press "Copy".
-        let auto_copy = self.settings().copy_received_text && (web || self.registry.is_trusted(&peer_id));
+        let auto_copy =
+            self.settings().copy_received_text && (web || self.registry.is_trusted(&peer_id));
         let notify = self.settings().notifications;
-        self.bus.emit("message", json!({ "id": id, "from": alias, "text": text, "copied": auto_copy }));
+        self.bus.emit(
+            "message",
+            json!({ "id": id, "from": alias, "text": text, "copied": auto_copy }),
+        );
         let app = self.clone();
         tokio::spawn(async move {
             let copied = auto_copy && desktop::copy_text(&text).await;
@@ -337,14 +423,21 @@ impl App {
             }
             let preview: String = text.chars().take(240).collect();
             if copied {
-                app.notifier.notify(&format!("Copied text from {alias}"), &preview, &[], |_| {}).await;
+                app.notifier
+                    .notify(&format!("Copied text from {alias}"), &preview, &[], |_| {})
+                    .await;
             } else {
                 app.notifier
-                    .notify(&format!("Message from {alias}"), &preview, &[("copy", "Copy")], move |action| {
-                        if action == "copy" {
-                            tokio::spawn(async move { desktop::copy_text(&text).await });
-                        }
-                    })
+                    .notify(
+                        &format!("Message from {alias}"),
+                        &preview,
+                        &[("copy", "Copy")],
+                        move |action| {
+                            if action == "copy" {
+                                tokio::spawn(async move { desktop::copy_text(&text).await });
+                            }
+                        },
+                    )
                     .await;
             }
         });
@@ -366,7 +459,11 @@ impl App {
 
 /// ("3 files", "photo.jpg, notes.pdf and 1 more · 12.4 MB")
 pub fn describe_files(files: &[(&str, u64)]) -> (String, String) {
-    let count = if files.len() == 1 { "a file".to_string() } else { format!("{} files", files.len()) };
+    let count = if files.len() == 1 {
+        "a file".to_string()
+    } else {
+        format!("{} files", files.len())
+    };
     let names: Vec<&str> = files.iter().take(2).map(|(n, _)| *n).collect();
     let mut text = names.join(", ");
     if files.len() > 2 {

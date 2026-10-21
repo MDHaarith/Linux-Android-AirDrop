@@ -1,0 +1,16 @@
+[Desktop Entry]
+Type=Application
+Name=AirBridge
+GenericName=Share with your phone
+Comment=AirDrop-style file and text sharing between this computer and your Android phone
+Exec=airbridge
+Icon=airbridge
+Terminal=false
+Categories=Network;FileTransfer;Utility;
+Keywords=airdrop;localsend;quick share;send;phone;android;transfer;
+StartupWMClass=AirBridge
+Actions=show;
+
+[Desktop Action show]
+Name=Show nearby devices
+Exec=airbridge open

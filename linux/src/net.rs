@@ -3,8 +3,19 @@
 use std::net::{IpAddr, Ipv4Addr, UdpSocket};
 
 /// Virtual interfaces that never lead to a phone on the same Wi-Fi.
-const IGNORED_PREFIXES: &[&str] =
-    &["docker", "br-", "veth", "virbr", "vmnet", "vboxnet", "lxc", "cni", "flannel", "tailscale", "zt"];
+const IGNORED_PREFIXES: &[&str] = &[
+    "docker",
+    "br-",
+    "veth",
+    "virbr",
+    "vmnet",
+    "vboxnet",
+    "lxc",
+    "cni",
+    "flannel",
+    "tailscale",
+    "zt",
+];
 
 #[derive(Debug, Clone)]
 pub struct Interface {
@@ -30,7 +41,11 @@ pub fn interfaces() -> Vec<Interface> {
         .into_iter()
         .filter(|i| !i.is_loopback() && !IGNORED_PREFIXES.iter().any(|p| i.name.starts_with(p)))
         .filter_map(|i| match i.addr {
-            if_addrs::IfAddr::V4(v4) => Some(Interface { name: i.name, ip: v4.ip, netmask: v4.netmask }),
+            if_addrs::IfAddr::V4(v4) => Some(Interface {
+                name: i.name,
+                ip: v4.ip,
+                netmask: v4.netmask,
+            }),
             _ => None,
         })
         .filter(|i| !i.ip.is_link_local())
@@ -62,8 +77,16 @@ pub fn scan_targets() -> Vec<Ipv4Addr> {
     let mut hosts = Vec::new();
     for iface in interfaces() {
         // Networks bigger than a /22 are scanned as the /24 around us.
-        let prefix = if iface.prefix_len() < 22 { 24 } else { iface.prefix_len() };
-        let mask = if prefix == 0 { 0 } else { u32::MAX << (32 - prefix) };
+        let prefix = if iface.prefix_len() < 22 {
+            24
+        } else {
+            iface.prefix_len()
+        };
+        let mask = if prefix == 0 {
+            0
+        } else {
+            u32::MAX << (32 - prefix)
+        };
         let network = u32::from(iface.ip) & mask;
         let broadcast = network | !mask;
         for host in (network + 1)..broadcast {
@@ -79,7 +102,10 @@ pub fn scan_targets() -> Vec<Ipv4Addr> {
 /// IPv4-mapped IPv6 addresses (from dual-stack sockets) shown as plain IPv4.
 pub fn canonical(ip: IpAddr) -> IpAddr {
     match ip {
-        IpAddr::V6(v6) => v6.to_ipv4_mapped().map(IpAddr::V4).unwrap_or(IpAddr::V6(v6)),
+        IpAddr::V6(v6) => v6
+            .to_ipv4_mapped()
+            .map(IpAddr::V4)
+            .unwrap_or(IpAddr::V6(v6)),
         v4 => v4,
     }
 }

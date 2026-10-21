@@ -1,0 +1,74 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux:
+    name: Linux app (Rust)
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: linux
+    steps:
+      - uses: actions/checkout@v4
+      - name: System libraries (native window feature)
+        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libxdo-dev
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: linux
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets --locked -- -D warnings
+      - run: cargo clippy --all-targets --locked --features webview -- -D warnings
+      - run: cargo test --locked
+      - run: cargo build --release --locked --features webview
+      - uses: actions/upload-artifact@v4
+        with:
+          name: airbridge-linux-x86_64
+          path: linux/target/release/airbridge
+
+  android:
+    name: Android app + interop with Linux
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: gradle/actions/setup-gradle@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: linux
+      - name: Build the Linux binary for the interop test
+        run: cargo build --locked
+        working-directory: linux
+      - name: Unit, interop and screenshot tests
+        working-directory: android
+        env:
+          AIRBRIDGE_LINUX_BIN: ${{ github.workspace }}/linux/target/debug/airbridge
+        run: ./gradlew --no-daemon testDebugUnitTest verifyPaparazziDebug
+      - name: Build APKs
+        working-directory: android
+        run: ./gradlew --no-daemon assembleDebug assembleRelease
+      - uses: actions/upload-artifact@v4
+        with:
+          name: airbridge-android-apk
+          path: android/app/build/outputs/apk/release/app-release.apk
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: test-reports
+          path: |
+            android/app/build/reports
+            android/app/build/linux-interop.log

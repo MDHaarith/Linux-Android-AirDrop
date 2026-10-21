@@ -69,12 +69,20 @@ impl Discovery {
     pub async fn start(app: Arc<App>) -> Arc<Discovery> {
         let (group, port) = {
             let settings = app.settings();
-            (settings.multicast_group.parse().unwrap_or(Ipv4Addr::new(224, 0, 0, 167)), settings.multicast_port)
+            (
+                settings
+                    .multicast_group
+                    .parse()
+                    .unwrap_or(Ipv4Addr::new(224, 0, 0, 167)),
+                settings.multicast_port,
+            )
         };
         let socket = match Self::bind(group, port) {
             Ok(socket) => Some(Arc::new(socket)),
             Err(err) => {
-                tracing::warn!("Multicast unavailable ({err}); use \"Scan network\" to find devices");
+                tracing::warn!(
+                    "Multicast unavailable ({err}); use \"Scan network\" to find devices"
+                );
                 None
             }
         };
@@ -147,22 +155,33 @@ impl Discovery {
     }
 
     fn on_datagram(self: &Arc<Self>, app: &Arc<App>, data: &[u8], ip: IpAddr) {
-        let Ok(message) = serde_json::from_slice::<MulticastMessage>(data) else { return };
+        let Ok(message) = serde_json::from_slice::<MulticastMessage>(data) else {
+            return;
+        };
         let announce = message.is_announcement();
-        let Ok(info) = message.info.sanitized() else { return };
+        let Ok(info) = message.info.sanitized() else {
+            return;
+        };
         let me = app.me();
         if info.fingerprint.is_empty() || info.fingerprint.eq_ignore_ascii_case(&me.fingerprint) {
             return;
         }
         let ip = net::canonical(ip);
         if announce {
-            if !self.pending.lock().unwrap().insert(info.fingerprint.clone()) {
+            if !self
+                .pending
+                .lock()
+                .unwrap()
+                .insert(info.fingerprint.clone())
+            {
                 return;
             }
             let (app, discovery) = (app.clone(), self.clone());
             tokio::spawn(async move {
                 let fingerprint = info.fingerprint.clone();
-                let confirmed = register_with(&app, ip, info.port, info.is_https(), Some(&fingerprint), 4).await;
+                let confirmed =
+                    register_with(&app, ip, info.port, info.is_https(), Some(&fingerprint), 4)
+                        .await;
                 if confirmed.is_none() {
                     // They cannot be reached over TCP; at least let them find us (UDP answer).
                     let answer = app.me().announcement_json(false).to_string();
@@ -186,7 +205,14 @@ impl Discovery {
                 .filter(|p| p.kind == PeerKind::LocalSend && p.last_seen.elapsed() > STALE_AFTER)
                 .collect();
             let checks = stale.iter().map(|peer| {
-                register_with(app, peer.ip, peer.info.port, peer.info.is_https(), Some(peer.id()), 4)
+                register_with(
+                    app,
+                    peer.ip,
+                    peer.info.port,
+                    peer.info.is_https(),
+                    Some(peer.id()),
+                    4,
+                )
             });
             let results = futures_util::future::join_all(checks).await;
             for (peer, result) in stale.iter().zip(results) {
@@ -217,7 +243,9 @@ impl Discovery {
                 tasks.push(tokio::spawn(async move {
                     let _permit = semaphore.acquire().await.ok()?;
                     for https in [true, false] {
-                        if let Some(info) = register_with(&app, IpAddr::V4(ip), port, https, None, 2).await {
+                        if let Some(info) =
+                            register_with(&app, IpAddr::V4(ip), port, https, None, 2).await
+                        {
                             return Some(info);
                         }
                     }
@@ -230,9 +258,13 @@ impl Discovery {
             .into_iter()
             .filter(|r| matches!(r, Ok(Some(_))))
             .count();
-        tracing::info!("Network scan found {found} device(s) in {:.1}s", started.elapsed().as_secs_f32());
+        tracing::info!(
+            "Network scan found {found} device(s) in {:.1}s",
+            started.elapsed().as_secs_f32()
+        );
         self.scanning.store(false, Ordering::SeqCst);
-        app.bus.emit("scan", json!({ "running": false, "found": found }));
+        app.bus
+            .emit("scan", json!({ "running": false, "found": found }));
         found
     }
 }
@@ -246,7 +278,12 @@ pub async fn register_with(
     expected_fingerprint: Option<&str>,
     timeout_secs: u64,
 ) -> Option<DeviceInfo> {
-    let target = Target { ip, port, https, fingerprint: expected_fingerprint.map(str::to_string) };
+    let target = Target {
+        ip,
+        port,
+        https,
+        fingerprint: expected_fingerprint.map(str::to_string),
+    };
     let me = app.me();
     let options = Options {
         connect_timeout: Duration::from_secs(timeout_secs),

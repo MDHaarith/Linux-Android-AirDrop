@@ -38,7 +38,9 @@ pub fn run(url: &str) -> Result<()> {
     let webview = {
         use tao::platform::unix::WindowExtUnix;
         use wry::WebViewBuilderExtUnix;
-        let vbox = window.default_vbox().ok_or_else(|| anyhow::anyhow!("no GTK container"))?;
+        let vbox = window
+            .default_vbox()
+            .ok_or_else(|| anyhow::anyhow!("no GTK container"))?;
         builder.build_gtk(vbox)?
     };
     #[cfg(not(target_os = "linux"))]
@@ -47,10 +49,15 @@ pub fn run(url: &str) -> Result<()> {
     event_loop.run(move |event, _, control_flow| {
         *control_flow = ControlFlow::Wait;
         match event {
-            Event::WindowEvent { event: WindowEvent::CloseRequested, .. } => *control_flow = ControlFlow::Exit,
+            Event::WindowEvent {
+                event: WindowEvent::CloseRequested,
+                ..
+            } => *control_flow = ControlFlow::Exit,
             Event::UserEvent(UserEvent::Dropped(paths)) => {
                 let json = serde_json::to_string(&paths).unwrap_or_else(|_| "[]".into());
-                let _ = webview.evaluate_script(&format!("window.airbridgeNativeDrop && window.airbridgeNativeDrop({json})"));
+                let _ = webview.evaluate_script(&format!(
+                    "window.airbridgeNativeDrop && window.airbridgeNativeDrop({json})"
+                ));
             }
             _ => {}
         }

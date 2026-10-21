@@ -175,16 +175,26 @@ impl FileDto {
     pub fn for_path(path: &Path, name: &str) -> std::io::Result<Self> {
         let meta = std::fs::metadata(path)?;
         let iso = |t: std::io::Result<std::time::SystemTime>| {
-            t.ok().map(|t| chrono::DateTime::<chrono::Utc>::from(t).format("%Y-%m-%dT%H:%M:%SZ").to_string())
+            t.ok().map(|t| {
+                chrono::DateTime::<chrono::Utc>::from(t)
+                    .format("%Y-%m-%dT%H:%M:%SZ")
+                    .to_string()
+            })
         };
         Ok(Self {
             id: uuid::Uuid::new_v4().to_string(),
             file_name: name.to_string(),
             size: meta.len(),
-            file_type: mime_guess::from_path(path).first_or_octet_stream().essence_str().to_string(),
+            file_type: mime_guess::from_path(path)
+                .first_or_octet_stream()
+                .essence_str()
+                .to_string(),
             sha256: None,
             preview: None,
-            metadata: Some(FileMetadata { modified: iso(meta.modified()), accessed: iso(meta.accessed()) }),
+            metadata: Some(FileMetadata {
+                modified: iso(meta.modified()),
+                accessed: iso(meta.accessed()),
+            }),
         })
     }
 
@@ -232,7 +242,11 @@ pub fn safe_relative_path(file_name: &str) -> PathBuf {
                 .take(255)
                 .collect();
             let cleaned = cleaned.trim().trim_start_matches(['.', ' ']).to_string();
-            out.push(if cleaned.is_empty() { "_".to_string() } else { cleaned });
+            out.push(if cleaned.is_empty() {
+                "_".to_string()
+            } else {
+                cleaned
+            });
         }
     }
     if out.as_os_str().is_empty() {
@@ -266,8 +280,10 @@ mod tests {
 
     #[test]
     fn parses_multicast_with_defaults() {
-        let msg: MulticastMessage =
-            serde_json::from_str(r#"{"alias":"Nice Orange","fingerprint":"x","announcement":true}"#).unwrap();
+        let msg: MulticastMessage = serde_json::from_str(
+            r#"{"alias":"Nice Orange","fingerprint":"x","announcement":true}"#,
+        )
+        .unwrap();
         assert!(msg.is_announcement());
         assert_eq!(msg.info.port, 53317);
         assert_eq!(msg.info.protocol, "https");
@@ -283,11 +299,23 @@ mod tests {
 
     #[test]
     fn unsafe_names_are_neutralized() {
-        assert_eq!(safe_relative_path("../../etc/passwd"), PathBuf::from("etc/passwd"));
-        assert_eq!(safe_relative_path("/abs/file.txt"), PathBuf::from("abs/file.txt"));
-        assert_eq!(safe_relative_path("..\\win\\x.exe"), PathBuf::from("win/x.exe"));
+        assert_eq!(
+            safe_relative_path("../../etc/passwd"),
+            PathBuf::from("etc/passwd")
+        );
+        assert_eq!(
+            safe_relative_path("/abs/file.txt"),
+            PathBuf::from("abs/file.txt")
+        );
+        assert_eq!(
+            safe_relative_path("..\\win\\x.exe"),
+            PathBuf::from("win/x.exe")
+        );
         assert_eq!(safe_relative_path(".bashrc"), PathBuf::from("bashrc"));
         assert_eq!(safe_relative_path(""), PathBuf::from("file"));
-        assert_eq!(safe_relative_path("Album/photo.jpg"), PathBuf::from("Album/photo.jpg"));
+        assert_eq!(
+            safe_relative_path("Album/photo.jpg"),
+            PathBuf::from("Album/photo.jpg")
+        );
     }
 }

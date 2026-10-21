@@ -3,6 +3,7 @@ package io.github.mdhaarith.airbridge.core
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import org.junit.After
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
@@ -19,7 +20,7 @@ import kotlin.random.Random
  * End-to-end test of the Android networking core against the real Linux app.
  *
  * Runs only when AIRBRIDGE_LINUX_BIN points to the `airbridge` binary:
- *   AIRBRIDGE_LINUX_BIN=../linux/target/debug/airbridge ./gradlew testDebugUnitTest
+ *   AIRBRIDGE_LINUX_BIN="$PWD/../linux/target/debug/airbridge" ./gradlew testDebugUnitTest
  *
  * It exercises multicast discovery, the mutual-TLS register handshake in both
  * directions, files and text both ways, trust-based auto-accept and declining.
@@ -90,8 +91,15 @@ class LinuxInteropTest {
         engine.settings.update { it.copy(port = 54417, trusted = setOf(linuxFp)) }
         engine.start()
 
-        // 1. Discovery: multicast announcement + mutual-TLS register.
-        val laptop = withTimeout(20_000) { engine.peers.first { list -> list.any { it.id == linuxFp } } }.first { it.id == linuxFp }
+        // 1. Discovery: multicast announcement + mutual-TLS register. Some CI
+        //    networks filter multicast; then fall back to a direct register,
+        //    which is what "Scan network" does.
+        val viaMulticast = withTimeoutOrNull(12_000) { engine.peers.first { list -> list.any { it.id == linuxFp } } } != null
+        if (!viaMulticast) {
+            println("multicast unavailable here; registering directly")
+            engine.discovery!!.registerWith("127.0.0.1", 54317, true, linuxFp, 4_000)
+        }
+        val laptop = withTimeout(10_000) { engine.peers.first { list -> list.any { it.id == linuxFp } } }.first { it.id == linuxFp }
         assertEquals("Linux Test", laptop.alias)
 
         // 2. Phone -> Linux: a file (Linux auto-accepts trusted devices).

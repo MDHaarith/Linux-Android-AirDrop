@@ -51,7 +51,11 @@ pub type ByteStream = Pin<Box<dyn Stream<Item = std::io::Result<Bytes>> + Send>>
 pub enum Body {
     Empty,
     Json(Vec<u8>),
-    Stream { len: u64, content_type: String, stream: ByteStream },
+    Stream {
+        len: u64,
+        content_type: String,
+        stream: ByteStream,
+    },
 }
 
 impl Body {
@@ -91,7 +95,10 @@ pub struct Options {
 
 impl Default for Options {
     fn default() -> Self {
-        Self { connect_timeout: Duration::from_secs(5), response_timeout: Some(Duration::from_secs(30)) }
+        Self {
+            connect_timeout: Duration::from_secs(5),
+            response_timeout: Some(Duration::from_secs(30)),
+        }
     }
 }
 
@@ -106,10 +113,13 @@ pub async fn request(
     body: Body,
     options: Options,
 ) -> Result<Response, PeerError> {
-    let tcp = timeout(options.connect_timeout, TcpStream::connect((target.ip, target.port)))
-        .await
-        .map_err(|_| PeerError::Connect("timed out".into()))?
-        .map_err(|e| PeerError::Connect(e.to_string()))?;
+    let tcp = timeout(
+        options.connect_timeout,
+        TcpStream::connect((target.ip, target.port)),
+    )
+    .await
+    .map_err(|_| PeerError::Connect("timed out".into()))?
+    .map_err(|e| PeerError::Connect(e.to_string()))?;
     let _ = tcp.set_nodelay(true);
 
     let (io, peer_fingerprint): (Box<dyn Io>, Option<String>) = if target.https {
@@ -126,7 +136,12 @@ pub async fn request(
                     PeerError::Connect(text)
                 }
             })?;
-        let fp = tls.get_ref().1.peer_certificates().and_then(|c| c.first()).map(|c| fingerprint(c));
+        let fp = tls
+            .get_ref()
+            .1
+            .peer_certificates()
+            .and_then(|c| c.first())
+            .map(|c| fingerprint(c));
         (Box::new(tls), fp)
     } else {
         (Box::new(tcp), None)
@@ -144,35 +159,57 @@ pub async fn request(
         .method(method)
         .uri(path_and_query)
         .header("host", host)
-        .header("user-agent", concat!("AirBridge/", env!("CARGO_PKG_VERSION")))
+        .header(
+            "user-agent",
+            concat!("AirBridge/", env!("CARGO_PKG_VERSION")),
+        )
         .header("accept", "*/*");
     let request = match body {
         Body::Empty => builder
             .header("content-length", "0")
-            .body(UnsyncBoxBody::new(Full::new(Bytes::new()).map_err(|never| match never {}))),
+            .body(UnsyncBoxBody::new(
+                Full::new(Bytes::new()).map_err(|never| match never {}),
+            )),
         Body::Json(bytes) => builder
             .header("content-type", "application/json")
             .header("content-length", bytes.len().to_string())
-            .body(UnsyncBoxBody::new(Full::new(Bytes::from(bytes)).map_err(|never| match never {}))),
-        Body::Stream { len, content_type, stream } => builder
+            .body(UnsyncBoxBody::new(
+                Full::new(Bytes::from(bytes)).map_err(|never| match never {}),
+            )),
+        Body::Stream {
+            len,
+            content_type,
+            stream,
+        } => builder
             .header("content-type", content_type)
             .header("content-length", len.to_string())
-            .body(UnsyncBoxBody::new(StreamBody::new(stream.map_ok(Frame::data)))),
+            .body(UnsyncBoxBody::new(StreamBody::new(
+                stream.map_ok(Frame::data),
+            ))),
     }
     .map_err(|e| PeerError::Protocol(e.to_string()))?;
 
     let exchange = async {
-        let response = sender.send_request(request).await.map_err(|e| PeerError::Connect(e.to_string()))?;
+        let response = sender
+            .send_request(request)
+            .await
+            .map_err(|e| PeerError::Connect(e.to_string()))?;
         let status = response.status().as_u16();
         let body = Limited::new(response.into_body(), MAX_RESPONSE)
             .collect()
             .await
             .map_err(|e| PeerError::Protocol(e.to_string()))?
             .to_bytes();
-        Ok(Response { status, body, peer_fingerprint })
+        Ok(Response {
+            status,
+            body,
+            peer_fingerprint,
+        })
     };
     match options.response_timeout {
-        Some(limit) => timeout(limit, exchange).await.map_err(|_| PeerError::Timeout)?,
+        Some(limit) => timeout(limit, exchange)
+            .await
+            .map_err(|_| PeerError::Timeout)?,
         None => exchange.await,
     }
 }

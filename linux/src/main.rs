@@ -18,9 +18,9 @@ mod protocol;
 mod receiver;
 mod sender;
 mod storage;
+mod transfers;
 #[cfg(feature = "tray")]
 mod tray;
-mod transfers;
 mod ui;
 #[cfg(feature = "webview")]
 mod window;
@@ -46,7 +46,11 @@ use crate::app::{human_size, App, UiInfo};
 use crate::discovery::Discovery;
 
 #[derive(Parser)]
-#[command(name = "airbridge", version, about = "AirDrop-style file & text sharing between Linux and Android")]
+#[command(
+    name = "airbridge",
+    version,
+    about = "AirDrop-style file & text sharing between Linux and Android"
+)]
 struct Cli {
     /// Start the service without opening the window (for autostart).
     #[arg(long, global = true)]
@@ -109,7 +113,10 @@ fn instance_path() -> PathBuf {
 fn init_logging() {
     let filter = tracing_subscriber::EnvFilter::try_from_env("AIRBRIDGE_LOG")
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info,zbus=warn,tracing=warn"));
-    tracing_subscriber::fmt().with_env_filter(filter).with_target(false).init();
+    tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_target(false)
+        .init();
 }
 
 fn main() -> ExitCode {
@@ -175,7 +182,11 @@ async fn run(cli: Cli) -> Result<ExitCode> {
                     p["deviceModel"].as_str().unwrap_or(""),
                     p["ip"].as_str().unwrap_or(""),
                     p["kind"].as_str().unwrap_or(""),
-                    if p["trusted"].as_bool() == Some(true) { " ★" } else { "" },
+                    if p["trusted"].as_bool() == Some(true) {
+                        " ★"
+                    } else {
+                        ""
+                    },
                 );
             }
             Ok(ExitCode::SUCCESS)
@@ -208,7 +219,10 @@ async fn bind(port: u16, attempts: u16, host: &str) -> Result<(TcpListener, u16)
             Err(err) => last_error = Some(err),
         }
     }
-    Err(anyhow!("cannot listen on {host}:{port}: {}", last_error.map(|e| e.to_string()).unwrap_or_default()))
+    Err(anyhow!(
+        "cannot listen on {host}:{port}: {}",
+        last_error.map(|e| e.to_string()).unwrap_or_default()
+    ))
 }
 
 fn listener_port(listener: &TcpListener) -> Result<u16> {
@@ -232,7 +246,10 @@ async fn serve(open_window: bool) -> Result<ExitCode> {
     // LocalSend API (HTTPS) — what other devices talk to.
     let (listener, port) = bind(settings.port, 10, "0.0.0.0").await?;
     if port != settings.port {
-        tracing::warn!("Port {} is busy (is LocalSend running?); using {port}", settings.port);
+        tracing::warn!(
+            "Port {} is busy (is LocalSend running?); using {port}",
+            settings.port
+        );
     }
     app.port.store(port, Ordering::Relaxed);
     let tls = settings.https.then(|| app.identity.server_config());
@@ -248,8 +265,15 @@ async fn serve(open_window: bool) -> Result<ExitCode> {
         Err(_) => bind(0, 1, "127.0.0.1").await?,
     };
     let token = Alphanumeric.sample_string(&mut rand::thread_rng(), 32);
-    let _ = app.ui.set(UiInfo { port: ui_port, token: token.clone() });
-    let instance = Instance { port: ui_port, token, pid: std::process::id() };
+    let _ = app.ui.set(UiInfo {
+        port: ui_port,
+        token: token.clone(),
+    });
+    let instance = Instance {
+        port: ui_port,
+        token,
+        pid: std::process::id(),
+    };
     config::write_private(&instance_path(), &serde_json::to_vec(&instance)?)?;
     let ui_router = ui::router(app.clone());
     tokio::spawn(async move {
@@ -340,9 +364,15 @@ async fn ensure_running() -> Result<bool> {
     bail!("the AirBridge service did not start (run `airbridge daemon` to see why)")
 }
 
-async fn request(instance: &Instance, method: Method, path: &str, body: Option<Value>) -> Result<(u16, Value)> {
+async fn request(
+    instance: &Instance,
+    method: Method,
+    path: &str,
+    body: Option<Value>,
+) -> Result<(u16, Value)> {
     let stream = tokio::net::TcpStream::connect(("127.0.0.1", instance.port)).await?;
-    let (mut sender, connection) = hyper::client::conn::http1::handshake(TokioIo::new(stream)).await?;
+    let (mut sender, connection) =
+        hyper::client::conn::http1::handshake(TokioIo::new(stream)).await?;
     tokio::spawn(connection);
     let payload = body.map(|b| b.to_string()).unwrap_or_default();
     let request = Request::builder()
@@ -355,7 +385,10 @@ async fn request(instance: &Instance, method: Method, path: &str, body: Option<V
     let response = sender.send_request(request).await?;
     let status = response.status().as_u16();
     let bytes = response.into_body().collect().await?.to_bytes();
-    Ok((status, serde_json::from_slice(&bytes).unwrap_or(Value::Null)))
+    Ok((
+        status,
+        serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+    ))
 }
 
 async fn api(method: Method, path: &str, body: Option<Value>) -> Result<(u16, Value)> {
@@ -370,10 +403,18 @@ async fn wait_for_device(query: &str) -> Result<String> {
         let (_, state) = api(Method::GET, "/api/state", None).await?;
         let peers = state["peers"].as_array().cloned().unwrap_or_default();
         let exact = peers.iter().find(|p| {
-            ["id", "alias", "ip"].iter().any(|k| p[*k].as_str().is_some_and(|v| v.to_lowercase() == q))
+            ["id", "alias", "ip"]
+                .iter()
+                .any(|k| p[*k].as_str().is_some_and(|v| v.to_lowercase() == q))
         });
-        let partial: Vec<&Value> =
-            peers.iter().filter(|p| p["alias"].as_str().is_some_and(|a| a.to_lowercase().contains(&q))).collect();
+        let partial: Vec<&Value> = peers
+            .iter()
+            .filter(|p| {
+                p["alias"]
+                    .as_str()
+                    .is_some_and(|a| a.to_lowercase().contains(&q))
+            })
+            .collect();
         if let Some(p) = exact.or((partial.len() == 1).then(|| partial[0])) {
             return Ok(p["id"].as_str().unwrap_or_default().to_string());
         }
@@ -396,7 +437,12 @@ async fn send(paths: Vec<PathBuf>, to: Option<String>, pin: Option<String>) -> R
     ensure_running().await?;
     match to {
         None => {
-            api(Method::POST, "/api/stage-paths", Some(json!({ "paths": paths }))).await?;
+            api(
+                Method::POST,
+                "/api/stage-paths",
+                Some(json!({ "paths": paths })),
+            )
+            .await?;
             println!("Pick a device in the AirBridge window.");
             Ok(ExitCode::SUCCESS)
         }
@@ -411,27 +457,47 @@ async fn send(paths: Vec<PathBuf>, to: Option<String>, pin: Option<String>) -> R
 /// Prints the progress of a transfer started through the API until it ends.
 async fn follow((status, response): (u16, Value)) -> Result<ExitCode> {
     if status != 200 {
-        bail!("{}", response["message"].as_str().unwrap_or("request failed"));
+        bail!(
+            "{}",
+            response["message"].as_str().unwrap_or("request failed")
+        );
     }
     let id = response["id"].as_str().unwrap_or_default().to_string();
     let mut announced_wait = false;
     loop {
         let (_, t) = api(Method::GET, &format!("/api/transfers/{id}"), None).await?;
         let status = t["status"].as_str().unwrap_or("failed");
-        let (done, total) = (t["done"].as_u64().unwrap_or(0), t["total"].as_u64().unwrap_or(0));
+        let (done, total) = (
+            t["done"].as_u64().unwrap_or(0),
+            t["total"].as_u64().unwrap_or(0),
+        );
         match status {
             "waiting" if !announced_wait => {
-                eprintln!("Waiting for {} to accept…", t["peer"]["alias"].as_str().unwrap_or("the device"));
+                eprintln!(
+                    "Waiting for {} to accept…",
+                    t["peer"]["alias"].as_str().unwrap_or("the device")
+                );
                 announced_wait = true;
             }
             "transferring" => {
-                let pct = if total > 0 { done * 100 / total } else { 0 };
-                let bar: String = (0..30).map(|i| if i * 100 / 30 < pct { '█' } else { '░' }).collect();
-                eprint!("\r{bar} {pct:>3}%  {} / {}  {}/s   ", human_size(done), human_size(total), human_size(t["speed"].as_f64().unwrap_or(0.0) as u64));
+                let pct = (done * 100).checked_div(total).unwrap_or(0);
+                let bar: String = (0..30)
+                    .map(|i| if i * 100 / 30 < pct { '█' } else { '░' })
+                    .collect();
+                eprint!(
+                    "\r{bar} {pct:>3}%  {} / {}  {}/s   ",
+                    human_size(done),
+                    human_size(total),
+                    human_size(t["speed"].as_f64().unwrap_or(0.0) as u64)
+                );
                 let _ = std::io::stderr().flush();
             }
             "done" => {
-                eprintln!("\r✓ Sent to {}{}", t["peer"]["alias"].as_str().unwrap_or("device"), " ".repeat(50));
+                eprintln!(
+                    "\r✓ Sent to {}{}",
+                    t["peer"]["alias"].as_str().unwrap_or("device"),
+                    " ".repeat(50)
+                );
                 return Ok(ExitCode::SUCCESS);
             }
             "declined" | "cancelled" | "failed" => {

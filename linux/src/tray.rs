@@ -35,7 +35,11 @@ impl ksni::Tray for AirBridgeTray {
     fn tool_tip(&self) -> ksni::ToolTip {
         ksni::ToolTip {
             title: "AirBridge".into(),
-            description: format!("Visible as “{}” · {} device(s) nearby", self.alias, self.peers.len()),
+            description: format!(
+                "Visible as “{}” · {} device(s) nearby",
+                self.alias,
+                self.peers.len()
+            ),
             ..Default::default()
         }
     }
@@ -46,7 +50,12 @@ impl ksni::Tray for AirBridgeTray {
 
     fn menu(&self) -> Vec<MenuItem<Self>> {
         let send_clipboard: Vec<MenuItem<Self>> = if self.peers.is_empty() {
-            vec![StandardItem { label: "No devices nearby".into(), enabled: false, ..Default::default() }.into()]
+            vec![StandardItem {
+                label: "No devices nearby".into(),
+                enabled: false,
+                ..Default::default()
+            }
+            .into()]
         } else {
             self.peers
                 .iter()
@@ -57,7 +66,9 @@ impl ksni::Tray for AirBridgeTray {
                         activate: Box::new(move |tray: &mut Self| {
                             let (app, id) = (tray.app.clone(), id.clone());
                             tokio::spawn(async move {
-                                if let Some(text) = desktop::read_clipboard().await.filter(|t| !t.is_empty()) {
+                                if let Some(text) =
+                                    desktop::read_clipboard().await.filter(|t| !t.is_empty())
+                                {
                                     let _ = app.send_text(&id, text, None);
                                 }
                             });
@@ -76,7 +87,12 @@ impl ksni::Tray for AirBridgeTray {
                 ..Default::default()
             }
             .into(),
-            SubMenu { label: "Send clipboard to".into(), submenu: send_clipboard, ..Default::default() }.into(),
+            SubMenu {
+                label: "Send clipboard to".into(),
+                submenu: send_clipboard,
+                ..Default::default()
+            }
+            .into(),
             StandardItem {
                 label: "Open received files".into(),
                 activate: Box::new(|tray: &mut Self| {
@@ -87,7 +103,12 @@ impl ksni::Tray for AirBridgeTray {
             }
             .into(),
             MenuItem::Separator,
-            StandardItem { label: format!("Visible as “{}”", self.alias), enabled: false, ..Default::default() }.into(),
+            StandardItem {
+                label: format!("Visible as “{}”", self.alias),
+                enabled: false,
+                ..Default::default()
+            }
+            .into(),
             MenuItem::Separator,
             StandardItem {
                 label: "Quit".into(),
@@ -124,11 +145,21 @@ fn icon(size: i32) -> ksni::Icon {
                 green = 255;
                 blue = 255;
             }
-            let alpha = if r <= 0.96 { 255 } else if r <= 1.0 { ((1.0 - r) / 0.04 * 255.0) as u8 } else { 0 };
+            let alpha = if r <= 0.96 {
+                255
+            } else if r <= 1.0 {
+                ((1.0 - r) / 0.04 * 255.0) as u8
+            } else {
+                0
+            };
             data.extend_from_slice(&[alpha, red, green, blue]);
         }
     }
-    ksni::Icon { width: size, height: size, data }
+    ksni::Icon {
+        width: size,
+        height: size,
+        data,
+    }
 }
 
 fn peers(app: &App) -> Vec<(String, String)> {
@@ -142,7 +173,11 @@ fn peers(app: &App) -> Vec<(String, String)> {
 
 pub fn spawn(app: Arc<App>) {
     tokio::spawn(async move {
-        let tray = AirBridgeTray { app: app.clone(), peers: peers(&app), alias: app.me().alias };
+        let tray = AirBridgeTray {
+            app: app.clone(),
+            peers: peers(&app),
+            alias: app.me().alias,
+        };
         let handle = match tray.spawn().await {
             Ok(handle) => handle,
             Err(err) => {
