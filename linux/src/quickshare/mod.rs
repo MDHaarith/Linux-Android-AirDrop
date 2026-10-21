@@ -5,6 +5,7 @@
 //! Only the Wi-Fi LAN medium is implemented: devices find each other with
 //! mDNS and talk over TCP, end-to-end encrypted with UKEY2 + SecureMessage.
 
+mod ble;
 mod crypto;
 mod inbound;
 mod link;
@@ -15,10 +16,13 @@ mod wire;
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use anyhow::{anyhow, Result};
 use mdns_sd::{IfKind, ServiceDaemon, ServiceEvent, ServiceInfo};
 use tokio::net::TcpListener;
+use tokio::sync::watch;
+use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
 use crate::app::App;
@@ -28,6 +32,9 @@ use crate::protocol::DeviceInfo;
 pub use outbound::{send_files, send_text};
 use wire::{DeviceKind, EndpointInfo};
 
+/// How long phones are asked to stay visible after each wake-up.
+const WAKE_WINDOW: Duration = Duration::from_secs(60);
+
 pub struct Service {
     /// Identifies this computer to phones for as long as the service runs.
     pub endpoint_id: [u8; 4],
@@ -35,6 +42,7 @@ pub struct Service {
     daemon: ServiceDaemon,
     fullname: Mutex<Option<String>>,
     stop: CancellationToken,
+    wake: watch::Sender<Option<Instant>>,
 }
 
 impl Service {
@@ -52,6 +60,7 @@ impl Service {
             daemon,
             fullname: Mutex::new(None),
             stop: CancellationToken::new(),
+            wake: watch::Sender::new(None),
         });
         service.advertise(&app.settings().alias)?;
         tokio::spawn(accept_loop(app.clone(), listener, service.stop.clone()));
@@ -61,6 +70,7 @@ impl Service {
             }
             Err(err) => tracing::warn!("Cannot look for Quick Share devices: {err}"),
         }
+        tokio::spawn(beacon_loop(service.clone(), service.wake.subscribe()));
         tracing::info!("Quick Share: visible to Android phones on port {port}");
         Ok(service)
     }
@@ -88,6 +98,19 @@ impl Service {
         self.daemon.register(record)?;
         *self.fullname.lock().unwrap() = Some(fullname);
         Ok(())
+    }
+
+    /// Asks nearby phones (over Bluetooth) to show up as send targets for
+    /// the next minute. Called when the user shows intent to share.
+    pub fn wake_phones(&self) {
+        let until = Some(Instant::now() + WAKE_WINDOW);
+        self.wake.send_if_modified(|deadline| {
+            let later = until > *deadline;
+            if later {
+                *deadline = until;
+            }
+            later
+        });
     }
 
     pub fn stop(&self) {
@@ -122,6 +145,58 @@ async fn accept_loop(app: Arc<App>, listener: TcpListener, stop: CancellationTok
                 tracing::info!("Quick Share connection from {addr} ended: {err:#}");
             }
         });
+    }
+}
+
+/// Broadcasts the Bluetooth "nearby sharing" advertisement until the wake
+/// deadline passes. Without Bluetooth, phones show up only while their
+/// Quick Share "receive" screen is open.
+async fn beacon_loop(service: Arc<Service>, mut wake: watch::Receiver<Option<Instant>>) {
+    let mut beacon: Option<ble::Beacon> = None;
+    let mut retry_after: Option<Instant> = None;
+    loop {
+        let deadline = *wake.borrow_and_update();
+        let now = Instant::now();
+        let active = deadline.is_some_and(|until| until > now);
+        if active && beacon.is_none() && retry_after.is_none_or(|t| t <= now) {
+            let created = async { ble::Beacon::new(zbus::Connection::system().await?).await };
+            match created.await {
+                Ok(created) => beacon = Some(created),
+                Err(err) => {
+                    tracing::info!(
+                        "Quick Share: cannot wake nearby phones over Bluetooth: {err:#}"
+                    );
+                    retry_after = Some(now + Duration::from_secs(300));
+                }
+            }
+        }
+        if let Some(current) = beacon.as_mut() {
+            let result = if active {
+                current.start().await
+            } else {
+                current.stop().await;
+                Ok(())
+            };
+            if let Err(err) = result {
+                tracing::info!("Quick Share: Bluetooth advertisement failed: {err:#}");
+                beacon = None;
+                retry_after = Some(now + Duration::from_secs(60));
+            }
+        }
+        let sleep = async {
+            match deadline {
+                Some(until) if active => tokio::time::sleep_until(until).await,
+                _ => std::future::pending().await,
+            }
+        };
+        tokio::select! {
+            _ = service.stop.cancelled() => break,
+            _ = sleep => {}
+            changed = wake.changed() => if changed.is_err() { break },
+        }
+    }
+    if let Some(mut beacon) = beacon {
+        beacon.stop().await;
     }
 }
 

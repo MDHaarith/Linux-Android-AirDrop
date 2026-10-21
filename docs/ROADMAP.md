@@ -9,13 +9,14 @@ the share sheet on the phone and from anywhere on the desktop.
 A stock Android phone shares to the laptop from its built-in Quick Share
 sheet, with no app installed.
 
-- [x] Vendored Nearby protobufs (Chromium, BSD) + generated prost code
+- [x] Vendored Nearby protobufs (Google, Apache-2.0) + generated prost code
 - [x] UKEY2 handshake (P-256), SecureMessage (AES-256-CBC + HMAC-SHA256), PIN
 - [x] mDNS advertisement `_FC9F5ED42C8A._tcp` with endpoint info
 - [x] Inbound: files, text, URLs, Wi-Fi credentials (shown, not applied)
 - [x] Transfers show up in the same UI, notifications and history as LocalSend ones
 - [x] Outbound: discover phones in receive mode, send files and text
-- [ ] BLE "someone is sharing" trigger via BlueZ so phones start advertising
+- [x] BLE "someone is sharing" trigger via BlueZ so phones start advertising
+      (contract-tested against a fake BlueZ; not yet tried on real hardware)
 - [x] Settings: Quick Share on/off, visibility, device name
 - [x] Tests: crypto known answers, inbound/outbound loopback through the
       real code paths

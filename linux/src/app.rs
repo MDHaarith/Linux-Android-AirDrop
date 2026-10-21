@@ -482,6 +482,13 @@ impl App {
         });
     }
 
+    /// Nearby Android phones show up for Quick Share (see quickshare::ble).
+    pub fn wake_phones(&self) {
+        if let Some(service) = self.quick_share.lock().unwrap().as_ref() {
+            service.wake_phones();
+        }
+    }
+
     // --------------------------------------------------------------- window
 
     pub fn open_window(&self) {

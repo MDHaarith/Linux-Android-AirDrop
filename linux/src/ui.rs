@@ -172,6 +172,8 @@ async fn events(ws: WebSocketUpgrade, State(app): State<Arc<App>>) -> Response {
 
 async fn event_stream(app: Arc<App>, socket: WebSocket) {
     app.ui_clients.fetch_add(1, Ordering::Relaxed);
+    // Opening the window means "I want to share": wake nearby phones.
+    app.wake_phones();
     let mut events = app.bus.subscribe();
     let (mut sink, mut incoming) = socket.split();
     let state = json!({ "event": "state", "data": app.state_json() }).to_string();
@@ -283,6 +285,7 @@ fn percent_decode(input: &str) -> String {
 /// Receives a file dropped into the window (browsers do not reveal paths) and
 /// keeps it in the cache until it is sent.
 async fn stage(State(app): State<Arc<App>>, headers: HeaderMap, body: Body) -> Response {
+    app.wake_phones();
     let name = headers
         .get("x-file-name")
         .and_then(|v| v.to_str().ok())
@@ -373,6 +376,7 @@ async fn stage_paths(
     Json(request): Json<PathsRequest>,
 ) -> Json<Value> {
     let files = describe_paths(&request.paths);
+    app.wake_phones();
     app.open_window();
     app.bus.emit("staged", json!({ "files": files }));
     Json(json!({ "files": files }))
@@ -496,6 +500,7 @@ async fn clear_history(State(app): State<Arc<App>>) -> StatusCode {
 // --------------------------------------------------------------- discovery
 
 async fn refresh(State(app): State<Arc<App>>) -> StatusCode {
+    app.wake_phones();
     if let Some(discovery) = app.discovery.get().cloned() {
         let app = app.clone();
         tokio::spawn(async move { discovery.announce_burst(&app).await });
