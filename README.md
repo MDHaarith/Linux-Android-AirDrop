@@ -11,16 +11,38 @@ progress rings, particle streams and confetti.
 </p>
 
 AirBridge speaks the open **[LocalSend](https://github.com/localsend/localsend) v2 protocol**, so it
-also works with the official LocalSend apps (Windows, macOS, iOS, Android, Linux). Why not real
-AirDrop or Google Quick Share? See **[docs/RESEARCH.md](docs/RESEARCH.md)**.
+also works with the official LocalSend apps (Windows, macOS, iOS, Android, Linux). The Linux app
+also speaks **Google Quick Share**, so a stock Android phone with no app installed can share to
+your computer from its own share sheet, just like an iPhone with a Mac. Background: **[docs/RESEARCH.md](docs/RESEARCH.md)**.
 
 ## What's inside
 
 | Part | Tech | Highlights |
 |---|---|---|
-| **Linux app** (`linux/`) | Rust (tokio, axum, rustls) + an embedded web UI | Radar UI, drag & drop, tray icon, notifications with Accept/Decline, CLI, file-manager "Send with AirBridge" |
+| **Linux app** (`linux/`) | Rust (tokio, axum, rustls) + an embedded web UI | Radar UI, drag & drop, **Quick Share for stock Android**, **screen-edge drop zone** (KDE Plasma, wlroots, X11), tray icon, notifications with Accept/Decline, CLI, file-manager "Send with AirBridge" |
 | **Android app** (`android/`) | Kotlin + Jetpack Compose | Same radar UI, share-sheet target, Quick Settings tile, background receiving, notification actions |
 | **Phone browser companion** | Served by the Linux app | A phone with *no app at all* scans a QR code and shares through its browser |
+
+### Like AirDrop on a Mac
+
+**Share from any Android phone, no app needed.** AirBridge shows up in Android's built-in
+*Quick Share* sheet like any Chromebook or Windows PC. Pick it, check that the four-digit PIN
+matches the one on your computer, accept, done. Links open with one click from the
+notification. When you send *to* a phone, AirBridge wakes nearby phones over Bluetooth (BlueZ)
+so they appear as targets.
+
+**Drag to the edge of the screen.** Drag an image out of a web page, files out of Dolphin, or a
+piece of text to the right edge of the screen. A card slides out with your devices. Drop it on
+one and it's sent. Images come straight from the browser in their original format, and web
+links are downloaded first when they point to a file.
+
+<p align="center">
+  <img src="docs/screenshots/edge-drop-flow.png" width="96%" alt="Screen-edge drop zone: hover a device, waiting for the phone to accept, sent with confetti">
+</p>
+<p align="center">
+  <img src="docs/screenshots/edge-drop-devices.png" width="60%" alt="Drop zone with several devices, and while looking for devices">
+  <img src="docs/screenshots/desktop-quickshare-pin.png" width="36%" alt="Quick Share request from an Android phone, with the PIN">
+</p>
 
 ### Features
 
@@ -65,9 +87,10 @@ You need [Rust](https://rustup.rs) 1.89 or newer. For a native app window, also 
 Without it, AirBridge opens in a Chromium app window or your default browser.
 
 ```bash
-# Debian/Ubuntu (optional, for the native window)
-sudo apt install libwebkit2gtk-4.1-dev libgtk-3-dev libxdo-dev
-# Fedora:  sudo dnf install webkit2gtk4.1-devel gtk3-devel libxdo-devel
+# Debian/Ubuntu (optional: native window + screen-edge drop zone)
+sudo apt install libwebkit2gtk-4.1-dev libgtk-3-dev libxdo-dev libgtk-layer-shell-dev
+# Fedora:  sudo dnf install webkit2gtk4.1-devel gtk3-devel libxdo-devel gtk-layer-shell-devel
+# Arch:    sudo pacman -S webkit2gtk-4.1 gtk3 xdotool gtk-layer-shell
 
 git clone https://github.com/MDHaarith/Linux-Android-AirDrop
 cd Linux-Android-AirDrop/linux
@@ -86,6 +109,7 @@ open them yourself:
 
 ```bash
 sudo ufw allow 53317/tcp && sudo ufw allow 53317/udp && sudo ufw allow 53318/tcp
+sudo ufw allow 53319/tcp && sudo ufw allow 5353/udp    # Quick Share
 ```
 
 Optional tools: `wl-clipboard` (Wayland) or `xclip`/`xsel` (X11) for clipboard sharing, and
@@ -120,6 +144,21 @@ secret key, so only someone who can see your screen can connect.
 - Incoming requests slide up with **Accept / Decline**. The desktop notification has the same
   buttons.
 - The tray icon offers *Open*, *Send clipboard to …*, *Open received files* and *Quit*.
+
+**From anywhere**
+
+- **Drag to the screen edge** (right by default; Settings → *Screen-edge drop zone*). The drop
+  zone is a thin invisible strip that only reacts to drags, so scroll bars at the screen edge
+  keep working. It needs KDE Plasma (or another wlroots/layer-shell compositor) on Wayland, or
+  any X11 desktop. GNOME on Wayland can't host it.
+
+**From a stock Android phone (Quick Share)**
+
+- *Share → Quick Share* and pick your computer. Compare the PIN, accept on the computer, done.
+  On the phone, set Quick Share's visibility to *Everyone* (temporarily is fine): *Contacts* and
+  *Your devices* rely on Google accounts, which AirBridge doesn't have.
+- To send to a phone, open Quick Share's *Receive* screen on it (or let AirBridge wake it over
+  Bluetooth), and it appears on the radar like any other device.
 
 **Command line**
 
@@ -163,8 +202,33 @@ sequenceDiagram
 - **Text.** A short message is a single `text/plain` "file" with the text in `preview`, and is
   answered with `204`.
 - **Ports.** 53317 TCP+UDP is the LocalSend protocol, and 53318 TCP is the phone browser
-  companion (plain HTTP plus the QR key). The desktop UI runs on `127.0.0.1` only, behind a
-  random token.
+  companion (plain HTTP plus the QR key). 53319 TCP plus mDNS (5353 UDP) is Quick Share. The
+  desktop UI runs on `127.0.0.1` only, behind a random token.
+
+### Quick Share
+
+AirBridge implements the Wi‑Fi LAN part of Google's Nearby Connections / Nearby Share protocol in
+Rust (`linux/src/quickshare/`), from the protobuf definitions and NearDrop's write-up:
+
+- **Discovery**: an mDNS service `_FC9F5ED42C8A._tcp` whose name encodes a random endpoint ID and
+  whose TXT record carries the device name and type. Phones only advertise while receiving; the
+  Bluetooth LE advertisement for service `0xFE2C` asks nearby phones to start.
+- **Handshake**: UKEY2 with P-256 ECDH. Both sides derive AES-256-CBC + HMAC-SHA256 keys
+  (SecureMessage) and a four-digit PIN shown on both screens.
+- **Transfer**: length-prefixed protobuf frames with sequence numbers; files stream in 512 KB
+  payload chunks, with keep-alives every 10 seconds.
+
+The key derivation is checked against an independent Python implementation
+(`linux/tools/quickshare_kat.py`), and a loopback test drives the real client into the real
+server.
+
+### Screen-edge drop zone
+
+`airbridge edge` is a small GTK 3 process the service starts and restarts. On Wayland it is a
+layer-shell surface anchored to the screen edge; on X11 a dock window. Only a 3‑pixel strip takes
+input, and it steps aside when the pointer merely passes over it. When a drag arrives, it asks
+the drag source for the best format (file list, original image bytes, URL, text), and sends it
+through the local API. URLs are downloaded by the service; web pages are sent as links.
 
 ## Works with LocalSend
 
@@ -181,6 +245,9 @@ on Android with LocalSend on Windows or a Mac.
 | "Port 53317 is busy" | The official LocalSend app is running on the same computer. AirBridge then uses the next free port automatically. |
 | Phone receives nothing in the background | Some vendors kill background apps. Exclude AirBridge from battery optimization. |
 | No tray icon on GNOME | Install the *AppIndicator and KStatusNotifierItem Support* extension. |
+| The computer doesn't show up in Quick Share | Set the phone's Quick Share visibility to *Everyone*, keep both on the same Wi‑Fi, and allow 53319/tcp and 5353/udp. Some routers block mDNS between Wi‑Fi and Ethernet. |
+| Phones don't appear when sending over Quick Share | Open *Quick Share → Receive* on the phone, or make sure Bluetooth is on so AirBridge can wake it. |
+| No drop zone at the screen edge | It needs the `edge` build feature (`libgtk-layer-shell-dev`), and KDE Plasma/wlroots on Wayland or any X11 desktop. Check Settings → *Screen-edge drop zone*. |
 | Wrong PIN or "PIN required" | The receiver has a PIN set in its settings. AirBridge asks you for it and remembers it. |
 
 ## Development
@@ -189,7 +256,10 @@ on Android with LocalSend on Windows or a Mac.
 # Linux
 cd linux
 cargo test && cargo clippy --all-targets -- -D warnings
+cargo test --features edge edge::            # drop-zone logic + renders to target/edge-snapshots
+cargo build --features edge --examples && tools/edge-e2e.sh /tmp/shots   # real drag & drop under Xvfb
 AIRBRIDGE_HOME=/tmp/ab cargo run -- daemon   # isolated settings/downloads, logs: AIRBRIDGE_LOG=debug
+AIRBRIDGE_EDGE_PREVIEW=1 cargo run --features edge -- edge   # show the drop zone without dragging
 
 # Android: unit tests, the interop test against the real Linux binary, and screenshot tests
 cd android

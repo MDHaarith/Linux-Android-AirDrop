@@ -16,6 +16,8 @@ tray = ["dep:ksni"]
 # Native app window (needs libwebkit2gtk-4.1-dev and libgtk-3-dev to build).
 # Without it the UI opens as a Chromium app window or in the default browser.
 webview = ["dep:wry", "dep:tao"]
+# Drop zone on the screen edge (needs libgtk-3-dev and libgtk-layer-shell-dev).
+edge = ["dep:gtk", "dep:gtk-layer-shell", "dep:pangocairo", "dep:cairo-rs"]
 
 [dependencies]
 aes = "0.8"
@@ -46,6 +48,7 @@ rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "t
 ring = "0.17"
 rsa = { version = "0.9", features = ["sha2"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "tls12", "std", "logging"] }
+rustls-native-certs = "0.8"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_urlencoded = "0.7"
@@ -61,7 +64,12 @@ uuid = { version = "1", features = ["v4"] }
 x509-parser = { version = "0.18", features = ["verify"] }
 zbus = { version = "5", default-features = false, features = ["tokio"] }
 
+# PNG output is only used by the snapshot tests of the drop zone.
+cairo-rs = { version = "0.18", optional = true, features = ["png"] }
+gtk = { version = "0.18", optional = true }
+gtk-layer-shell = { version = "0.8", optional = true, features = ["v0_5"] }
 ksni = { version = "0.3", optional = true }
+pangocairo = { version = "0.18", optional = true }
 tao = { version = "0.34", optional = true }
 wry = { version = "0.53", optional = true }
 
@@ -76,3 +84,7 @@ opt-level = 2
 lto = "thin"
 strip = true
 codegen-units = 4
+
+[[example]]
+name = "edge_drag_source"
+required-features = ["edge"]

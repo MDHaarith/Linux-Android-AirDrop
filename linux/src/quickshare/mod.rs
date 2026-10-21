@@ -47,7 +47,13 @@ pub struct Service {
 
 impl Service {
     pub async fn start(app: &Arc<App>) -> Result<Arc<Self>> {
-        let listener = TcpListener::bind((Ipv4Addr::UNSPECIFIED, 0)).await?;
+        // A fixed port is easier to allow through a firewall.
+        let listener =
+            match TcpListener::bind((Ipv4Addr::UNSPECIFIED, crate::config::QUICK_SHARE_PORT)).await
+            {
+                Ok(listener) => listener,
+                Err(_) => TcpListener::bind((Ipv4Addr::UNSPECIFIED, 0)).await?,
+            };
         let port = listener.local_addr()?.port();
         let daemon = ServiceDaemon::new().map_err(|e| anyhow!("mDNS unavailable: {e}"))?;
         // We listen on IPv4 only, so only advertise IPv4 addresses, and

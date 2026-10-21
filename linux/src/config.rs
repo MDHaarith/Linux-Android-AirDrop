@@ -10,6 +10,8 @@ use serde_json::Value;
 pub const DEFAULT_PORT: u16 = 53317;
 pub const DEFAULT_MULTICAST_GROUP: &str = "224.0.0.167";
 pub const DEFAULT_WEB_PORT: u16 = 53318;
+/// Quick Share listens here (falls back to any free port).
+pub const QUICK_SHARE_PORT: u16 = 53319;
 const APP_ID: &str = "airbridge";
 
 const ADJECTIVES: &[&str] = &[
@@ -182,6 +184,10 @@ pub struct Settings {
     pub theme: String,
     /// Be visible to Android's built-in Quick Share (no app needed).
     pub quick_share: bool,
+    /// Drop zone on the screen edge: drag anything there to send it.
+    pub edge_drop: bool,
+    /// "right" or "left".
+    pub edge_side: String,
 }
 
 impl Default for Settings {
@@ -205,6 +211,8 @@ impl Default for Settings {
             notifications: true,
             theme: "auto".into(),
             quick_share: true,
+            edge_drop: true,
+            edge_side: "right".into(),
         }
     }
 }
@@ -313,6 +321,13 @@ impl Settings {
         set_bool!("webCompanion", web_companion);
         set_bool!("notifications", notifications);
         set_bool!("quickShare", quick_share);
+        set_bool!("edgeDrop", edge_drop);
+        if let Some(side) = map.get("edgeSide").and_then(Value::as_str) {
+            if ["left", "right"].contains(&side) && self.edge_side != side {
+                self.edge_side = side.into();
+                changed.push("edgeSide");
+            }
+        }
         changed
     }
 

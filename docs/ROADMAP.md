@@ -27,13 +27,14 @@ Drag anything (an image on a web page, files from Dolphin, selected text)
 to the edge of the screen: a panel slides out with nearby devices, drop on
 one and it is sent.
 
-- [ ] `airbridge edge`: GTK3 window, wlr-layer-shell on Plasma Wayland,
+- [x] `airbridge edge`: GTK3 window, wlr-layer-shell on Plasma Wayland,
       dock window on X11; click-through except while dragging
-- [ ] Accepts file URIs, image data, URLs (downloaded by the service), text
-- [ ] Animated panel: slide-in, device bubbles, hover glow, send progress
+- [x] Accepts file URIs, image data, URLs (downloaded by the service), text
+- [x] Animated panel: slide-in, device bubbles, hover glow, send progress
       ring, success burst
-- [ ] Started by the service; settings for edge and enable/disable
-- [ ] Tested under Xvfb with a synthetic drag
+- [x] Started by the service; settings for edge and enable/disable
+- [x] Tested under Xvfb with a synthetic drag (X11) and under headless sway
+      (layer-shell rendering); offscreen render snapshots in CI
 
 ## 3. The same on the phone (Android)
 
@@ -51,4 +52,4 @@ one and it is sent.
   `maven-central.storage-download.googleapis.com` mirror
   (`gradle --init-script mirror.init.gradle`).
 - Linux build deps: `libgtk-3-dev libwebkit2gtk-4.1-dev libgtk-layer-shell-dev
-  xvfb xdotool`.
+  xvfb xdotool picom hsetroot` (+ `sway grim` for the Wayland check).

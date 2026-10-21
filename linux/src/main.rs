@@ -10,7 +10,9 @@ mod companion;
 mod config;
 mod desktop;
 mod discovery;
+mod edge;
 mod events;
+mod fetch;
 mod identity;
 mod net;
 mod peers;
@@ -98,6 +100,13 @@ enum Command {
     #[cfg(feature = "webview")]
     #[command(hide = true)]
     Window { url: String },
+    /// (internal) The drop zone on the screen edge; the service starts it.
+    #[cfg(feature = "edge")]
+    #[command(hide = true)]
+    Edge {
+        #[arg(long, default_value = "right")]
+        side: String,
+    },
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -134,6 +143,17 @@ fn main() -> ExitCode {
         };
     }
     init_logging();
+    #[cfg(feature = "edge")]
+    if let Some(Command::Edge { side }) = &cli.command {
+        // GTK must own the main thread, as for the window.
+        return match edge::run(side) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(err) => {
+                eprintln!("airbridge edge: {err:#}");
+                ExitCode::from(3)
+            }
+        };
+    }
     let runtime = tokio::runtime::Runtime::new().expect("tokio runtime");
     match runtime.block_on(run(cli)) {
         Ok(code) => code,
@@ -203,6 +223,8 @@ async fn run(cli: Cli) -> Result<ExitCode> {
         }
         #[cfg(feature = "webview")]
         Command::Window { .. } => unreachable!("handled in main"),
+        #[cfg(feature = "edge")]
+        Command::Edge { .. } => unreachable!("handled in main"),
     }
 }
 
@@ -315,6 +337,9 @@ async fn serve(open_window: bool) -> Result<ExitCode> {
 
     #[cfg(feature = "tray")]
     tray::spawn(app.clone());
+
+    #[cfg(feature = "edge")]
+    edge::supervise(app.clone());
 
     let me = app.me();
     tracing::info!(

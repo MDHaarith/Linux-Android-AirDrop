@@ -44,6 +44,8 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/send", post(send))
         .route("/send-text", post(send_text))
         .route("/send-clipboard", post(send_clipboard))
+        .route("/send-url", post(send_url))
+        .route("/wake", post(wake))
         .route("/stage", post(stage))
         .route("/stage/{id}", delete(unstage))
         .route("/stage-paths", post(stage_paths))
@@ -261,6 +263,43 @@ async fn send_clipboard(State(app): State<Arc<App>>, Json(request): Json<PeerReq
         Ok(id) => Json(json!({ "id": id })).into_response(),
         Err(message) => bad_request(message),
     }
+}
+
+#[derive(Deserialize)]
+struct UrlRequest {
+    peer: String,
+    url: String,
+    /// File name suggested by the drag source.
+    #[serde(default)]
+    name: Option<String>,
+}
+
+/// Something dragged out of a web page: images and files are downloaded and
+/// sent as files, web pages are sent as links.
+async fn send_url(State(app): State<Arc<App>>, Json(request): Json<UrlRequest>) -> Response {
+    let url = request.url.trim().to_string();
+    match crate::fetch::fetch(&url, request.name.as_deref()).await {
+        Ok(crate::fetch::Fetched::File(item)) => {
+            match app.send_files(&request.peer, vec![item.clone()], None) {
+                Ok(id) => Json(json!({ "id": id, "kind": "file" })).into_response(),
+                Err(message) => {
+                    let _ = std::fs::remove_dir_all(item.path.parent().unwrap_or(&item.path));
+                    bad_request(message)
+                }
+            }
+        }
+        Ok(crate::fetch::Fetched::Page) => match app.send_text(&request.peer, url, None) {
+            Ok(id) => Json(json!({ "id": id, "kind": "link" })).into_response(),
+            Err(message) => bad_request(message),
+        },
+        Err(err) => bad_request(format!("Could not download it: {err}")),
+    }
+}
+
+/// Someone is about to share (e.g. a drag reached the screen edge).
+async fn wake(State(app): State<Arc<App>>) -> StatusCode {
+    app.wake_phones();
+    StatusCode::NO_CONTENT
 }
 
 fn percent_decode(input: &str) -> String {

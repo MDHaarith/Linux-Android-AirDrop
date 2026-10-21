@@ -34,14 +34,25 @@ fi
 
 features=()
 if pkg-config --exists webkit2gtk-4.1 gtk+-3.0 2>/dev/null; then
-  features=(--features webview)
+  features+=(webview)
   echo "→ Building with a native window (WebKitGTK found)"
 else
   echo "→ Building without the native window (install libwebkit2gtk-4.1-dev for it);"
   echo "  AirBridge will open in a Chromium app window or your browser instead."
 fi
+if pkg-config --exists gtk+-3.0 gtk-layer-shell-0 2>/dev/null; then
+  features+=(edge)
+  echo "→ Building with the screen-edge drop zone (gtk-layer-shell found)"
+else
+  echo "→ Building without the screen-edge drop zone (install libgtk-layer-shell-dev"
+  echo "  (Debian/Ubuntu) or gtk-layer-shell (Fedora, Arch) for it)."
+fi
 
-(cd "$crate" && cargo build --release --locked "${features[@]}")
+feature_args=()
+if [ ${#features[@]} -gt 0 ]; then
+  feature_args=(--features "$(IFS=,; echo "${features[*]}")")
+fi
+(cd "$crate" && cargo build --release --locked "${feature_args[@]}")
 
 install -Dm755 "$crate/target/release/airbridge" "$bin_dir/airbridge"
 install -Dm644 "$crate/ui/icon.svg" "$data/icons/hicolor/scalable/apps/airbridge.svg"
@@ -62,7 +73,8 @@ echo
 if command -v ufw >/dev/null && ufw status 2>/dev/null | grep -q "Status: active"; then
   echo "ufw is active. Allow AirBridge with:"
   echo "  sudo ufw allow 53317/tcp && sudo ufw allow 53317/udp && sudo ufw allow 53318/tcp"
+  echo "  sudo ufw allow 53319/tcp && sudo ufw allow 5353/udp   # Quick Share"
 elif command -v firewall-cmd >/dev/null && firewall-cmd --state >/dev/null 2>&1; then
   echo "firewalld is active. Allow AirBridge with:"
-  echo "  sudo firewall-cmd --permanent --add-port=53317/tcp --add-port=53317/udp --add-port=53318/tcp && sudo firewall-cmd --reload"
+  echo "  sudo firewall-cmd --permanent --add-port=53317/tcp --add-port=53317/udp --add-port=53318/tcp --add-port=53319/tcp --add-service=mdns && sudo firewall-cmd --reload"
 fi

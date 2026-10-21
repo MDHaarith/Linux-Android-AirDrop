@@ -854,6 +854,11 @@ function openSettings() {
     ${settingSwitch("copyReceivedText", "Copy received text", "Text from trusted devices goes straight to your clipboard")}
     ${settingSwitch("notifications", "Notifications", "Desktop notifications with Accept / Decline")}
     ${settingSwitch("quickShare", "Quick Share", "Android phones can share here from their built-in share sheet, no app needed")}
+    <p class="section-title">Sending</p>
+    ${settingSwitch("edgeDrop", "Screen-edge drop zone", "Drag anything to the side of the screen and drop it on a device")}
+    <div class="field"><label for="sEdge">Drop zone side</label><select class="input" id="sEdge">
+      <option value="right" ${s.edgeSide !== "left" ? "selected" : ""}>Right edge</option>
+      <option value="left" ${s.edgeSide === "left" ? "selected" : ""}>Left edge</option></select></div>
     ${settingSwitch("webCompanion", "Phone browser companion", "Phones without an app can pair with a QR code")}
     <div class="field"><label for="sPin">Require a PIN (optional)</label><input class="input" id="sPin" placeholder="No PIN" value="${esc(s.pin || "")}" autocomplete="off"></div>
     <p class="section-title">Appearance</p>
@@ -872,6 +877,7 @@ function openSettings() {
     card.querySelector("#sDir").addEventListener("change", (e) => save({ downloadDir: e.target.value }));
     card.querySelector("#sPin").addEventListener("change", (e) => save({ pin: e.target.value }));
     card.querySelector("#sTheme").addEventListener("change", (e) => save({ theme: e.target.value }));
+    card.querySelector("#sEdge").addEventListener("change", (e) => save({ edgeSide: e.target.value }));
     card.querySelectorAll("input[data-key]").forEach((input) => input.addEventListener("change", () => save({ [input.dataset.key]: input.checked })));
     card.querySelector("#pickDir").addEventListener("click", async () => {
       const res = await api("/pick", { body: { directory: true } });
