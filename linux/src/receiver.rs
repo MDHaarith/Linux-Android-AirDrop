@@ -44,6 +44,7 @@ pub struct ConnInfo {
 }
 
 fn error(status: u16, message: &str) -> Response {
+    tracing::debug!("answering {status}: {message}");
     let status = StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
     (status, Json(json!({ "message": message }))).into_response()
 }
