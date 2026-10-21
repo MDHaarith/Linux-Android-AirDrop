@@ -20,7 +20,7 @@ your computer from its own share sheet, just like an iPhone with a Mac. Backgrou
 | Part | Tech | Highlights |
 |---|---|---|
 | **Linux app** (`linux/`) | Rust (tokio, axum, rustls) + an embedded web UI | Radar UI, drag & drop, **Quick Share for stock Android**, **screen-edge drop zone** (KDE Plasma, wlroots, X11), tray icon, notifications with Accept/Decline, CLI, file-manager "Send with AirBridge" |
-| **Android app** (`android/`) | Kotlin + Jetpack Compose | Same radar UI, share-sheet target, Quick Settings tile, background receiving, notification actions |
+| **Android app** (`android/`) | Kotlin + Jetpack Compose | Same radar UI, **your devices in the system share sheet (Direct Share)**, a one-tap share sheet, **edge panel over any app**, photo previews in notifications, Quick Settings tile, background receiving |
 | **Phone browser companion** | Served by the Linux app | A phone with *no app at all* scans a QR code and shares through its browser |
 
 ### Like AirDrop on a Mac
@@ -39,6 +39,19 @@ links are downloaded first when they point to a file.
 <p align="center">
   <img src="docs/screenshots/edge-drop-flow.png" width="96%" alt="Screen-edge drop zone: hover a device, waiting for the phone to accept, sent with confetti">
 </p>
+**And from the phone.** Your computers show up in the first row of Android's own share sheet
+(Direct Share), like AirDrop on an iPhone. Tap one and a small sheet sends it right there, with a
+progress ring, then folds away. Or turn on the **edge panel**: a slim handle on the side of the
+screen, over any app, that sends your clipboard, your latest photo, or whatever you drop on it.
+Received photos show up as a preview in the notification.
+
+<p align="center">
+  <img src="docs/screenshots/android-shareSheet.png" width="24%" alt="Android share sheet: tap a device">
+  <img src="docs/screenshots/android-shareSheetSending.png" width="24%" alt="Sending with a progress ring">
+  <img src="docs/screenshots/android-shareSheetSent.png" width="24%" alt="Sent">
+  <img src="docs/screenshots/android-edgePanel.png" width="24%" alt="Edge panel over another app">
+</p>
+
 <p align="center">
   <img src="docs/screenshots/edge-drop-devices.png" width="60%" alt="Drop zone with several devices, and while looking for devices">
   <img src="docs/screenshots/desktop-quickshare-pin.png" width="36%" alt="Quick Share request from an Android phone, with the PIN">
@@ -175,8 +188,13 @@ airbridge quit
 
 **Android**
 
-- Tap **Send files**, **Photos** or **Text**, then tap a device. You can also use *Share →
-  AirBridge* from any app.
+- **Share from any app**: your devices are right in the share sheet's top row; tap one and it
+  sends. Or pick *AirBridge* and tap a device in the sheet that slides up.
+- **Edge panel** (Settings → *Edge panel*): a handle on the side of the screen over every app.
+  Tap or swipe it for your clipboard, latest photo or files; drop text or files on it to send
+  them. Drag it up or down to move it.
+- Long-press the AirBridge icon for *Send to …* shortcuts to your devices.
+- In the app: tap **Send files**, **Photos** or **Text**, then tap a device.
 - Tap a device for more: send a message, the clipboard, or trust it.
 - Received files go to **Downloads/AirBridge**. Text from trusted devices goes to your
   clipboard.

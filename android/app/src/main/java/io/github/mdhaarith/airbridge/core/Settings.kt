@@ -16,6 +16,12 @@ data class AppSettings(
     val trusted: Set<String> = emptySet(),
     /** Run the background service so the phone is visible and can receive. */
     val receiving: Boolean = true,
+    /** A handle on the screen edge that opens a send panel over any app. */
+    val edgePanel: Boolean = false,
+    /** "right" or "left". */
+    val edgeSide: String = "right",
+    /** Vertical position of the handle, as a fraction of the screen height. */
+    val edgeY: Float = 0.38f,
 )
 
 /** Settings persisted as JSON in the app's private storage. */

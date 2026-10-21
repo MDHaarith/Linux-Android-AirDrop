@@ -6,7 +6,9 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.graphics.Bitmap
 import android.net.Uri
+import android.util.Size
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import io.github.mdhaarith.airbridge.MainActivity
@@ -126,8 +128,14 @@ object Notifications {
         NotificationManagerCompat.from(context).notify(idFor(t.id), notification)
     }
 
+    /** A preview of the first received image or video, if there is one. */
+    fun thumbnail(context: Context, t: Transfer): Bitmap? {
+        val first = t.files.firstOrNull { (it.mime.startsWith("image/") || it.mime.startsWith("video/")) && it.uri != null } ?: return null
+        return runCatching { context.contentResolver.loadThumbnail(Uri.parse(first.uri), Size(720, 720), null) }.getOrNull()
+    }
+
     @android.annotation.SuppressLint("MissingPermission")
-    fun finished(context: Context, t: Transfer) {
+    fun finished(context: Context, t: Transfer, picture: Bitmap? = null) {
         val manager = NotificationManagerCompat.from(context)
         manager.cancel(idFor(t.id))
         if (!canPost(context) || t.message != null) return
@@ -149,6 +157,19 @@ object Notifications {
             val view = Intent(Intent.ACTION_VIEW).setDataAndType(Uri.parse(first), t.files.first().mime)
                 .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
             builder.setContentIntent(PendingIntent.getActivity(context, idFor(t.id), view, PendingIntent.FLAG_IMMUTABLE))
+            if (picture != null) {
+                builder.setLargeIcon(picture)
+                    .setStyle(NotificationCompat.BigPictureStyle().bigPicture(picture).bigLargeIcon(null as Bitmap?))
+            }
+            // Pass it on: Share opens the system share sheet with the received files.
+            val uris = ArrayList(t.files.mapNotNull { it.uri }.map(Uri::parse))
+            val mime = t.files.map { it.mime }.distinct().singleOrNull() ?: "*/*"
+            val share = Intent(if (uris.size == 1) Intent.ACTION_SEND else Intent.ACTION_SEND_MULTIPLE).setType(mime)
+                .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                .apply { if (uris.size == 1) putExtra(Intent.EXTRA_STREAM, uris.first()) else putParcelableArrayListExtra(Intent.EXTRA_STREAM, uris) }
+            val chooser = Intent.createChooser(share, null).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            builder.addAction(0, "Share", PendingIntent.getActivity(context, idFor(t.id) + 1, chooser, PendingIntent.FLAG_IMMUTABLE))
+            builder.addAction(0, "Show all", openApp(context, t.id))
         } else {
             builder.setContentIntent(openApp(context, t.id))
         }

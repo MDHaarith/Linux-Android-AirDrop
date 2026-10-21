@@ -38,11 +38,13 @@ one and it is sent.
 
 ## 3. The same on the phone (Android)
 
-- [ ] Direct Share: nearby devices appear as targets in the Android share
+- [x] Direct Share: nearby devices appear as targets in the Android share
       sheet; picking one sends immediately
-- [ ] Edge handle overlay with a slide-out panel: devices, send clipboard,
+- [x] Edge handle overlay with a slide-out panel: devices, send clipboard,
       send latest screenshot/photo
-- [ ] Image previews in "received" notifications
+- [x] Image previews in "received" notifications
+- Verified with unit tests, Paparazzi renders and the Linux interop test;
+  not yet tried on a physical phone (no emulator in this environment)
 
 ## Environment notes (for resuming in a fresh container)
 

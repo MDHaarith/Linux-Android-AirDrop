@@ -1,5 +1,9 @@
 package io.github.mdhaarith.airbridge.ui
 
+import android.Manifest
+import android.os.Build
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -39,6 +43,7 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import io.github.mdhaarith.airbridge.BuildConfig
 import io.github.mdhaarith.airbridge.core.Discovery
+import io.github.mdhaarith.airbridge.overlay.EdgePanel
 import io.github.mdhaarith.airbridge.service.AirBridgeService
 
 @Composable
@@ -77,6 +82,43 @@ fun SettingsScreen(vm: AppViewModel) {
             ToggleRow("Visible to nearby devices", "Receive files and show up on your computer", running) { on ->
                 if (on) AirBridgeService.start(context) else AirBridgeService.stop(context)
             }
+        }
+
+        SectionTitle("Sending")
+        GlassCard(Modifier.fillMaxWidth()) {
+            val photoPermissions = remember {
+                when {
+                    Build.VERSION.SDK_INT >= 34 -> arrayOf(Manifest.permission.READ_MEDIA_IMAGES, Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED)
+                    Build.VERSION.SDK_INT >= 33 -> arrayOf(Manifest.permission.READ_MEDIA_IMAGES)
+                    else -> arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE)
+                }
+            }
+            val askPhotos = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { }
+            ToggleRow(
+                "Edge panel",
+                "A handle on the screen edge: send your clipboard, latest photo or anything you drop on it, from any app",
+                settings.edgePanel,
+            ) { on ->
+                engine.settings.update { it.copy(edgePanel = on) }
+                if (on) {
+                    askPhotos.launch(photoPermissions)
+                    if (!android.provider.Settings.canDrawOverlays(context)) context.startActivity(EdgePanel.permissionIntent(context))
+                    if (!running) AirBridgeService.start(context)
+                }
+            }
+            if (settings.edgePanel) {
+                HorizontalDivider(color = air.border)
+                ToggleRow("Handle on the left", "Move the handle to the left edge of the screen", settings.edgeSide == "left") { left ->
+                    engine.settings.update { it.copy(edgeSide = if (left) "left" else "right") }
+                }
+            }
+            HorizontalDivider(color = air.border)
+            Text(
+                "Your devices also appear in Android's share sheet: share anything and tap your computer.",
+                color = air.muted,
+                fontSize = 13.sp,
+                modifier = Modifier.padding(vertical = 8.dp),
+            )
         }
 
         SectionTitle("Receiving")

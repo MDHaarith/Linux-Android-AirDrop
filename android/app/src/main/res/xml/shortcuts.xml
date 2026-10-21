@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Nearby devices are published as sharing shortcuts (share/DirectShare.kt),
+     so they appear in the Direct Share row of Android's share sheet. -->
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <share-target android:targetClass="io.github.mdhaarith.airbridge.share.ShareSheetActivity">
+        <data android:mimeType="*/*" />
+        <category android:name="io.github.mdhaarith.airbridge.category.DEVICE" />
+    </share-target>
+</shortcuts>
