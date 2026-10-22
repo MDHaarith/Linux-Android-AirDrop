@@ -28,6 +28,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: linux
+      - name: Release version tests
+        run: python3 -m unittest discover -s ../.github/scripts -p 'test_*.py'
       - run: cargo fmt --check
       - run: node tools/test-desktop-drop.js
       - run: cargo clippy --all-targets --locked -- -D warnings
@@ -36,9 +38,6 @@ jobs:
       # The drop zone's pure logic and its offscreen renders (snapshots are uploaded).
       - run: "cargo test --locked --features edge edge::"
       - run: cargo build --release --locked --features webview,edge
-        env:
-          # Lets the in-app updater tell which main build this is.
-          AIRBRIDGE_BUILD: ${{ github.run_number }}
       - run: packaging/appimage.sh target/release/airbridge
       - uses: actions/upload-artifact@v6
         with:
@@ -89,61 +88,3 @@ jobs:
           path: |
             android/app/build/reports
             android/app/build/linux-interop.log
-
-  release:
-    name: Publish main release build
-    needs: [linux, android]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    permissions:
-      contents: write
-    steps:
-      # Reuse the release binaries from this run, after all tests have passed.
-      - uses: actions/download-artifact@v8
-        with:
-          name: airbridge-linux-x86_64
-          path: release
-      - uses: actions/download-artifact@v8
-        with:
-          name: airbridge-android-apk
-          path: release
-      - name: Package and sign release assets
-        env:
-          UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
-          TAG: main-${{ github.run_number }}
-        run: |
-          test -s release/airbridge-x86_64.AppImage
-          test -s release/app-release.apk
-          [ -n "$UPDATE_SIGNING_KEY" ] || { echo "UPDATE_SIGNING_KEY secret is missing; refusing to publish an unsigned build"; exit 1; }
-          # Artifact downloads do not preserve the Linux executable bit.
-          install -m755 release/airbridge-x86_64.AppImage airbridge-x86_64.AppImage
-          cp release/app-release.apk airbridge-android.apk
-          # The in-app updater checks this: the AppImage, a newline, then its tag.
-          umask 077
-          printf '%s\n' "$UPDATE_SIGNING_KEY" > "$RUNNER_TEMP/key.pem"
-          { cat airbridge-x86_64.AppImage; printf '\n%s' "$TAG"; } > "$RUNNER_TEMP/message"
-          openssl pkeyutl -sign -rawin -inkey "$RUNNER_TEMP/key.pem" -in "$RUNNER_TEMP/message" -out airbridge-x86_64.AppImage.sig
-          rm -f "$RUNNER_TEMP/key.pem" "$RUNNER_TEMP/message"
-          test "$(stat -c %s airbridge-x86_64.AppImage.sig)" -eq 64
-      - uses: softprops/action-gh-release@v3
-        with:
-          tag_name: main-${{ github.run_number }}
-          name: "Main build #${{ github.run_number }}"
-          target_commitish: ${{ github.sha }}
-          prerelease: true
-          make_latest: false
-          fail_on_unmatched_files: true
-          body: |
-            Automatic prerelease from a successful main-branch CI run.
-            Commit: `${{ github.sha }}`
-
-            **Downloads**
-            - `airbridge-android.apk`: Android 10 or newer.
-            - `airbridge-x86_64.AppImage`: make it executable and run it. It updates itself from the app's Update button.
-
-            The APK uses a debug signing key; Android may require uninstalling the previous build before installation.
-          files: |
-            airbridge-x86_64.AppImage
-            airbridge-x86_64.AppImage.sig
-            airbridge-android.apk

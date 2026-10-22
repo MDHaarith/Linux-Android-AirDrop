@@ -24,7 +24,6 @@ import android.view.MotionEvent
 import android.view.View
 import android.view.ViewConfiguration
 import android.view.WindowManager
-import android.widget.FrameLayout
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.ContentPaste
 import androidx.compose.material.icons.rounded.FileOpen
@@ -174,7 +173,7 @@ class EdgePanel(private val context: Context) {
                 }
             }
         }
-        val root = object : FrameLayout(context) {
+        val root = object : DropLayout(context) {
             override fun dispatchKeyEvent(event: KeyEvent): Boolean {
                 if (event.keyCode == KeyEvent.KEYCODE_BACK && event.action == KeyEvent.ACTION_UP) {
                     close()
@@ -192,12 +191,12 @@ class EdgePanel(private val context: Context) {
         root.addView(compose)
         var receivingTarget: String? = null
         if (Build.VERSION.SDK_INT >= 31) {
-            root.setOnReceiveContentListener(DROP_TYPES) { _, payload ->
+            root.dropTarget.setOnReceiveContentListener(DROP_TYPES) { _, payload ->
                 onDrop(payload.clip, grant = payload, target = receivingTarget)
                 null
             }
         }
-        root.setOnDragListener { _, event ->
+        root.dropTarget.setOnDragListener { view, event ->
             val target = panelTargets.entries.firstOrNull { (id, bounds) ->
                 (id == DropTargets.ALL || engine.peers.value.any { it.id == id }) && bounds.contains(Offset(event.x, event.y))
             }?.key
@@ -208,7 +207,7 @@ class EdgePanel(private val context: Context) {
                 DragEvent.ACTION_DROP -> {
                     receivingTarget = target
                     panelHover = null
-                    if (Build.VERSION.SDK_INT < 31 || !root.onDragEvent(event)) onDrop(event.clipData, target = target)
+                    if (Build.VERSION.SDK_INT < 31 || !view.onDragEvent(event)) onDrop(event.clipData, target = target)
                     true
                 }
                 else -> true
@@ -471,7 +470,7 @@ class EdgePanel(private val context: Context) {
      * there.
      */
     @SuppressLint("ViewConstructor")
-    private inner class HandleRoot(context: Context, private val rightSide: Boolean) : FrameLayout(context) {
+    private inner class HandleRoot(context: Context, private val rightSide: Boolean) : DropLayout(context) {
         private val pill = HandleView(context, rightSide, this)
         private val owner = OverlayOwner()
         private val tab = ComposeView(context).apply {
@@ -497,12 +496,12 @@ class EdgePanel(private val context: Context) {
                 // Android reads a drop for us here and lends us the right to
                 // open the other app's files, which an overlay can't ask for itself.
                 // (Android refuses a bare "*/*" here, so name the families.)
-                setOnReceiveContentListener(DROP_TYPES) { _, payload: ContentInfo ->
+                dropTarget.setOnReceiveContentListener(DROP_TYPES) { _, payload: ContentInfo ->
                     onDrop(payload.clip, grant = payload, target = receivingTarget)
                     null
                 }
             }
-            setOnDragListener { _, event ->
+            dropTarget.setOnDragListener { view, event ->
                 when (event.action) {
                     DragEvent.ACTION_DRAG_STARTED -> if (busy()) false else { startDrag(); true }
                     DragEvent.ACTION_DRAG_ENTERED, DragEvent.ACTION_DRAG_LOCATION -> {
@@ -520,7 +519,7 @@ class EdgePanel(private val context: Context) {
                         tabOver = false
                         tabHovered = null
                         // Android 12+ passes the drop, readable, to the content listener above.
-                        if (Build.VERSION.SDK_INT < 31 || !onDragEvent(event)) onDrop(event.clipData, target = receivingTarget)
+                        if (Build.VERSION.SDK_INT < 31 || !view.onDragEvent(event)) onDrop(event.clipData, target = receivingTarget)
                         true
                     }
                     else -> true

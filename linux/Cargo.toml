@@ -1,6 +1,6 @@
 [package]
 name = "airbridge"
-version = "0.1.0"
+version = "0.1.5"
 edition = "2021"
 rust-version = "1.89"
 description = "AirDrop-style file and text sharing between Linux and Android (LocalSend protocol compatible)"

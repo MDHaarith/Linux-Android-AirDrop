@@ -70,7 +70,7 @@ async function checkUpdate() {
     const { available, canInstall } = await api("/update");
     const btn = $("btnUpdate");
     btn.hidden = !available;
-    if (available) btn.title = `Build #${available.build} is ready` + (canInstall ? "" : " (opens the download page)");
+    if (available) btn.title = `${available.tag} is ready` + (canInstall ? "" : " (opens the download page)");
   } catch (_) { /* offline: try again later */ }
 }
 
