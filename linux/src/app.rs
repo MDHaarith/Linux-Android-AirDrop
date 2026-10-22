@@ -163,7 +163,7 @@ impl App {
     /// Asks the user whether to accept an incoming transfer (window and/or
     /// notification). Trusted devices are accepted automatically.
     pub async fn ask_accept(self: &Arc<Self>, id: &str) -> bool {
-        let (peer_id, alias, summary_files, pin) = {
+        let (peer_id, alias, summary_files, pin, phrase, preview) = {
             let transfers = self.transfers.lock().unwrap();
             let Some(t) = transfers.get(id) else {
                 return false;
@@ -187,11 +187,36 @@ impl App {
                     .get("pin")
                     .and_then(Value::as_str)
                     .map(str::to_string),
+                share_phrase(
+                    &t.files
+                        .iter()
+                        .map(|f| (f.name.as_str(), f.file_type.as_str()))
+                        .collect::<Vec<_>>(),
+                ),
+                t.files.iter().find_map(|f| {
+                    f.dto
+                        .as_ref()
+                        .and_then(|d| d.preview.as_deref())
+                        .and_then(crate::thumbnail::decode)
+                }),
             )
         };
         if self.settings().auto_accept_trusted && self.registry.is_trusted(&peer_id) {
+            // Your own devices: no question, like AirDrop on the same Apple ID.
+            if let Some(t) = self.transfers.lock().unwrap().get_mut(id) {
+                t.auto_accepted = true;
+            }
             return true;
         }
+        // The photo itself in the notification, when the sender included one.
+        let image = preview.and_then(|bytes| {
+            let path = config::cache_dir()
+                .join("previews")
+                .join(format!("{id}.jpg"));
+            std::fs::create_dir_all(path.parent()?).ok()?;
+            std::fs::write(&path, bytes).ok()?;
+            Some(path)
+        });
 
         let (tx, rx) = oneshot::channel();
         self.decisions.lock().unwrap().insert(id.to_string(), tx);
@@ -200,7 +225,8 @@ impl App {
         let notify_enabled = self.settings().notifications;
         let question = if notify_enabled && self.notifier.available().await {
             let (app, id) = (self.clone(), id.to_string());
-            let title = format!("{alias} wants to share {}", summary_files.0);
+            let title = format!("“{alias}” would like to share {phrase}");
+            let image = image.clone();
             // Quick Share shows the same PIN on the phone.
             let body = match &pin {
                 Some(pin) => format!("{} · PIN {pin}", summary_files.1),
@@ -212,6 +238,7 @@ impl App {
                     .ask(
                         &title,
                         &body,
+                        image.as_deref(),
                         &[
                             ("accept", "Accept"),
                             ("decline", "Decline"),
@@ -241,6 +268,7 @@ impl App {
             app: &'a App,
             id: &'a str,
             question: Option<tokio::task::JoinHandle<()>>,
+            image: Option<PathBuf>,
         }
         impl Drop for Cleanup<'_> {
             fn drop(&mut self) {
@@ -248,12 +276,16 @@ impl App {
                 if let Some(task) = self.question.take() {
                     task.abort(); // closes the notification
                 }
+                if let Some(image) = self.image.take() {
+                    let _ = std::fs::remove_file(image);
+                }
             }
         }
         let _cleanup = Cleanup {
             app: self,
             id,
             question,
+            image,
         };
         matches!(
             tokio::time::timeout(DECISION_TIMEOUT, rx).await,
@@ -352,7 +384,7 @@ impl App {
     // -------------------------------------------------------- after receive
 
     pub fn on_files_received(self: &Arc<Self>, id: &str) {
-        let (alias, files) = {
+        let (alias, files, auto_accepted) = {
             let transfers = self.transfers.lock().unwrap();
             let Some(t) = transfers.get(id) else { return };
             let alias = t
@@ -366,9 +398,27 @@ impl App {
                 .iter()
                 .map(|f| (f.name.clone(), f.size, f.path.clone()))
                 .collect();
-            (alias, files)
+            (alias, files, t.auto_accepted)
         };
         tracing::info!("Received {} file(s) from {alias}", files.len());
+        // From your own devices it just opens, like AirDrop: one file in its
+        // app, several in the folder they landed in.
+        if auto_accepted && self.settings().open_received {
+            let paths: Vec<PathBuf> = files
+                .iter()
+                .filter_map(|(_, _, p)| p.clone().map(PathBuf::from))
+                .collect();
+            match paths.as_slice() {
+                [one] => {
+                    desktop::open_path(one);
+                }
+                [first, ..] => {
+                    let first = first.clone();
+                    tokio::spawn(async move { desktop::reveal_path(&first).await });
+                }
+                [] => {}
+            }
+        }
         if !self.settings().notifications {
             return;
         }
@@ -382,12 +432,20 @@ impl App {
             .first()
             .and_then(|(_, _, p)| p.clone())
             .map(PathBuf::from);
+        // A received photo shows itself in the notification.
+        let image = files
+            .iter()
+            .filter(|(name, _, _)| {
+                mime_guess::from_path(name).first_or_octet_stream().type_() == "image"
+            })
+            .find_map(|(_, _, p)| p.clone().map(PathBuf::from));
         let app = self.clone();
         tokio::spawn(async move {
             app.notifier
                 .notify(
                     &format!("Received {count} from {alias}"),
                     &names,
+                    image.as_deref(),
                     &[("default", "Open"), ("reveal", "Show in folder")],
                     move |action| {
                         let Some(path) = first else { return };
@@ -422,8 +480,17 @@ impl App {
         };
         // Only devices you trust (or your own paired browser) may write to your
         // clipboard; anyone else's text waits for you to press "Copy".
-        let auto_copy =
-            self.settings().copy_received_text && (web || self.registry.is_trusted(&peer_id));
+        let own = web || self.registry.is_trusted(&peer_id);
+        let auto_copy = self.settings().copy_received_text && own;
+        // A link from your own device opens in the browser right away.
+        let trimmed = text.trim();
+        if own
+            && self.settings().open_received
+            && (trimmed.starts_with("http://") || trimmed.starts_with("https://"))
+            && !trimmed.contains(char::is_whitespace)
+        {
+            desktop::open_url(trimmed);
+        }
         let notify = self.settings().notifications;
         self.bus.emit(
             "message",
@@ -451,6 +518,7 @@ impl App {
                     .notify(
                         &title,
                         &preview,
+                        None,
                         &[("default", "Open"), ("open", "Open link"), ("copy", "Copy")],
                         move |action| {
                             if action == "copy" {
@@ -463,13 +531,20 @@ impl App {
                     .await;
             } else if copied {
                 app.notifier
-                    .notify(&format!("Copied text from {alias}"), &preview, &[], |_| {})
+                    .notify(
+                        &format!("Copied text from {alias}"),
+                        &preview,
+                        None,
+                        &[],
+                        |_| {},
+                    )
                     .await;
             } else {
                 app.notifier
                     .notify(
                         &format!("Message from {alias}"),
                         &preview,
+                        None,
                         &[("copy", "Copy")],
                         move |action| {
                             if action == "copy" {
@@ -503,6 +578,21 @@ impl App {
     }
 }
 
+/// What AirDrop would say: "a photo", "3 photos", "“Report.pdf”", "4 items".
+pub fn share_phrase(files: &[(&str, &str)]) -> String {
+    let all =
+        |prefix: &str| !files.is_empty() && files.iter().all(|(_, mime)| mime.starts_with(prefix));
+    match files {
+        [] => "something".into(),
+        [_] if all("image/") => "a photo".into(),
+        [_] if all("video/") => "a video".into(),
+        [(name, _)] => format!("“{}”", name.rsplit('/').next().unwrap_or(name)),
+        _ if all("image/") => format!("{} photos", files.len()),
+        _ if all("video/") => format!("{} videos", files.len()),
+        _ => format!("{} items", files.len()),
+    }
+}
+
 /// ("3 files", "photo.jpg, notes.pdf and 1 more · 12.4 MB")
 pub fn describe_files(files: &[(&str, u64)]) -> (String, String) {
     let count = if files.len() == 1 {
@@ -531,5 +621,28 @@ pub fn human_size(bytes: u64) -> String {
         format!("{bytes} B")
     } else {
         format!("{value:.1} {}", UNITS[unit])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn share_phrases_read_like_airdrop() {
+        assert_eq!(share_phrase(&[("a.jpg", "image/jpeg")]), "a photo");
+        assert_eq!(
+            share_phrase(&[("a.jpg", "image/jpeg"), ("b.png", "image/png")]),
+            "2 photos"
+        );
+        assert_eq!(share_phrase(&[("clip.mp4", "video/mp4")]), "a video");
+        assert_eq!(
+            share_phrase(&[("Docs/Report.pdf", "application/pdf")]),
+            "“Report.pdf”"
+        );
+        assert_eq!(
+            share_phrase(&[("a.jpg", "image/jpeg"), ("b.pdf", "application/pdf")]),
+            "2 items"
+        );
     }
 }

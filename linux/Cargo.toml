@@ -37,6 +37,8 @@ http-body-util = "0.1"
 hyper = { version = "1", features = ["client", "http1", "server"] }
 hyper-util = { version = "0.1", features = ["tokio", "server-auto", "service", "http1", "http2"] }
 if-addrs = "0.15"
+# Photo previews that travel with a request (decode + small JPEG only).
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif"] }
 mdns-sd = "0.21"
 mime_guess = "2"
 nix = { version = "0.30", default-features = false, features = ["fs"] }

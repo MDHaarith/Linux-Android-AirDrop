@@ -87,6 +87,7 @@ impl Notifier {
         proxy: &NotificationsProxy<'static>,
         summary: &str,
         body: &str,
+        image: Option<&Path>,
         actions: &[(&str, &str)],
         critical: bool,
     ) -> Option<u32> {
@@ -98,6 +99,11 @@ impl Notifier {
         let mut hints = HashMap::new();
         hints.insert("desktop-entry", Value::from("airbridge"));
         hints.insert("urgency", Value::U8(if critical { 2 } else { 1 }));
+        let image = image.map(|p| p.to_string_lossy().into_owned());
+        if let Some(path) = image.as_deref() {
+            // Plasma and GNOME show this picture in the notification.
+            hints.insert("image-path", Value::from(path));
+        }
         let timeout = if critical { 0 } else { -1 };
         match proxy
             .notify(
@@ -121,8 +127,14 @@ impl Notifier {
     }
 
     /// Fire-and-forget notification; `on_action` runs for a clicked button.
-    pub async fn notify<F>(&self, summary: &str, body: &str, actions: &[(&str, &str)], on_action: F)
-    where
+    pub async fn notify<F>(
+        &self,
+        summary: &str,
+        body: &str,
+        image: Option<&Path>,
+        actions: &[(&str, &str)],
+        on_action: F,
+    ) where
         F: FnOnce(String) + Send + 'static,
     {
         let Some(proxy) = self.proxy().await else {
@@ -132,7 +144,10 @@ impl Notifier {
             Ok(s) => s,
             Err(_) => return,
         };
-        let Some(id) = self.show(&proxy, summary, body, actions, false).await else {
+        let Some(id) = self
+            .show(&proxy, summary, body, image, actions, false)
+            .await
+        else {
             return;
         };
         if actions.is_empty() {
@@ -157,11 +172,19 @@ impl Notifier {
 
     /// Shows a notification with buttons and waits for the answer. Dropping the
     /// future (e.g. because the user answered in the window) closes it.
-    pub async fn ask(&self, summary: &str, body: &str, actions: &[(&str, &str)]) -> Option<String> {
+    pub async fn ask(
+        &self,
+        summary: &str,
+        body: &str,
+        image: Option<&Path>,
+        actions: &[(&str, &str)],
+    ) -> Option<String> {
         let proxy = self.proxy().await?;
         let mut invoked = proxy.receive_action_invoked().await.ok()?;
         let mut closed = proxy.receive_notification_closed().await.ok()?;
-        let id = self.show(&proxy, summary, body, actions, true).await?;
+        let id = self
+            .show(&proxy, summary, body, image, actions, true)
+            .await?;
         let _guard = CloseOnDrop {
             proxy: proxy.clone(),
             id,

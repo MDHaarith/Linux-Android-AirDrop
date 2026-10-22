@@ -14,6 +14,7 @@ use crate::app::App;
 use crate::client::{self, Body, ByteStream, Options, PeerError};
 use crate::peers::Peer;
 use crate::protocol::{FileDto, PrepareUploadResponse, API};
+use crate::thumbnail;
 use crate::transfers::{now, Direction, FileState, FileStatus, Status, Transfer};
 
 const CHUNK: usize = 256 * 1024;
@@ -186,7 +187,45 @@ fn start(app: &Arc<App>, transfer: Transfer, peer: Peer, pin: Option<String>) ->
     id
 }
 
+/// Up to three photo previews, so the receiver sees what is coming.
+async fn add_previews(app: &Arc<App>, id: &str) {
+    let wanted: Vec<(String, PathBuf)> = {
+        let transfers = app.transfers.lock().unwrap();
+        let Some(t) = transfers.get(id) else { return };
+        t.files
+            .iter()
+            .filter(|f| {
+                f.dto
+                    .as_ref()
+                    .is_some_and(|d| d.preview.is_none() && thumbnail::is_previewable(&d.file_type))
+            })
+            .filter_map(|f| Some((f.id.clone(), PathBuf::from(f.path.clone()?))))
+            .take(thumbnail::MAX_PREVIEWS)
+            .collect()
+    };
+    if wanted.is_empty() {
+        return;
+    }
+    let previews = tokio::task::spawn_blocking(move || {
+        wanted
+            .into_iter()
+            .filter_map(|(file, path)| thumbnail::data_url(&path).map(|p| (file, p)))
+            .collect::<Vec<_>>()
+    })
+    .await
+    .unwrap_or_default();
+    let mut transfers = app.transfers.lock().unwrap();
+    if let Some(t) = transfers.get_mut(id) {
+        for (file, preview) in previews {
+            if let Some(dto) = t.file_mut(&file).and_then(|f| f.dto.as_mut()) {
+                dto.preview = Some(preview);
+            }
+        }
+    }
+}
+
 async fn run(app: &Arc<App>, id: &str, peer: &Peer, pin: Option<String>) -> Outcome {
+    add_previews(app, id).await;
     let body = {
         let transfers = app.transfers.lock().unwrap();
         let Some(t) = transfers.get(id) else {

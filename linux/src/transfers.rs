@@ -115,6 +115,9 @@ pub struct Transfer {
     /// Temporary files deleted when the transfer ends.
     #[serde(skip)]
     pub cleanup: Vec<PathBuf>,
+    /// Accepted without asking because it came from a trusted device.
+    #[serde(skip)]
+    pub auto_accepted: bool,
     #[serde(skip)]
     last_emit: Option<Instant>,
 }
@@ -137,6 +140,7 @@ impl Transfer {
             session_id: None,
             remote_session_id: None,
             cleanup: Vec::new(),
+            auto_accepted: false,
             last_emit: None,
         }
     }
@@ -176,6 +180,17 @@ impl Transfer {
         } else {
             0.0
         };
+        // While a request waits for an answer, show what is coming.
+        if self.status == Status::Waiting && self.direction == Direction::In {
+            if let Some(files) = value["files"].as_array_mut() {
+                for (json, file) in files.iter_mut().zip(&self.files) {
+                    let preview = file.dto.as_ref().and_then(|d| d.preview.as_deref());
+                    if let Some(thumb) = preview.and_then(crate::thumbnail::accept) {
+                        json["thumb"] = thumb.into();
+                    }
+                }
+            }
+        }
         value["total"] = json!(self.total());
         value["done"] = json!(self.done_bytes());
         value["speed"] = json!(speed);

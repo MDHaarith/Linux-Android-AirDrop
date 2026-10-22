@@ -101,6 +101,32 @@ impl Registry {
     pub fn upsert(&self, info: DeviceInfo, ip: IpAddr, kind: PeerKind) -> Peer {
         let mut peers = self.peers.lock().unwrap();
         let id = info.fingerprint.clone();
+        // A computer running AirBridge also answers as a Quick Share device.
+        // Show it once, like AirDrop does, through the richer LocalSend side.
+        let speaks_localsend = |peers: &HashMap<String, Peer>| {
+            peers
+                .values()
+                .any(|p| p.ip == ip && p.kind == PeerKind::LocalSend)
+        };
+        if kind == PeerKind::QuickShare && speaks_localsend(&peers) {
+            return Peer {
+                info,
+                ip,
+                kind,
+                last_seen: Instant::now(),
+                failures: 0,
+            };
+        }
+        let mut merged = Vec::new();
+        if kind == PeerKind::LocalSend {
+            peers.retain(|other_id, p| {
+                let duplicate = p.ip == ip && p.kind == PeerKind::QuickShare;
+                if duplicate {
+                    merged.push(other_id.clone());
+                }
+                !duplicate
+            });
+        }
         let (peer, changed) = match peers.get_mut(&id) {
             Some(existing) => {
                 let changed = existing.info != info || existing.ip != ip || existing.kind != kind;
@@ -125,6 +151,9 @@ impl Registry {
             }
         };
         drop(peers);
+        for id in merged {
+            self.bus.emit("peer-removed", json!({ "id": id }));
+        }
         if changed {
             self.bus.emit("peer", self.peer_json(&peer));
         }
@@ -185,5 +214,33 @@ impl Registry {
 
     pub fn snapshot(&self) -> Vec<Value> {
         self.list().iter().map(|p| self.peer_json(p)).collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn device(fingerprint: &str) -> DeviceInfo {
+        serde_json::from_value(json!({ "alias": "Studio PC", "fingerprint": fingerprint })).unwrap()
+    }
+
+    #[test]
+    fn a_computer_speaking_both_protocols_shows_up_once() {
+        let ip: IpAddr = "192.168.1.20".parse().unwrap();
+        let other: IpAddr = "192.168.1.21".parse().unwrap();
+
+        // Quick Share first, then LocalSend from the same address: merged.
+        let registry = Registry::new(EventBus::default(), &[]);
+        registry.upsert(device("qs"), ip, PeerKind::QuickShare);
+        registry.upsert(device("qs-other"), other, PeerKind::QuickShare);
+        registry.upsert(device("ls"), ip, PeerKind::LocalSend);
+        let ids: Vec<String> = registry.list().iter().map(|p| p.id().to_string()).collect();
+        assert_eq!(ids.len(), 2);
+        assert!(ids.contains(&"ls".to_string()) && ids.contains(&"qs-other".to_string()));
+
+        // And Quick Share announcing after LocalSend is not added.
+        registry.upsert(device("qs"), ip, PeerKind::QuickShare);
+        assert!(registry.get("qs").is_none());
     }
 }

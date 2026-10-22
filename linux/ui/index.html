@@ -9,21 +9,10 @@
   <link rel="stylesheet" href="/assets/app.css">
 </head>
 <body>
-  <div class="aurora" aria-hidden="true"><span></span><span></span><span></span></div>
-  <canvas id="fx" aria-hidden="true"></canvas>
-
-  <header class="topbar">
-    <div class="brand">
-      <img src="/assets/icon.svg" alt="">
-      <span>AirBridge</span>
-    </div>
-    <button class="me-chip" id="meChip" title="This computer — click to rename">
-      <span class="pulse-dot" id="liveDot"></span>
-      <span class="me-name" id="meName">…</span>
-      <span class="me-ip" id="meIp"></span>
-    </button>
-    <div class="top-actions">
-      <button class="icon-btn" id="btnScan" title="Scan the network for devices"></button>
+  <header class="toolbar">
+    <div class="title"><img src="/assets/icon.svg" alt=""><span>AirBridge</span></div>
+    <div class="tool-actions">
+      <button class="icon-btn" id="btnScan" title="Look for devices on the network"></button>
       <button class="icon-btn" id="btnPair" title="Pair a phone's browser (QR code)"></button>
       <button class="icon-btn" id="btnActivity" title="Activity"><span class="badge" id="activityBadge" hidden></span></button>
       <button class="icon-btn" id="btnSettings" title="Settings"></button>
@@ -31,35 +20,33 @@
   </header>
 
   <main class="stage" id="stage">
-    <div class="radar" id="radar">
-      <div class="ring-orbit r1"></div>
-      <div class="ring-orbit r2"></div>
-      <div class="pulses"><i></i><i></i><i></i></div>
-      <div class="sweep"></div>
-      <div class="me-node" id="meNode">
-        <div class="me-glow"></div>
-        <div class="avatar me-avatar" id="meAvatar"></div>
-      </div>
-      <div class="peers" id="peers"></div>
-    </div>
+    <div class="peers" id="peers"></div>
 
     <div class="empty" id="empty">
-      <h2>Looking for nearby devices<span class="dots"><i>.</i><i>.</i><i>.</i></span></h2>
-      <p>Open <b>AirBridge</b> or <b>LocalSend</b> on your phone (same Wi‑Fi), or pair your phone's browser.</p>
+      <h2>No one nearby yet</h2>
+      <p>Open <b>AirBridge</b>, <b>Quick Share</b> or <b>LocalSend</b> on your phone on the same Wi‑Fi, or pair your phone's browser.</p>
       <div class="row">
-        <button class="btn" id="emptyPair"></button>
+        <button class="btn ghost" id="emptyPair"></button>
         <button class="btn ghost" id="emptyScan"></button>
       </div>
     </div>
-
-    <p class="hint" id="hint">Drop files anywhere · click a device to share</p>
   </main>
+
+  <footer class="beacon" id="beacon">
+    <div class="beacon-mark" id="meNode" aria-hidden="true"><i></i><i></i><span class="mark"></span></div>
+    <button class="me-chip" id="meChip" title="Click to rename this computer">
+      <span class="pulse-dot" id="liveDot"></span>
+      <span>Visible as <b id="meName">…</b></span>
+    </button>
+    <p class="hint" id="hint">Drop files here, then choose a device</p>
+    <span class="me-ip" id="meIp"></span>
+  </footer>
 
   <section class="tray glass" id="tray" hidden>
     <div class="tray-head">
       <div>
         <b id="trayTitle">Ready to send</b>
-        <span class="muted" id="traySub">Click a device</span>
+        <span class="muted" id="traySub">Choose a device</span>
       </div>
       <button class="icon-btn small" id="trayClear" title="Clear"></button>
     </div>
@@ -80,27 +67,27 @@
   </aside>
 
   <div class="drop-overlay" id="dropOverlay" aria-hidden="true">
-    <div class="drop-card"><div class="drop-icon" id="dropIcon"></div><b>Drop to share</b><span>Release over a device to send right away</span></div>
+    <div class="drop-card"><span class="drop-icon" id="dropIcon"></span><b>Drop on a device to send</b></div>
   </div>
 
+  <!-- An incoming request, shown like an AirDrop alert. -->
   <div class="sheet-backdrop" id="sheetBackdrop"></div>
-  <section class="sheet" id="incomingSheet" role="dialog" aria-modal="true" aria-labelledby="inTitle">
-    <div class="grabber"></div>
-    <div class="incoming">
-      <div class="in-avatar-wrap"><div class="in-ripple"></div><div class="avatar in-avatar" id="inAvatar"></div></div>
-      <h2 id="inTitle">…</h2>
-      <p class="muted" id="inSub"></p>
+  <section class="alert incoming" id="incomingSheet" role="alertdialog" aria-modal="true" aria-labelledby="inTitle" aria-describedby="inSub">
+    <div class="alert-body">
+      <div class="in-preview" id="inPreview"></div>
+      <h2 id="inTitle">AirBridge</h2>
+      <p id="inSub"></p>
+      <p class="in-meta" id="inMeta"></p>
       <p class="pin-chip" id="inPin" hidden></p>
-      <div class="in-files" id="inFiles"></div>
       <label class="trust-check" id="inTrustRow"><input type="checkbox" id="inTrust"> Always accept from this device</label>
-      <div class="in-actions">
-        <button class="btn ghost" id="inDecline">Decline</button>
-        <button class="btn" id="inAccept">Accept</button>
-      </div>
+    </div>
+    <div class="alert-actions">
+      <button id="inDecline">Decline</button>
+      <button class="default" id="inAccept">Accept</button>
     </div>
   </section>
 
-  <div class="popover glass" id="peerMenu" hidden></div>
+  <div class="menu" id="peerMenu" hidden></div>
   <div class="modal" id="modal" hidden></div>
   <div class="toasts" id="toasts"></div>
 

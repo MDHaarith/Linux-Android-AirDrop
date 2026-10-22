@@ -1,7 +1,7 @@
 /* AirBridge phone companion: share with the computer from any phone browser. */
 "use strict";
 
-const { icons, fileIcon, paintAvatar, bytes, esc, el, toast, fx, center } = AB;
+const { icons, fileIcon, sharePhrase, bytes, esc, el, toast } = AB;
 const $ = (id) => document.getElementById(id);
 
 const store = {
@@ -77,7 +77,7 @@ function connect() {
     if (msg.type === "hello") {
       session.desktop = { alias: msg.alias, deviceModel: msg.deviceModel };
       setLink(true, `Connected to ${msg.alias}`);
-      $("orbSub").textContent = `to ${msg.alias}`;
+      $("targetName").textContent = msg.alias;
     } else if (msg.type === "offer") {
       showOffer(msg);
     } else if (msg.type === "cancel") {
@@ -99,15 +99,14 @@ function showUnpaired() {
   setLink(false, "Not paired");
 }
 
-/* ---------------------------------------------------------------- orb ui */
-function setOrb(mode, progress = 0, label, sub) {
+/* --------------------------------------------------------- share target */
+/** The computer's ring and status line, like a device in the iOS share sheet. */
+function setTarget(mode, progress = 0, status) {
   const home = $("home");
   home.classList.toggle("busy", mode === "busy");
   home.classList.toggle("success", mode === "success");
-  $("orbBar").style.strokeDashoffset = 578 * (1 - progress);
-  $("orbIcon").innerHTML = mode === "success" ? icons.check : mode === "busy" ? icons.upload : icons.send;
-  $("orbLabel").textContent = label || "Send files";
-  $("orbSub").textContent = sub || (session.desktop ? `to ${session.desktop.alias}` : "to your computer");
+  $("targetBar").style.strokeDashoffset = mode === "success" ? 0 : 289 * (1 - progress);
+  $("targetStatus").textContent = status || "Tap to send files";
 }
 
 function addRecent(item) {
@@ -122,19 +121,21 @@ function renderRecent() {
     box.innerHTML = "";
     return;
   }
-  box.innerHTML = `<h3>This session</h3>`;
-  session.recent.forEach((r, i) => {
-    const node = el(`<div class="r-item" style="animation-delay:${i * 40}ms">
-      <div class="r-icon">${r.icon}</div>
-      <div class="r-body"><div class="r-title">${esc(r.title)}</div><div class="r-sub">${esc(r.sub)}</div></div>
-      ${r.copy ? `<button class="link" data-copy>Copy</button>` : ""}
-      ${r.href ? `<a href="${r.href}" download>Save</a>` : ""}
+  box.innerHTML = `<p class="recent-title">This session</p>`;
+  const list = el(`<div class="list"></div>`);
+  for (const r of session.recent) {
+    const node = el(`<div class="row">
+      <span class="r-icon">${r.icon}</span>
+      <span class="r-text">${esc(r.title)}<small>${esc(r.sub)}</small></span>
+      ${r.copy ? `<button class="r-act" data-copy>Copy</button>` : ""}
+      ${r.href ? `<a class="r-act" href="${r.href}" download>Save</a>` : ""}
     </div>`);
     if (r.copy) node.querySelector("[data-copy]").addEventListener("click", async (e) => {
-      e.target.textContent = (await AB.copyText(r.copy)) ? "Copied ✓" : "Copy failed";
+      e.target.textContent = (await AB.copyText(r.copy)) ? "Copied" : "Copy failed";
     });
-    box.appendChild(node);
-  });
+    list.appendChild(node);
+  }
+  box.appendChild(list);
 }
 
 /* ------------------------------------------------------------- sending */
@@ -142,7 +143,7 @@ async function sendFiles(files) {
   if (!files.length || session.busy) return;
   session.busy = true;
   const total = files.reduce((s, f) => s + f.size, 0);
-  setOrb("busy", 0, "Preparing…", `${files.length} item${files.length > 1 ? "s" : ""} · ${bytes(total)}`);
+  setTarget("busy", 0, "Waiting…");
   try {
     const res = await fetch(`/send?${query()}`, {
       method: "POST",
@@ -158,23 +159,21 @@ async function sendFiles(files) {
       await upload(file, data.transfer, data.files[i].id, (loaded) => {
         const done = sentBefore + loaded;
         const secs = (performance.now() - started) / 1000;
-        setOrb("busy", total ? done / total : 1, `${Math.round((total ? done / total : 1) * 100)}%`, `${bytes(done / Math.max(secs, 0.1))}/s · ${file.name}`);
+        setTarget("busy", total ? done / total : 1, `Sending… ${bytes(done / Math.max(secs, 0.1))}/s`);
       });
       sentBefore += file.size;
     }
-    setOrb("success", 1, "Sent!", `to ${session.desktop?.alias || "your computer"}`);
-    const c = center($("orb"));
-    if (c) fx.confetti(c.x, c.y, 120);
-    if (navigator.vibrate) navigator.vibrate([18, 40, 18]);
+    setTarget("success", 1, "Sent");
+    if (navigator.vibrate) navigator.vibrate(18);
     addRecent({
       icon: files.length === 1 ? fileIcon(files[0].type, files[0].name) : icons.folder,
       title: files.length === 1 ? files[0].name : `${files.length} files`,
       sub: `Sent · ${bytes(total)}`,
     });
-    setTimeout(() => setOrb("idle"), 2600);
+    setTimeout(() => setTarget("idle"), 2600);
   } catch (err) {
     toast("Couldn't send", err.message, "bad");
-    setOrb("idle");
+    setTarget("idle");
   } finally {
     session.busy = false;
   }
@@ -239,18 +238,16 @@ function showOffer(offer) {
   session.offer = offer;
   const files = (offer.files || []).filter((f) => !offer.message || f.name !== `${f.id}.txt`);
   const isText = offer.message && files.length === 0;
-  $("offerTitle").textContent = isText ? `${offer.from} sent you a message` : `${offer.from} wants to send you ${files.length === 1 ? "a file" : files.length + " files"}`;
-  const avatar = $("offerAvatar");
-  avatar.innerHTML = icons.laptop;
-  paintAvatar(avatar, offer.from || "");
-  $("offerBody").innerHTML = isText
-    ? `<div class="o-text">${esc(offer.message)}</div>`
-    : files.map((f, i) => `<div class="o-file" style="animation-delay:${Math.min(i, 8) * 40}ms">${fileIcon(f.type, f.name)}<span>${esc(f.name.split("/").pop())}</span><small>${bytes(f.size)}</small></div>`).join("");
+  const first = files[0] || {};
+  $("offerPreview").innerHTML = isText ? `<div class="bubble">${esc(offer.message)}</div>`
+    : `<div class="tile">${files.length > 1 && !files.every((f) => f.type === first.type) ? icons.file : fileIcon(first.type, first.name)}</div>`;
+  $("offerText").textContent = `“${offer.from}” would like to share ${isText ? "a message" : sharePhrase(files)}.`;
+  $("offerMeta").textContent = isText ? "" : bytes(files.reduce((sum, f) => sum + (f.size || 0), 0));
   $("offerAccept").textContent = isText ? "Copy" : "Accept";
   $("offerDecline").textContent = isText ? "Close" : "Decline";
   $("sheetBackdrop").classList.add("open");
   $("offerSheet").classList.add("open");
-  if (navigator.vibrate) navigator.vibrate([25, 60, 25]);
+  if (navigator.vibrate) navigator.vibrate(25);
 }
 
 function closeOffer() {
@@ -285,22 +282,21 @@ async function answerOffer(accept) {
     addRecent({ icon: fileIcon(f.type, f.name), title: f.name.split("/").pop(), sub: `From ${offer.from} · ${bytes(f.size)}`, href });
     await new Promise((r) => setTimeout(r, 700));
   }
-  const c = center($("orb"));
-  if (c) fx.confetti(c.x, c.y, 90);
   toast("Saving to Downloads", `${files.length} file${files.length > 1 ? "s" : ""} from ${offer.from}`, "ok");
 }
 
 /* ------------------------------------------------------------------ init */
 async function init() {
-  document.body.insertAdjacentHTML("afterbegin", `<svg width="0" height="0" style="position:absolute"><defs>
-    <linearGradient id="orbGradient" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#8f7dff"/><stop offset="0.55" stop-color="#ff5fa2"/><stop offset="1" stop-color="#33d1ff"/></linearGradient></defs></svg>`);
   $("unpairedIcon").innerHTML = icons.qr;
-  $("btnPhotos").innerHTML = `${icons.image} Photos`;
-  $("btnText").innerHTML = `${icons.message} Message`;
-  fx.init($("fx"));
-  setOrb("idle");
+  $("targetIcon").innerHTML = icons.laptop;
+  $("btnPhotos").querySelector(".r-icon").innerHTML = icons.image;
+  $("btnFiles").querySelector(".r-icon").innerHTML = icons.folder;
+  $("btnText").querySelector(".r-icon").innerHTML = icons.message;
+  document.querySelectorAll(".chev").forEach((c) => { c.innerHTML = icons.chevron; });
+  setTarget("idle");
 
-  $("orb").addEventListener("click", () => $("pickAny").click());
+  $("target").addEventListener("click", () => $("pickAny").click());
+  $("btnFiles").addEventListener("click", () => $("pickAny").click());
   $("btnPhotos").addEventListener("click", () => $("pickMedia").click());
   $("btnText").addEventListener("click", composeText);
   $("youChip").addEventListener("click", rename);
@@ -324,7 +320,10 @@ async function init() {
   await detectModel();
   $("youName").textContent = deviceName;
   $("home").hidden = false;
-  if (session.desktop) setLink(false, `Connecting to ${session.desktop.alias}…`);
+  if (session.desktop) {
+    setLink(false, `Connecting to ${session.desktop.alias}…`);
+    $("targetName").textContent = session.desktop.alias;
+  }
   connect();
 }
 

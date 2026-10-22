@@ -188,6 +188,9 @@ pub struct Settings {
     pub edge_drop: bool,
     /// "right" or "left".
     pub edge_side: String,
+    /// Open what your own (trusted) devices send right away, like AirDrop
+    /// between your own Apple devices.
+    pub open_received: bool,
 }
 
 impl Default for Settings {
@@ -213,6 +216,7 @@ impl Default for Settings {
             quick_share: true,
             edge_drop: true,
             edge_side: "right".into(),
+            open_received: true,
         }
     }
 }
@@ -322,6 +326,7 @@ impl Settings {
         set_bool!("notifications", notifications);
         set_bool!("quickShare", quick_share);
         set_bool!("edgeDrop", edge_drop);
+        set_bool!("openReceived", open_received);
         if let Some(side) = map.get("edgeSide").and_then(Value::as_str) {
             if ["left", "right"].contains(&side) && self.edge_side != side {
                 self.edge_side = side.into();

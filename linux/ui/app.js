@@ -1,7 +1,7 @@
 /* AirBridge desktop window. Talks to the local service over /api (cookie auth). */
 "use strict";
 
-const { icons, deviceIcon, fileIcon, paintAvatar, bytes, ago, esc, el, toast, fx, center } = AB;
+const { icons, deviceIcon, fileIcon, sharePhrase, bytes, ago, esc, el, toast, center } = AB;
 const $ = (id) => document.getElementById(id);
 
 const state = {
@@ -46,11 +46,16 @@ function applyTheme(theme) {
 function connect() {
   const ws = new WebSocket(`ws://${location.host}/api/events`);
   ws.onmessage = (e) => handle(JSON.parse(e.data));
-  ws.onopen = () => $("liveDot").classList.remove("off");
+  ws.onopen = () => setOnline(true);
   ws.onclose = () => {
-    $("liveDot").classList.add("off");
+    setOnline(false);
     setTimeout(connect, 1500);
   };
+}
+
+function setOnline(on) {
+  $("liveDot").classList.toggle("off", !on);
+  document.body.classList.toggle("offline", !on);
 }
 
 function handle({ event, data }) {
@@ -101,13 +106,10 @@ function renderMe() {
   if (!state.me) return;
   $("meName").textContent = state.settings.alias || state.me.alias;
   $("meIp").textContent = state.me.ip || "";
-  const avatar = $("meAvatar");
-  avatar.innerHTML = icons.laptop;
 }
 
 function flashMe() {
-  const node = $("meNode");
-  node.animate([{ transform: "translate(-50%,-50%) scale(1)" }, { transform: "translate(-50%,-50%) scale(1.15)" }, { transform: "translate(-50%,-50%) scale(1)" }], { duration: 600, easing: "cubic-bezier(.34,1.56,.64,1)" });
+  $("meNode").animate([{ transform: "scale(1)" }, { transform: "scale(1.1)" }, { transform: "scale(1)" }], { duration: 450, easing: "cubic-bezier(.25,.1,.25,1)" });
 }
 
 /* ---------------------------------------------------------------- peers */
@@ -124,11 +126,9 @@ function upsertPeer(p, quiet = false) {
   if (!node) {
     node = el(`
       <button class="peer" data-id="${esc(p.id)}">
-        <div class="bubble" style="--delay:${(-Math.random() * 6).toFixed(2)}s">
-          <svg class="ring" viewBox="0 0 100 100"><circle class="track" cx="50" cy="50" r="44"/><circle class="bar" cx="50" cy="50" r="44"/></svg>
+        <div class="bubble">
           <div class="avatar"></div>
-          <div class="check checkmark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12.5 4.5 4.5L19 7.5"/></svg></div>
-          <span class="pct"></span>
+          <svg class="ring" viewBox="0 0 100 100"><circle class="track" cx="50" cy="50" r="44"/><circle class="bar" cx="50" cy="50" r="44"/></svg>
         </div>
         <div class="label"><b></b><span></span></div>
       </button>`);
@@ -138,7 +138,6 @@ function upsertPeer(p, quiet = false) {
   }
   const avatar = node.querySelector(".avatar");
   avatar.innerHTML = deviceIcon(p.deviceType, p.deviceModel);
-  paintAvatar(avatar, p.id);
   node.querySelector(".label b").textContent = p.alias;
   node.dataset.subtitle = peerSubtitle(p);
   node.title = `${p.alias}${p.ip ? " · " + p.ip : ""}`;
@@ -147,14 +146,8 @@ function upsertPeer(p, quiet = false) {
   if (!p.trusted && star) star.remove();
   node.classList.toggle("picking", state.staged.length > 0);
   refreshPeerState(p.id);
-  layoutPeers();
+  if (isNew) layoutPeers();
   renderEmpty();
-  if (isNew && !quiet) {
-    setTimeout(() => {
-      const c = center(node.querySelector(".bubble"));
-      if (c) fx.sparkle(c.x, c.y, "#33d1ff");
-    }, 350);
-  }
 }
 
 function removePeer(id) {
@@ -169,22 +162,10 @@ function removePeer(id) {
   renderEmpty();
 }
 
+/** Keeps the grid in name order without moving nodes (which would restart animations). */
 function layoutPeers() {
-  const size = $("radar").clientWidth;
   const ids = [...peerEls.keys()].sort((a, b) => (state.peers.get(a)?.alias || "").localeCompare(state.peers.get(b)?.alias || "") || a.localeCompare(b));
-  const inner = Math.min(ids.length, 6);
-  const outer = ids.length - inner;
-  ids.forEach((id, i) => {
-    const onInner = i < inner;
-    const count = onInner ? inner : outer;
-    const idx = onInner ? i : i - inner;
-    const radius = size * (onInner ? 0.3 : 0.46);
-    const start = onInner ? -2.1 : -2.1 + Math.PI / count;
-    const angle = start + (idx / count) * Math.PI * 2;
-    const node = peerEls.get(id);
-    node.style.setProperty("--x", `${Math.cos(angle) * radius}px`);
-    node.style.setProperty("--y", `${Math.sin(angle) * radius}px`);
-  });
+  ids.forEach((id, i) => { peerEls.get(id).style.order = i; });
 }
 
 function renderEmpty() {
@@ -193,11 +174,7 @@ function renderEmpty() {
   $("hint").hidden = empty || state.staged.length > 0;
 }
 
-function peerBubble(id) {
-  return peerEls.get(id)?.querySelector(".bubble");
-}
-
-/** Shows the latest transfer with a peer on its bubble (ring, %, label). */
+/** Shows the latest transfer with a peer under its name, like the iOS share sheet. */
 function refreshPeerState(id) {
   const node = peerEls.get(id);
   if (!node) return;
@@ -208,7 +185,6 @@ function refreshPeerState(id) {
   node.classList.remove("busy", "waiting", "success", "failed");
   const label = node.querySelector(".label span");
   const bar = node.querySelector(".ring .bar");
-  const pct = node.querySelector(".pct");
   if (!t) {
     label.textContent = node.dataset.subtitle;
     bar.style.strokeDashoffset = 276.5;
@@ -217,18 +193,19 @@ function refreshPeerState(id) {
   const progress = t.total ? t.done / t.total : 0;
   if (t.status === "waiting") {
     node.classList.add("busy", "waiting");
-    label.textContent = t.direction === "out" ? "Waiting for accept…" : "Wants to share…";
-    pct.textContent = "";
+    label.textContent = t.direction === "out" ? "Waiting…" : "Wants to share";
+    bar.style.strokeDashoffset = "";
   } else if (t.status === "transferring") {
     node.classList.add("busy");
     bar.style.strokeDashoffset = 276.5 * (1 - progress);
-    pct.textContent = `${Math.round(progress * 100)}%`;
-    label.textContent = `${t.direction === "out" ? "Sending" : "Receiving"} · ${bytes(t.speed)}/s`;
+    label.textContent = t.direction === "out" ? "Sending…" : "Receiving…";
   } else if (t.status === "done") {
     node.classList.add("success");
-    label.textContent = t.direction === "out" ? (t.message ? "Message sent" : "Sent") : "Received";
+    bar.style.strokeDashoffset = 0;
+    label.textContent = t.direction === "out" ? "Sent" : "Received";
   } else {
     node.classList.add("failed");
+    bar.style.strokeDashoffset = 276.5;
     label.textContent = t.status === "declined" ? "Declined" : t.status === "cancelled" ? "Cancelled" : "Failed";
   }
 }
@@ -244,16 +221,6 @@ function updateTransfer(t) {
   state.transfers.set(t.id, t);
   lastStatus.set(t.id, t.status);
   const peerId = t.peer && t.peer.id;
-
-  // Particle stream while bytes flow.
-  if (t.status === "transferring" && peerId && peerEls.has(peerId)) {
-    const from = () => center($("meNode"));
-    const to = () => center(peerBubble(peerId));
-    fx.stream(t.id, t.direction === "out" ? from : to, t.direction === "out" ? to : from, t.direction === "out" ? "#8f7dff" : "#33d1ff");
-  } else {
-    fx.stopStream(t.id);
-  }
-
   if (before !== t.status && isFinal(t)) onFinished(t, before);
   if (t.direction === "in" && t.status !== "waiting" && currentIncoming === t.id) closeIncoming();
   if (peerId) refreshPeerState(peerId);
@@ -263,9 +230,7 @@ function updateTransfer(t) {
 
 function onFinished(t, before) {
   const who = t.peer?.alias || "device";
-  const c = center(peerBubble(t.peer?.id)) || center($("meNode"));
   if (t.status === "done") {
-    if (c && !(t.direction === "in" && t.message)) fx.confetti(c.x, c.y, t.direction === "out" ? 70 : 110);
     if (t.direction === "out") toast(t.message ? `Message sent to ${who}` : `Sent to ${who}`, summary(t), "ok");
     else if (!t.message) {
       toast(`Received from ${who}`, summary(t), "ok");
@@ -294,7 +259,6 @@ function toggleActivity(open) {
   document.body.classList.toggle("activity-open", on);
   if (on) state.unseen = 0;
   updateBadge();
-  setTimeout(layoutPeers, 520);
 }
 
 function updateBadge() {
@@ -360,7 +324,6 @@ function renderItem(t, structural) {
       ${t.status === "done" && hasPath ? `<button class="btn ghost small" data-act="open">Open</button><button class="btn ghost small" data-act="reveal">Show in folder</button>` : ""}
       ${t.message ? `<button class="btn ghost small" data-act="copy">Copy</button>` : ""}
     </div>`;
-  paintAvatar(node.querySelector(".avatar"), t.peer?.id || "");
   node.querySelectorAll("[data-act]").forEach((b) => b.addEventListener("click", () => itemAction(t.id, b.dataset.act)));
   node.querySelectorAll(".thumbs img").forEach((img) => {
     img.addEventListener("click", () => api(`/transfers/${t.id}/open`, { body: { file: img.dataset.file } }));
@@ -409,31 +372,46 @@ function showNextIncoming() {
   currentIncoming = id;
   const who = t.peer?.alias || "A device";
   const files = t.files || [];
-  $("inTitle").textContent = `${who} wants to share ${files.length === 1 ? "a file" : files.length + " files"}`;
-  $("inSub").textContent = `${t.peer?.deviceModel || ""}${t.peer?.ip ? " · " + t.peer.ip : ""} · ${bytes(t.total)}`;
-  const avatar = $("inAvatar");
-  avatar.innerHTML = deviceIcon(t.peer?.deviceType, t.peer?.deviceModel);
-  paintAvatar(avatar, t.peer?.id || "");
-  $("inFiles").innerHTML = files.slice(0, 50).map((f, i) => `
-    <div class="in-file" style="animation-delay:${Math.min(i, 8) * 45}ms">${fileIcon(f.type, f.name)}<span>${esc(f.name)}</span><small>${bytes(f.size)}</small></div>`).join("")
-    + (files.length > 50 ? `<div class="faint">+ ${files.length - 50} more</div>` : "");
+  $("inPreview").innerHTML = incomingPreview(t);
+  $("inTitle").textContent = "AirBridge";
+  $("inSub").textContent = `“${who}” would like to share ${t.message ? "a message" : sharePhrase(files)}.`;
+  $("inMeta").textContent = incomingMeta(t);
   // Quick Share shows the same four digits on the phone; there is no
   // lasting identity to trust, so no "always accept".
   const pin = t.peer?.pin;
   $("inPin").hidden = !pin;
-  $("inPin").innerHTML = pin ? `PIN <b>${esc(pin)}</b> <span>should match the phone</span>` : "";
+  $("inPin").innerHTML = pin ? `PIN <b>${esc(pin)}</b> should match the phone` : "";
   $("inTrustRow").hidden = t.peer?.kind === "quickshare";
   $("inTrust").checked = false;
   $("sheetBackdrop").classList.add("open");
   $("incomingSheet").classList.add("open");
-  setTimeout(() => $("inAccept").focus(), 300);
+  setTimeout(() => $("inAccept").focus(), 250);
+}
+
+/** What is coming: the photo itself, a small stack of photos, or the file's icon. */
+function incomingPreview(t) {
+  if (t.message) return `<div class="bubble">${esc(t.message)}</div>`;
+  const files = t.files || [];
+  const thumbs = files.map((f) => f.thumb).filter(Boolean).slice(0, 3);
+  if (thumbs.length === 1 && files.length === 1) return `<img class="photo" alt="" src="${esc(thumbs[0])}">`;
+  if (thumbs.length) return `<div class="stack">${thumbs.reverse().map((src) => `<img alt="" src="${esc(src)}">`).join("")}</div>`;
+  const first = files[0] || {};
+  const icon = files.length > 1 && !files.every((f) => f.type === first.type) ? icons.file : fileIcon(first.type, first.name);
+  return `<div class="tile">${icon}</div>`;
+}
+
+function incomingMeta(t) {
+  const files = t.files || [];
+  if (t.message) return "";
+  const named = files.length > 1 ? files.slice(0, 2).map((f) => f.name.split("/").pop()).join(", ") + (files.length > 2 ? ` and ${files.length - 2} more` : "") : "";
+  return [named, bytes(t.total)].filter(Boolean).join(" · ");
 }
 
 function closeIncoming() {
   $("sheetBackdrop").classList.remove("open");
   $("incomingSheet").classList.remove("open");
   currentIncoming = null;
-  setTimeout(showNextIncoming, 450);
+  setTimeout(showNextIncoming, 300);
 }
 
 async function answerIncoming(accept) {
@@ -462,9 +440,6 @@ function showMessage({ id, from, text, copied }) {
   node.querySelector("[data-close]").addEventListener("click", close);
   box.prepend(node);
   setTimeout(close, 14000);
-  const t = state.transfers.get(id);
-  const c = center(peerBubble(t?.peer?.id));
-  if (c) fx.sparkle(c.x, c.y, "#ff5fa2", 24);
 }
 
 /* ------------------------------------------------------------ peer clicks */
@@ -481,19 +456,18 @@ function openPeerMenu(id) {
   const menu = $("peerMenu");
   const web = p.kind === "web";
   menu.innerHTML = `
-    <div class="p-head"><div class="avatar sm">${deviceIcon(p.deviceType, p.deviceModel)}</div><div><b>${esc(p.alias)}</b><span>${esc(peerSubtitle(p))}${p.ip ? " · " + esc(p.ip) : ""}</span></div></div>
-    <button class="p-item" data-act="files">${icons.file} Send files…</button>
-    <button class="p-item" data-act="folder">${icons.folder} Send a folder…</button>
-    <button class="p-item" data-act="text">${icons.message} Send a message…</button>
-    <button class="p-item" data-act="clipboard">${icons.clipboard} Send clipboard</button>
-    ${web || p.kind === "quickshare" ? "" : `<button class="p-item" data-act="trust">${icons.shield} ${p.trusted ? "Stop trusting" : "Trust this device"}</button>`}`;
-  paintAvatar(menu.querySelector(".avatar"), p.id);
+    <div class="m-head"><div class="avatar sm">${deviceIcon(p.deviceType, p.deviceModel)}</div><div><b>${esc(p.alias)}</b><span>${esc(peerSubtitle(p))}${p.ip ? " · " + esc(p.ip) : ""}</span></div></div>
+    <button class="m-item" data-act="files">${icons.file} Send Files…</button>
+    <button class="m-item" data-act="folder">${icons.folder} Send a Folder…</button>
+    <button class="m-item" data-act="text">${icons.message} Send a Message…</button>
+    <button class="m-item" data-act="clipboard">${icons.clipboard} Send Clipboard</button>
+    ${web || p.kind === "quickshare" ? "" : `<button class="m-item" data-act="trust">${icons.shield} ${p.trusted ? "Stop Trusting" : "Trust This Device"}</button>`}`;
   menu.hidden = false;
-  const r = node.querySelector(".bubble").getBoundingClientRect();
+  const r = node.getBoundingClientRect();
   const mw = menu.offsetWidth;
   const mh = menu.offsetHeight;
   let left = r.left + r.width / 2 - mw / 2;
-  let top = r.bottom + 34;
+  let top = r.bottom + 6;
   if (top + mh > innerHeight - 12) top = r.top - mh - 12;
   left = Math.max(12, Math.min(left, innerWidth - mw - 12));
   menu.style.left = `${left}px`;
@@ -630,12 +604,13 @@ function renderTray() {
   const tray = $("tray");
   const items = state.staged;
   tray.hidden = items.length === 0;
+  document.body.classList.toggle("staging", items.length > 0);
   for (const node of peerEls.values()) node.classList.toggle("picking", items.length > 0);
   renderEmpty();
   if (!items.length) return;
   const total = items.reduce((s, i) => s + (i.size || 0), 0);
   $("trayTitle").textContent = items.length === 1 ? items[0].name : `${items.length} items`;
-  $("traySub").textContent = `${bytes(total)} · ${state.peers.size ? "click a device to send" : "waiting for a device…"}`;
+  $("traySub").textContent = `${bytes(total)} · ${state.peers.size ? "choose a device" : "waiting for a device…"}`;
   $("trayFiles").innerHTML = "";
   items.forEach((item, i) => {
     const chip = el(`<div class="chip" style="animation-delay:${Math.min(i, 10) * 35}ms">${item.isDir ? icons.folder : fileIcon(item.type, item.name)}<span class="c-name">${esc(item.name)}</span><span class="c-size">${bytes(item.size)}</span><i class="c-progress"></i></div>`);
@@ -707,10 +682,6 @@ addEventListener("drop", async (e) => {
   endDrag();
   const files = entries.length ? await readEntries(entries) : plain.map((file) => ({ file, name: file.name }));
   if (!files.length) return;
-  if (target) {
-    const c = center(peerBubble(target));
-    if (c) fx.sparkle(c.x, c.y, "#8f7dff", 22);
-  }
   stageUploads(files, target);
 });
 
@@ -820,7 +791,7 @@ function openPairing() {
     <p class="muted">Best: install <b>AirBridge for Android</b> (or LocalSend). No app? Scan this with the phone's camera to share through its browser.</p>
     <div class="qr-wrap"><img alt="QR code" src="/api/qr.svg?t=${Date.now()}"></div>
     <div class="url-box"><span>${esc(url)}</span><button class="icon-btn small" id="copyUrl" title="Copy link">${icons.copy}</button></div>
-    <ol class="steps"><li>Phone and computer on the same Wi‑Fi</li><li>Scan the code, keep the page open</li><li>Your phone appears on the radar</li></ol>
+    <ol class="steps"><li>Phone and computer on the same Wi‑Fi</li><li>Scan the code, keep the page open</li><li>Your phone shows up here</li></ol>
     <div class="actions"><button class="btn ghost" id="resetPairing">Reset pairing</button><button class="btn" data-close>Done</button></div>`, (card) => {
     card.querySelector("[data-close]").addEventListener("click", closeModal);
     card.querySelector("#copyUrl").addEventListener("click", async () => { if (await AB.copyText(url)) toast("Link copied", "", "ok", 1800); });
@@ -846,27 +817,34 @@ function openSettings() {
   }).join("");
   openModal(`
     <h2>Settings</h2>
-    <div class="field"><label for="sAlias">Device name</label><input class="input" id="sAlias" maxlength="64" value="${esc(s.alias)}"></div>
-    <div class="field"><label for="sDir">Save received files to</label>
-      <div class="dir-row"><input class="input" id="sDir" value="${esc(s.downloadDir)}"><button class="btn ghost" id="pickDir">Choose…</button></div></div>
+    <div class="group">
+      <div class="field"><label for="sAlias">Device name</label><input class="input" id="sAlias" maxlength="64" value="${esc(s.alias)}"></div>
+      <div class="field"><label for="sDir">Save received files to</label>
+        <div class="dir-row"><input class="input" id="sDir" value="${esc(s.downloadDir)}"><button class="btn ghost" id="pickDir">Choose…</button></div></div>
+    </div>
     <p class="section-title">Receiving</p>
-    ${settingSwitch("autoAcceptTrusted", "Auto-accept trusted devices", "No prompt for devices you marked as trusted")}
-    ${settingSwitch("copyReceivedText", "Copy received text", "Text from trusted devices goes straight to your clipboard")}
-    ${settingSwitch("notifications", "Notifications", "Desktop notifications with Accept / Decline")}
-    ${settingSwitch("quickShare", "Quick Share", "Android phones can share here from their built-in share sheet, no app needed")}
+    <div class="group">
+      ${settingSwitch("autoAcceptTrusted", "Accept from my devices", "No prompt for devices you trust, like your own phone")}
+      ${settingSwitch("openReceived", "Open what my devices send", "A photo or link from your own devices opens right away")}
+      ${settingSwitch("copyReceivedText", "Copy received text", "Text from trusted devices goes straight to your clipboard")}
+      ${settingSwitch("notifications", "Notifications", "Desktop notifications with Accept / Decline")}
+      ${settingSwitch("quickShare", "Quick Share", "Android phones can share here from their built-in share sheet, no app needed")}
+    </div>
     <p class="section-title">Sending</p>
-    ${settingSwitch("edgeDrop", "Screen-edge drop zone", "Drag anything to the side of the screen and drop it on a device")}
-    <div class="field"><label for="sEdge">Drop zone side</label><select class="input" id="sEdge">
-      <option value="right" ${s.edgeSide !== "left" ? "selected" : ""}>Right edge</option>
-      <option value="left" ${s.edgeSide === "left" ? "selected" : ""}>Left edge</option></select></div>
-    ${settingSwitch("webCompanion", "Phone browser companion", "Phones without an app can pair with a QR code")}
-    <div class="field"><label for="sPin">Require a PIN (optional)</label><input class="input" id="sPin" placeholder="No PIN" value="${esc(s.pin || "")}" autocomplete="off"></div>
+    <div class="group">
+      ${settingSwitch("edgeDrop", "Screen-edge drop zone", "Drag anything to the side of the screen and drop it on a device")}
+      <div class="field"><label for="sEdge">Drop zone side</label><select class="input" id="sEdge">
+        <option value="right" ${s.edgeSide !== "left" ? "selected" : ""}>Right edge</option>
+        <option value="left" ${s.edgeSide === "left" ? "selected" : ""}>Left edge</option></select></div>
+      ${settingSwitch("webCompanion", "Phone browser companion", "Phones without an app can pair with a QR code")}
+      <div class="field"><label for="sPin">Require a PIN (optional)</label><input class="input" id="sPin" placeholder="No PIN" value="${esc(s.pin || "")}" autocomplete="off"></div>
+    </div>
     <p class="section-title">Appearance</p>
-    <div class="field"><select class="input" id="sTheme">
+    <div class="group"><div class="field"><select class="input" id="sTheme">
       <option value="auto" ${s.theme === "auto" ? "selected" : ""}>Match system</option>
       <option value="dark" ${s.theme === "dark" ? "selected" : ""}>Dark</option>
-      <option value="light" ${s.theme === "light" ? "selected" : ""}>Light</option></select></div>
-    ${trusted ? `<p class="section-title">Trusted devices</p><div class="trusted-list">${trusted}</div>` : ""}
+      <option value="light" ${s.theme === "light" ? "selected" : ""}>Light</option></select></div></div>
+    ${trusted ? `<p class="section-title">Trusted devices</p><div class="group trusted-list">${trusted}</div>` : ""}
     <p class="section-title">About</p>
     <p class="muted" style="margin:6px 0">AirBridge ${esc(state.me?.version || "")} · LocalSend protocol v2 · port ${esc(state.me?.port || "")}${state.multicast ? "" : " · multicast unavailable"}</p>
     <p class="fp">Fingerprint ${esc(state.me?.fingerprint || "")}</p>
@@ -935,15 +913,13 @@ async function scan() {
 
 /* ------------------------------------------------------------------- init */
 function init() {
-  // Gradient used by the progress rings.
-  document.body.insertAdjacentHTML("afterbegin", `<svg width="0" height="0" style="position:absolute"><defs>
-    <linearGradient id="ringGradient" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#8f7dff"/><stop offset="0.55" stop-color="#ff5fa2"/><stop offset="1" stop-color="#33d1ff"/></linearGradient></defs></svg>`);
-  $("btnScan").innerHTML = icons.radar;
+  $("meNode").querySelector(".mark").innerHTML = icons.waves;
+  $("btnScan").innerHTML = icons.refresh;
   $("btnPair").innerHTML = icons.qr;
   $("btnActivity").insertAdjacentHTML("afterbegin", icons.activity);
   $("btnSettings").innerHTML = icons.settings;
   $("emptyPair").innerHTML = `${icons.qr} Pair phone browser`;
-  $("emptyScan").innerHTML = `${icons.radar} Scan network`;
+  $("emptyScan").innerHTML = `${icons.refresh} Look again`;
   $("trayClear").innerHTML = icons.close;
   $("clearHistory").innerHTML = icons.trash;
   $("closeActivity").innerHTML = icons.close;
@@ -962,7 +938,8 @@ function init() {
   $("trayClear").addEventListener("click", clearTray);
   $("inAccept").addEventListener("click", () => answerIncoming(true));
   $("inDecline").addEventListener("click", () => answerIncoming(false));
-  $("sheetBackdrop").addEventListener("click", () => { /* deliberate choice required */ $("incomingSheet").animate([{ transform: "translate(-50%,0)" }, { transform: "translate(-50%,-10px)" }, { transform: "translate(-50%,0)" }], { duration: 300 }); });
+  // A request needs a deliberate answer: clicking outside only nudges the alert.
+  $("sheetBackdrop").addEventListener("click", () => $("incomingSheet").animate([{ transform: "translate(-50%,-50%) scale(1)" }, { transform: "translate(-50%,-50%) scale(1.03)" }, { transform: "translate(-50%,-50%) scale(1)" }], { duration: 260 }));
   document.addEventListener("click", (e) => { if (!$("peerMenu").contains(e.target)) closePeerMenu(); });
   document.addEventListener("keydown", (e) => {
     if (e.key !== "Escape") return;
@@ -976,9 +953,6 @@ function init() {
     const files = [...(e.clipboardData?.files || [])];
     if (files.length) stageUploads(files.map((file) => ({ file, name: file.name || "pasted" })));
   });
-  addEventListener("resize", layoutPeers);
-
-  fx.init($("fx"));
   connect();
 }
 

@@ -1,4 +1,4 @@
-/* AirBridge shared helpers: icons, avatars, formatting and the effects canvas. */
+/* AirBridge shared helpers: icons, formatting, toasts and the AirDrop-style wording. */
 "use strict";
 
 const AB = (() => {
@@ -39,10 +39,11 @@ const AB = (() => {
     trash: svg('<path d="M4 7h16M9 7V4.5h6V7M6 7l1 13h10l1-13"/>'),
     shield: svg('<path d="M12 3 4.5 6v6c0 4.4 3.2 8.2 7.5 9 4.3-.8 7.5-4.6 7.5-9V6z"/><path d="m9 12 2 2 4-4"/>'),
     plus: svg('<path d="M12 5v14M5 12h14"/>'),
+    chevron: svg('<path d="m9 5 7 7-7 7"/>', 'preserveAspectRatio="none"'),
     arrowUp: svg('<path d="M12 19V5M6 11l6-6 6 6"/>'),
     arrowDown: svg('<path d="M12 5v14M6 13l6 6 6-6"/>'),
     lock: svg('<rect x="4.5" y="10.5" width="15" height="10" rx="2.2"/><path d="M8 10.5V7.5a4 4 0 0 1 8 0v3"/>'),
-    sparkle: svg('<path d="M12 3v4M12 17v4M3 12h4M17 12h4M5.6 5.6l2.8 2.8M15.6 15.6l2.8 2.8M5.6 18.4l2.8-2.8M15.6 8.4l2.8-2.8"/>'),
+    waves: svg('<path d="M4.2 10.6a11 11 0 0 1 15.6 0"/><path d="M7.4 13.8a6.5 6.5 0 0 1 9.2 0"/><circle cx="12" cy="17.4" r="1.6" fill="currentColor" stroke="none"/>'),
   };
 
   function deviceIcon(type, model) {
@@ -65,24 +66,6 @@ const AB = (() => {
     if (/zip|tar|rar|7z|compressed|gzip/.test(mime) || /\.(zip|tar|gz|7z|rar|xz)$/.test(n)) return icons.archive;
     if (mime.startsWith("text/")) return icons.text;
     return icons.file;
-  }
-
-  /** Stable pair of hues for an id, so every device keeps its colors. */
-  function hues(id) {
-    let h = 2166136261;
-    for (let i = 0; i < (id || "").length; i++) {
-      h ^= id.charCodeAt(i);
-      h = Math.imul(h, 16777619);
-    }
-    const a = Math.abs(h) % 360;
-    const b = (a + 40 + (Math.abs(h >> 9) % 70)) % 360;
-    return [a, b];
-  }
-
-  function paintAvatar(el, id) {
-    const [a, b] = hues(id);
-    el.style.setProperty("--a", `hsl(${a} 85% 64%)`);
-    el.style.setProperty("--b", `hsl(${b} 80% 52%)`);
   }
 
   function bytes(n) {
@@ -121,7 +104,7 @@ const AB = (() => {
   function toast(title, text = "", kind = "", ms = 4200) {
     const box = document.getElementById("toasts");
     if (!box) return;
-    const icon = kind === "ok" ? icons.check : kind === "bad" ? icons.close : icons.sparkle;
+    const icon = kind === "ok" ? icons.check : kind === "bad" ? icons.close : icons.waves;
     const node = el(`<div class="toast ${kind}"><span class="t-icon">${icon}</span><div class="t-body"><div class="t-title">${esc(title)}</div>${text ? `<div class="t-text">${esc(text)}</div>` : ""}</div></div>`);
     box.prepend(node);
     setTimeout(() => {
@@ -130,182 +113,20 @@ const AB = (() => {
     }, ms);
   }
 
-  /* --------------------------------------------------- effects canvas */
-  // One full-window canvas for every particle effect (streams + confetti).
-  const fx = {
-    canvas: null,
-    ctx: null,
-    particles: [],
-    streams: new Map(), // key -> {from(), to(), rate, color, until}
-    running: false,
-    dpr: 1,
-
-    init(canvas) {
-      this.canvas = canvas;
-      this.ctx = canvas.getContext("2d");
-      const resize = () => {
-        this.dpr = window.devicePixelRatio || 1;
-        canvas.width = innerWidth * this.dpr;
-        canvas.height = innerHeight * this.dpr;
-        canvas.style.width = innerWidth + "px";
-        canvas.style.height = innerHeight + "px";
-      };
-      resize();
-      addEventListener("resize", resize);
-    },
-
-    start() {
-      if (this.running || !this.ctx) return;
-      this.running = true;
-      let last = performance.now();
-      const frame = (now) => {
-        const dt = Math.min(0.05, (now - last) / 1000);
-        last = now;
-        this.step(dt);
-        if (this.particles.length || this.streams.size) requestAnimationFrame(frame);
-        else {
-          this.running = false;
-          this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
-        }
-      };
-      requestAnimationFrame(frame);
-    },
-
-    /** Continuous particle stream between two moving points (a transfer). */
-    stream(key, from, to, color) {
-      if (reducedMotion()) return;
-      const existing = this.streams.get(key);
-      if (existing) {
-        existing.from = from;
-        existing.to = to;
-        existing.color = color;
-        return;
-      }
-      this.streams.set(key, { from, to, color, acc: 0 });
-      this.start();
-    },
-
-    stopStream(key) {
-      this.streams.delete(key);
-    },
-
-    /** Celebration burst at a point. */
-    confetti(x, y, count = 90) {
-      if (reducedMotion()) return;
-      const colors = ["#7c6cff", "#ff5fa2", "#33d1ff", "#34d399", "#fbbf24", "#ffffff"];
-      for (let i = 0; i < count; i++) {
-        const angle = Math.random() * Math.PI * 2;
-        const speed = 160 + Math.random() * 420;
-        this.particles.push({
-          kind: "confetti",
-          x, y,
-          vx: Math.cos(angle) * speed,
-          vy: Math.sin(angle) * speed - 220,
-          life: 1.4 + Math.random() * 0.9,
-          age: 0,
-          size: 4 + Math.random() * 5,
-          rot: Math.random() * Math.PI,
-          vr: (Math.random() - 0.5) * 14,
-          color: colors[(Math.random() * colors.length) | 0],
-        });
-      }
-      this.start();
-    },
-
-    /** A soft ring of sparks (e.g. when a device appears). */
-    sparkle(x, y, color = "#33d1ff", count = 18) {
-      if (reducedMotion()) return;
-      for (let i = 0; i < count; i++) {
-        const angle = (i / count) * Math.PI * 2;
-        const speed = 70 + Math.random() * 60;
-        this.particles.push({ kind: "spark", x, y, vx: Math.cos(angle) * speed, vy: Math.sin(angle) * speed, life: 0.7, age: 0, size: 2.4, color });
-      }
-      this.start();
-    },
-
-    step(dt) {
-      const { ctx, dpr } = this;
-      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      ctx.clearRect(0, 0, innerWidth, innerHeight);
-
-      // Emit stream particles along a curved path.
-      for (const s of this.streams.values()) {
-        const a = s.from();
-        const b = s.to();
-        if (!a || !b) continue;
-        s.acc += dt * 38;
-        while (s.acc > 1) {
-          s.acc -= 1;
-          const mx = (a.x + b.x) / 2;
-          const my = (a.y + b.y) / 2;
-          const dx = b.x - a.x;
-          const dy = b.y - a.y;
-          const bend = (Math.random() - 0.5) * 0.5 + 0.22;
-          this.particles.push({
-            kind: "stream", t: 0, speed: 0.55 + Math.random() * 0.5,
-            ax: a.x, ay: a.y, bx: b.x, by: b.y,
-            cx: mx - dy * bend, cy: my + dx * bend,
-            jitter: (Math.random() - 0.5) * 10,
-            size: 1.6 + Math.random() * 2.2,
-            color: s.color,
-          });
-        }
-      }
-
-      ctx.globalCompositeOperation = "lighter";
-      const keep = [];
-      for (const p of this.particles) {
-        if (p.kind === "stream") {
-          p.t += dt * p.speed;
-          if (p.t >= 1) continue;
-          const t = p.t;
-          const u = 1 - t;
-          const x = u * u * p.ax + 2 * u * t * p.cx + t * t * p.bx + p.jitter * Math.sin(t * Math.PI);
-          const y = u * u * p.ay + 2 * u * t * p.cy + t * t * p.by;
-          const alpha = Math.sin(t * Math.PI);
-          ctx.globalAlpha = alpha * 0.9;
-          ctx.fillStyle = p.color;
-          ctx.shadowColor = p.color;
-          ctx.shadowBlur = 12;
-          ctx.beginPath();
-          ctx.arc(x, y, p.size, 0, Math.PI * 2);
-          ctx.fill();
-          keep.push(p);
-        } else {
-          p.age += dt;
-          if (p.age >= p.life) continue;
-          p.vy += (p.kind === "confetti" ? 620 : 0) * dt;
-          p.vx *= p.kind === "confetti" ? 0.985 : 0.95;
-          p.vy *= p.kind === "confetti" ? 0.985 : 0.95;
-          p.x += p.vx * dt;
-          p.y += p.vy * dt;
-          const alpha = 1 - p.age / p.life;
-          ctx.globalAlpha = alpha;
-          ctx.fillStyle = p.color;
-          ctx.shadowBlur = p.kind === "spark" ? 10 : 0;
-          ctx.shadowColor = p.color;
-          if (p.kind === "confetti") {
-            p.rot += p.vr * dt;
-            ctx.save();
-            ctx.translate(p.x, p.y);
-            ctx.rotate(p.rot);
-            ctx.globalCompositeOperation = "source-over";
-            ctx.fillRect(-p.size / 2, -p.size / 4, p.size, p.size / 2);
-            ctx.restore();
-          } else {
-            ctx.beginPath();
-            ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
-            ctx.fill();
-          }
-          keep.push(p);
-        }
-      }
-      ctx.globalAlpha = 1;
-      ctx.shadowBlur = 0;
-      ctx.globalCompositeOperation = "source-over";
-      this.particles = keep;
-    },
-  };
+  /** How AirDrop words a share: "a photo", "3 photos", "“Report.pdf”", "2 items". */
+  function sharePhrase(files) {
+    const list = files || [];
+    const all = (prefix) => list.length > 0 && list.every((f) => (f.type || "").startsWith(prefix));
+    if (!list.length) return "something";
+    if (list.length === 1) {
+      if (all("image/")) return "a photo";
+      if (all("video/")) return "a video";
+      return `“${list[0].name.split("/").pop()}”`;
+    }
+    if (all("image/")) return `${list.length} photos`;
+    if (all("video/")) return `${list.length} videos`;
+    return `${list.length} items`;
+  }
 
   function center(node) {
     if (!node || !node.isConnected) return null;
@@ -334,5 +155,5 @@ const AB = (() => {
     return ok;
   }
 
-  return { icons, deviceIcon, fileIcon, hues, paintAvatar, bytes, ago, esc, el, toast, fx, center, copyText, reducedMotion };
+  return { icons, deviceIcon, fileIcon, sharePhrase, bytes, ago, esc, el, toast, center, copyText, reducedMotion };
 })();

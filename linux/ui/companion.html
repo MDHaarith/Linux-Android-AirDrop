@@ -3,64 +3,66 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="theme-color" content="#070914">
+  <meta name="theme-color" content="#f5f5f7" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#1c1c1e" media="(prefers-color-scheme: dark)">
   <title>AirBridge</title>
   <link rel="icon" href="/assets/icon.svg">
   <link rel="stylesheet" href="/assets/shared.css">
   <link rel="stylesheet" href="/assets/companion.css">
 </head>
 <body>
-  <div class="aurora" aria-hidden="true"><span></span><span></span><span></span></div>
-  <canvas id="fx" aria-hidden="true"></canvas>
-
   <main class="phone">
-    <header class="bar">
-      <div class="brand"><img src="/assets/icon.svg" alt=""><span>AirBridge</span></div>
-      <div class="link-chip" id="linkChip"><span class="pulse-dot off" id="linkDot"></span><span id="linkText">Connecting…</span></div>
+    <header class="nav">
+      <h1>AirBridge</h1>
+      <p class="link"><span class="pulse-dot off" id="linkDot"></span><span id="linkText">Connecting…</span></p>
     </header>
 
     <section class="unpaired" id="unpaired" hidden>
       <div class="big-icon" id="unpairedIcon"></div>
-      <h1>Scan to connect</h1>
+      <h2>Scan to connect</h2>
       <p>Open <b>AirBridge</b> on your computer, click the <b>QR</b> button and scan the code with this phone's camera.</p>
     </section>
 
     <section class="home" id="home" hidden>
-      <button class="you" id="youChip" title="Change how you appear">You appear as <b id="youName">…</b></button>
+      <!-- The computer, as a share target like in the iOS share sheet. -->
+      <button class="target" id="target">
+        <span class="t-bubble">
+          <span class="avatar" id="targetIcon"></span>
+          <svg class="t-ring" viewBox="0 0 100 100"><circle class="track" cx="50" cy="50" r="46"/><circle class="bar" id="targetBar" cx="50" cy="50" r="46"/></svg>
+        </span>
+        <b id="targetName">Your computer</b>
+        <span id="targetStatus">Tap to send files</span>
+      </button>
 
-      <div class="orb-wrap">
-        <div class="orb-rings"><i></i><i></i><i></i></div>
-        <svg class="orb-progress" viewBox="0 0 200 200"><circle class="track" cx="100" cy="100" r="92"/><circle class="bar" id="orbBar" cx="100" cy="100" r="92"/></svg>
-        <button class="orb" id="orb">
-          <span class="orb-icon" id="orbIcon"></span>
-          <span class="orb-label" id="orbLabel">Send files</span>
-          <span class="orb-sub" id="orbSub">to your computer</span>
-        </button>
+      <div class="list">
+        <button class="row" id="btnPhotos"><span class="r-icon"></span><span class="r-text">Photos &amp; Videos</span><span class="chev"></span></button>
+        <button class="row" id="btnFiles"><span class="r-icon"></span><span class="r-text">Files</span><span class="chev"></span></button>
+        <button class="row" id="btnText"><span class="r-icon"></span><span class="r-text">Message</span><span class="chev"></span></button>
       </div>
 
-      <div class="quick">
-        <button class="btn ghost" id="btnPhotos"></button>
-        <button class="btn ghost" id="btnText"></button>
+      <div class="list">
+        <button class="row" id="youChip"><span class="r-text">Your name</span><span class="r-value" id="youName">…</span><span class="chev"></span></button>
       </div>
 
-      <div class="recent" id="recent"></div>
+      <div id="recent"></div>
     </section>
   </main>
 
   <input type="file" id="pickAny" multiple hidden>
   <input type="file" id="pickMedia" multiple accept="image/*,video/*" hidden>
 
+  <!-- Something from the computer, shown like an AirDrop alert. -->
   <div class="sheet-backdrop" id="sheetBackdrop"></div>
-  <section class="sheet" id="offerSheet" role="dialog" aria-modal="true">
-    <div class="grabber"></div>
-    <div class="offer">
-      <div class="offer-avatar"><div class="avatar" id="offerAvatar"></div></div>
-      <h2 id="offerTitle">…</h2>
-      <div id="offerBody"></div>
-      <div class="offer-actions" id="offerActions">
-        <button class="btn ghost" id="offerDecline">Decline</button>
-        <button class="btn" id="offerAccept">Accept</button>
-      </div>
+  <section class="alert offer" id="offerSheet" role="alertdialog" aria-modal="true" aria-labelledby="offerTitle">
+    <div class="alert-body">
+      <div class="o-preview" id="offerPreview"></div>
+      <h2 id="offerTitle">AirBridge</h2>
+      <p id="offerText"></p>
+      <p class="o-meta" id="offerMeta"></p>
+    </div>
+    <div class="alert-actions">
+      <button id="offerDecline">Decline</button>
+      <button class="default" id="offerAccept">Accept</button>
     </div>
   </section>
 

@@ -21,6 +21,7 @@ mod quickshare;
 mod receiver;
 mod sender;
 mod storage;
+mod thumbnail;
 mod transfers;
 #[cfg(feature = "tray")]
 mod tray;
