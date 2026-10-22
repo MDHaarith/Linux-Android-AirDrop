@@ -20,7 +20,7 @@ Xvfb :77 -screen 0 1280x800x24 -nolisten tcp >/dev/null 2>&1 & pids+=($!)
 sleep 1
 if command -v picom >/dev/null; then picom --backend xrender --no-fading-openclose >/dev/null 2>&1 & pids+=($!); else xcompmgr -c -r 0 -o 0 >/dev/null 2>&1 & pids+=($!); fi
 # Something to look at behind the panel.
-convert -size 1280x800 gradient:'#20243f'-'#3b1f45' "$WORK/bg.png"
+convert -size 1280x800 gradient:'#5d8cc8'-'#36548c' "$WORK/bg.png"
 if command -v hsetroot >/dev/null; then hsetroot -fill "$WORK/bg.png" >/dev/null 2>&1; fi
 
 echo '{"alias":"Pixel 8","notifications":false,"port":54610,"webPort":54611,"webCompanion":false,"edgeDrop":false,"quickShare":false}' > "$WORK/a/config/settings.json"
@@ -30,7 +30,7 @@ AIRBRIDGE_HOME=$WORK/b AIRBRIDGE_LOG=debug,zbus=warn,hyper=info,rustls=warn "$BI
 for _ in $(seq 60); do grep -q "Drop zone ready" "$OUT/sender.log" && grep -q "Found Pixel 8" "$OUT/sender.log" && break; sleep 0.5; done
 grep "Drop zone ready" "$OUT/sender.log"
 
-convert -size 480x320 plasma:violet-cyan "$WORK/photo.png"
+convert -size 480x320 gradient:'#3e68ba'-'#fab278' "$WORK/photo.png"
 "$SOURCE" image "$WORK/photo.png" "https://images.example.com/gallery/sunset.png?w=480" & pids+=($!)
 sleep 1.5
 

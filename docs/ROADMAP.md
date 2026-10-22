@@ -30,8 +30,8 @@ one and it is sent.
 - [x] `airbridge edge`: GTK3 window, wlr-layer-shell on Plasma Wayland,
       dock window on X11; click-through except while dragging
 - [x] Accepts file URIs, image data, URLs (downloaded by the service), text
-- [x] Animated panel: slide-in, device bubbles, hover glow, send progress
-      ring, success burst
+- [x] Animated panel: slide-in, device rows, hover selection, send progress
+      ring, sent badge
 - [x] Started by the service; settings for edge and enable/disable
 - [x] Tested under Xvfb with a synthetic drag (X11) and under headless sway
       (layer-shell rendering); offscreen render snapshots in CI
@@ -45,6 +45,18 @@ one and it is sent.
 - [x] Image previews in "received" notifications
 - Verified with unit tests, Paparazzi renders and the Linux interop test;
   not yet tried on a physical phone (no emulator in this environment)
+
+## 4. Receiving like AirDrop, and an Apple look everywhere
+
+- [x] Requests show an AirDrop-style alert with a preview of the photo(s)
+      ("“Studio PC” would like to share a photo"), on Linux and Android
+- [x] Photos carry a small JPEG preview in LocalSend's `preview` field, both ways
+- [x] Trusted (own) devices: accepted and opened right away (setting)
+- [x] A computer that speaks both LocalSend and Quick Share is listed once
+- [x] Apple-style design on the desktop window, browser page, Android app, share
+      sheet and both edge panels, light and dark
+- Verified with unit tests, Paparazzi renders, offscreen edge renders, the Xvfb
+  drag test and the Linux interop test (preview checked end to end)
 
 ## Environment notes (for resuming in a fresh container)
 

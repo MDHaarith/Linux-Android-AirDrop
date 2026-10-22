@@ -1,13 +1,14 @@
 # AirBridge
 
 **AirDrop-style sharing between your Linux computer and your Android phone.**
-Drop a file on your phone's bubble and it arrives. Send links, notes and the clipboard in one tap.
-There is no cloud, no cable and no account. Both apps are animated: orbiting device bubbles,
-progress rings, particle streams and confetti.
+Drop a file on your phone and it arrives. Send links, notes and the clipboard in one tap.
+There is no cloud, no cable and no account. It looks and behaves like AirDrop between a Mac and
+an iPhone: clean frosted cards, gray device avatars, one blue accent and calm animations, in
+light and dark.
 
 <p align="center">
-  <img src="docs/screenshots/desktop-sending.png" width="62%" alt="Desktop: sending to a device, progress ring and particle stream">
-  <img src="docs/screenshots/android-home.png" width="27%" alt="Android: radar with nearby devices">
+  <img src="docs/screenshots/desktop-incoming.png" width="62%" alt="Desktop: “Studio PC” would like to share a photo, with a preview of the photo, Decline and Accept">
+  <img src="docs/screenshots/android-incomingRequest.png" width="27%" alt="Android: the same request as an iOS-style alert with the photo">
 </p>
 
 AirBridge speaks the open **[LocalSend](https://github.com/localsend/localsend) v2 protocol**, so it
@@ -19,11 +20,24 @@ your computer from its own share sheet, just like an iPhone with a Mac. Backgrou
 
 | Part | Tech | Highlights |
 |---|---|---|
-| **Linux app** (`linux/`) | Rust (tokio, axum, rustls) + an embedded web UI | Radar UI, drag & drop, **Quick Share for stock Android**, **screen-edge drop zone** (KDE Plasma, wlroots, X11), tray icon, notifications with Accept/Decline, CLI, file-manager "Send with AirBridge" |
-| **Android app** (`android/`) | Kotlin + Jetpack Compose | Same radar UI, **your devices in the system share sheet (Direct Share)**, a one-tap share sheet, **edge panel over any app**, photo previews in notifications, Quick Settings tile, background receiving |
+| **Linux app** (`linux/`) | Rust (tokio, axum, rustls) + an embedded web UI | AirDrop-style window and requests, drag & drop, **Quick Share for stock Android**, **screen-edge drop zone** (KDE Plasma, wlroots, X11), tray icon, notifications with Accept/Decline, CLI, file-manager "Send with AirBridge" |
+| **Android app** (`android/`) | Kotlin + Jetpack Compose | iOS-style app and requests, **your devices in the system share sheet (Direct Share)**, a one-tap share sheet, **edge panel over any app**, photo previews in notifications, Quick Settings tile, background receiving |
 | **Phone browser companion** | Served by the Linux app | A phone with *no app at all* scans a QR code and shares through its browser |
 
 ### Like AirDrop on a Mac
+
+**Receiving looks like AirDrop.** When someone shares with you, an alert pops up with a preview
+of the photo: “Studio PC” would like to share a photo, with Decline and Accept. Several photos
+show as a small stack, other files as their icon. Photos travel with a small preview in the
+request (LocalSend's `preview` field), so you see what is coming before you accept, on the
+computer and on the phone, and in the notification too. Your own devices skip the question:
+mark them as trusted and what they send is accepted and opened right away (one photo in its
+viewer, several files in their folder, a link in the browser).
+
+<p align="center">
+  <img src="docs/screenshots/android-incomingPhotos.png" width="24%" alt="Android: several photos as a small stack">
+  <img src="docs/screenshots/desktop-sending.png" width="72%" alt="Desktop: sending, with a blue progress ring around the device">
+</p>
 
 **Share from any Android phone, no app needed.** AirBridge shows up in Android's built-in
 *Quick Share* sheet like any Chromebook or Windows PC. Pick it, check that the four-digit PIN
@@ -37,7 +51,7 @@ one and it's sent. Images come straight from the browser in their original forma
 links are downloaded first when they point to a file.
 
 <p align="center">
-  <img src="docs/screenshots/edge-drop-flow.png" width="96%" alt="Screen-edge drop zone: hover a device, waiting for the phone to accept, sent with confetti">
+  <img src="docs/screenshots/edge-drop-flow.png" width="96%" alt="Screen-edge drop zone: hover a device, waiting for the phone to accept, sent">
 </p>
 **And from the phone.** Your computers show up in the first row of Android's own share sheet
 (Direct Share), like AirDrop on an iPhone. Tap one and a small sheet sends it right there, with a
@@ -53,7 +67,7 @@ Received photos show up as a preview in the notification.
 </p>
 
 <p align="center">
-  <img src="docs/screenshots/edge-drop-devices.png" width="60%" alt="Drop zone with several devices, and while looking for devices">
+  <img src="docs/screenshots/edge-drop-devices.png" width="60%" alt="Drop zone with several devices (light), and while looking for devices (dark)">
   <img src="docs/screenshots/desktop-quickshare-pin.png" width="36%" alt="Quick Share request from an Android phone, with the PIN">
 </p>
 
@@ -62,13 +76,16 @@ Received photos show up as a preview in the notification.
 - **Find devices automatically**: multicast discovery on your Wi‑Fi, with a "Scan network"
   fallback for routers that block multicast.
 - **Files, folders, photos, text and clipboard**, in both directions. Folders keep their structure.
-- **Accept or decline** from the app or straight from the notification. **Trusted devices** (your
-  own phone) are accepted automatically.
-- **Animations everywhere**:
-  - Pulse rings and a radar sweep
-  - Device bubbles that spring in, float and glide into place
-  - Gradient progress rings and particles flowing between devices during a transfer
-  - Confetti when a transfer finishes, shake on failure, spring-animated sheets
+- **Accept or decline** from the AirDrop-style alert or straight from the notification, with a
+  preview of the photos. **Trusted devices** (your own phone) are accepted automatically and
+  what they send opens right away.
+- **One device, one entry**: a computer that answers over both LocalSend and Quick Share shows
+  up once.
+- **Apple-style design everywhere** (desktop window, phone app, share sheet, edge panels, browser
+  page):
+  - Frosted cards, gray device avatars and one blue accent, in light and dark
+  - A blue ring fills around the device while sending, then "Sent" in blue
+  - Calm motion: alerts scale in, sheets slide, the "visible" beacon sends out slow waves
   - Reduced-motion settings are respected
 - **Secure by default**: TLS everywhere, certificates pinned by fingerprint, mutual TLS, an
   optional PIN, and the clipboard only accepts text from trusted devices.
@@ -80,16 +97,22 @@ Received photos show up as a preview in the notification.
 </tr>
 <tr>
 <td><img src="docs/screenshots/desktop-pair.png" alt="Pair a phone browser with a QR code"></td>
-<td><img src="docs/screenshots/desktop-light.png" alt="Light theme"></td>
+<td><img src="docs/screenshots/desktop-dark.png" alt="Dark theme"></td>
 </tr>
 </table>
 
 <p align="center">
-  <img src="docs/screenshots/android-pickADevice.png" width="19%" alt="Android: pick a device">
-  <img src="docs/screenshots/android-incomingRequest.png" width="19%" alt="Android: incoming request">
+  <img src="docs/screenshots/android-home.png" width="19%" alt="Android: nearby devices">
+  <img src="docs/screenshots/android-home-dark.png" width="19%" alt="Android: dark">
+  <img src="docs/screenshots/android-settings.png" width="19%" alt="Android: settings">
   <img src="docs/screenshots/android-activity.png" width="19%" alt="Android: activity">
+  <img src="docs/screenshots/android-pickADevice.png" width="19%" alt="Android: pick a device">
+</p>
+
+<p align="center">
   <img src="docs/screenshots/phone-companion.png" width="19%" alt="Browser companion">
-  <img src="docs/screenshots/phone-companion-offer.png" width="19%" alt="Browser companion: incoming text">
+  <img src="docs/screenshots/phone-companion-offer.png" width="19%" alt="Browser companion: something from the computer">
+  <img src="docs/screenshots/phone-companion-sent.png" width="19%" alt="Browser companion: sent">
 </p>
 
 ## Install
@@ -172,7 +195,7 @@ secret key, so only someone who can see your screen can connect.
   On the phone, set Quick Share's visibility to *Everyone* (temporarily is fine): *Contacts* and
   *Your devices* rely on Google accounts, which AirBridge doesn't have.
 - To send to a phone, open Quick Share's *Receive* screen on it (or let AirBridge wake it over
-  Bluetooth), and it appears on the radar like any other device.
+  Bluetooth), and it appears among your devices like any other.
 
 **Command line**
 
@@ -207,7 +230,7 @@ sequenceDiagram
     participant L as Laptop (AirBridge)
     P->>L: UDP multicast 224.0.0.167:53317 {"alias", "fingerprint", "announce": true}
     L->>P: POST /api/localsend/v2/register (mutual TLS, phone's certificate pinned)
-    Note over P,L: Both devices now see each other on the radar
+    Note over P,L: Both devices now see each other
     L->>P: POST /prepare-upload {files…}
     P-->>P: "Laptop wants to share 3 files" → Accept
     P->>L: 200 {sessionId, tokens}

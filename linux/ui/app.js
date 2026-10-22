@@ -385,7 +385,6 @@ function showNextIncoming() {
   $("inTrust").checked = false;
   $("sheetBackdrop").classList.add("open");
   $("incomingSheet").classList.add("open");
-  setTimeout(() => $("inAccept").focus(), 250);
 }
 
 /** What is coming: the photo itself, a small stack of photos, or the file's icon. */
@@ -942,6 +941,8 @@ function init() {
   $("sheetBackdrop").addEventListener("click", () => $("incomingSheet").animate([{ transform: "translate(-50%,-50%) scale(1)" }, { transform: "translate(-50%,-50%) scale(1.03)" }, { transform: "translate(-50%,-50%) scale(1)" }], { duration: 260 }));
   document.addEventListener("click", (e) => { if (!$("peerMenu").contains(e.target)) closePeerMenu(); });
   document.addEventListener("keydown", (e) => {
+    // Return accepts the request on screen, like the default button of an alert.
+    if (e.key === "Enter" && currentIncoming && $("modal").hidden) return answerIncoming(true);
     if (e.key !== "Escape") return;
     if (!$("modal").hidden) return closeModal();
     if (!$("peerMenu").hidden) return closePeerMenu();

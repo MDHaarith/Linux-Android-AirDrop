@@ -98,8 +98,9 @@ AirBridge speaks **LocalSend protocol v2**:
 
 What AirBridge adds on top:
 
-- An AirDrop-style **radar UI with real animations** on both platforms: orbiting device bubbles,
-  pulse rings, particle streams during transfers, progress rings and confetti.
+- An **AirDrop-style experience** on both platforms: requests arrive as an alert with a preview of
+  the photo, devices sit in a calm Apple-style grid with a blue progress ring while sending, and
+  your own devices' files open right away.
 - **Desktop integration:** a tray icon, notifications with Accept/Decline buttons, and a CLI
   (`airbridge send file --to phone`) that file managers and scripts can call.
 - **Trusted devices:** your own phone is accepted without prompts, and only trusted devices may

@@ -13,7 +13,6 @@ use std::time::{Duration, Instant};
 use anyhow::{bail, Result};
 use gtk::prelude::*;
 use gtk::{cairo, gdk, glib, pango};
-use rand::Rng;
 
 use super::api::{Api, Command, Device, Progress, Reply};
 use super::drop::{self, Received};
@@ -24,7 +23,9 @@ const CARD_MARGIN: f64 = 16.0;
 const STRIP: f64 = 3.0;
 const HEADER_H: f64 = 72.0;
 const ROW_H: f64 = 68.0;
-const EMPTY_H: f64 = 132.0;
+const EMPTY_H: f64 = 120.0;
+/// The card slides out with just a hint of overshoot.
+const OPEN_DAMPING: f64 = 0.85;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Side {
@@ -93,20 +94,6 @@ struct Sending {
     finished_at: Option<Instant>,
 }
 
-struct Particle {
-    x: f64,
-    y: f64,
-    vx: f64,
-    vy: f64,
-    age: f64,
-    life: f64,
-    hue: f64,
-    size: f64,
-    /// Particles flying into a device bubble.
-    target: Option<(f64, f64)>,
-    gravity: f64,
-}
-
 struct DropSession {
     device_id: String,
     offered: Vec<String>,
@@ -126,7 +113,8 @@ struct State {
     offline: bool,
     sending: Option<Sending>,
     session: Option<DropSession>,
-    particles: Vec<Particle>,
+    /// Follows the desktop's light or dark style.
+    dark: bool,
     notice: Option<(String, Instant)>,
     leave_generation: u64,
     passing: bool,
@@ -176,6 +164,7 @@ impl State {
         (index >= 0.0 && (index as usize) < self.rows.len()).then_some(index as usize)
     }
 
+    #[cfg(test)]
     fn bubble_center(&self, width: f64, height: f64, index: usize) -> (f64, f64) {
         let (cx, cy, _, _) = self.card(width, height);
         (
@@ -198,7 +187,7 @@ impl State {
                 None => {
                     rows.push(Row {
                         device,
-                        appear: Spring::new(0.0, 260.0, 0.55),
+                        appear: Spring::new(0.0, 260.0, 0.9),
                         hover: Spring::new(0.0, 320.0, 0.7),
                         appear_at: now + Duration::from_millis(45 * stagger),
                     });
@@ -223,10 +212,9 @@ impl State {
     fn animating(&self) -> bool {
         !self.open.settled()
             || !self.shake.settled()
-            || !self.particles.is_empty()
             || self.rows.iter().any(|r| !r.appear.settled() || !r.hover.settled())
             || self.sending.as_ref().is_some_and(|s| !s.shown.settled() || s.check < 1.0)
-            // The "looking for devices" radar keeps moving while visible.
+            // The "looking for devices" waves keep moving while visible.
             || (self.rows.is_empty() && self.open.value > 0.01)
             || (self.dragging && self.open.value > 0.01)
     }
@@ -234,39 +222,76 @@ impl State {
 
 // ------------------------------------------------------------------ colors
 
-/// Same hues as the AirBridge window (shared.js `hues`).
-fn hues(id: &str) -> (f64, f64) {
-    let mut h: i32 = 2166136261u32 as i32;
-    for unit in id.encode_utf16() {
-        h ^= unit as i32;
-        h = h.wrapping_mul(16777619);
+type Rgb = (f64, f64, f64);
+
+/// The Apple-like palette of the AirBridge window: a frosted card, gray
+/// device avatars and one blue accent, in a light and a dark variant.
+struct Palette {
+    card: Rgb,
+    hairline: (f64, f64, f64, f64),
+    separator: (f64, f64, f64, f64),
+    fill: (f64, f64, f64, f64),
+    text: Rgb,
+    muted: Rgb,
+    accent: Rgb,
+    danger: Rgb,
+    avatar_top: Rgb,
+    avatar_bottom: Rgb,
+    shadow: f64,
+}
+
+const LIGHT: Palette = Palette {
+    card: (0.976, 0.976, 0.98),
+    hairline: (0.0, 0.0, 0.0, 0.1),
+    separator: (0.235, 0.235, 0.263, 0.16),
+    fill: (0.47, 0.47, 0.5, 0.12),
+    text: (0.114, 0.114, 0.122),
+    muted: (0.431, 0.431, 0.451),
+    accent: (0.0, 0.478, 1.0),
+    danger: (1.0, 0.231, 0.188),
+    avatar_top: (0.718, 0.733, 0.769),
+    avatar_bottom: (0.545, 0.565, 0.6),
+    shadow: 0.05,
+};
+
+const DARK: Palette = Palette {
+    card: (0.173, 0.173, 0.18),
+    hairline: (1.0, 1.0, 1.0, 0.1),
+    separator: (0.33, 0.33, 0.345, 0.65),
+    fill: (0.47, 0.47, 0.5, 0.24),
+    text: (0.96, 0.96, 0.97),
+    muted: (0.596, 0.596, 0.616),
+    accent: (0.039, 0.518, 1.0),
+    danger: (1.0, 0.271, 0.227),
+    avatar_top: (0.49, 0.49, 0.514),
+    avatar_bottom: (0.333, 0.333, 0.353),
+    shadow: 0.09,
+};
+
+impl State {
+    fn palette(&self) -> &'static Palette {
+        if self.dark {
+            &DARK
+        } else {
+            &LIGHT
+        }
     }
-    let a = (h.unsigned_abs() % 360) as f64;
-    let b = (a + 40.0 + ((h >> 9).unsigned_abs() % 70) as f64) % 360.0;
-    (a, b)
 }
 
-fn hsl(h: f64, s: f64, l: f64) -> (f64, f64, f64) {
-    let c = (1.0 - (2.0 * l - 1.0).abs()) * s;
-    let hp = (h % 360.0) / 60.0;
-    let x = c * (1.0 - (hp % 2.0 - 1.0).abs());
-    let (r, g, b) = match hp as u32 {
-        0 => (c, x, 0.0),
-        1 => (x, c, 0.0),
-        2 => (0.0, c, x),
-        3 => (0.0, x, c),
-        4 => (x, 0.0, c),
-        _ => (c, 0.0, x),
+fn rgba(c: Rgb, a: f64) -> (f64, f64, f64, f64) {
+    (c.0, c.1, c.2, a)
+}
+
+/// Whether the desktop uses a dark style (Breeze Dark, Adwaita-dark, …).
+fn desktop_is_dark() -> bool {
+    let Some(settings) = gtk::Settings::default() else {
+        return false;
     };
-    let m = l - c / 2.0;
-    (r + m, g + m, b + m)
+    settings.is_gtk_application_prefer_dark_theme()
+        || settings
+            .gtk_theme_name()
+            .is_some_and(|name| name.to_lowercase().contains("dark"))
 }
-
-const VIOLET: (f64, f64, f64) = (0.486, 0.424, 1.0);
-const PINK: (f64, f64, f64) = (1.0, 0.373, 0.635);
-const CYAN: (f64, f64, f64) = (0.2, 0.82, 1.0);
-const GREEN: (f64, f64, f64) = (0.29, 0.87, 0.55);
-const RED: (f64, f64, f64) = (1.0, 0.36, 0.42);
 
 // ----------------------------------------------------------------- drawing
 
@@ -342,31 +367,29 @@ fn draw(st: &State, cr: &cairo::Context, width: f64, height: f64) {
     cr.paint().ok();
     cr.set_operator(cairo::Operator::Over);
 
+    let pal = st.palette();
     let open = st.open.value;
     let alpha = open.clamp(0.0, 1.0);
     if !st.composited {
         // No transparency without a compositor: an opaque panel or a thin line.
-        let (r, g, b) = if alpha > 0.05 {
-            (0.08, 0.09, 0.18)
-        } else {
-            (0.3, 0.27, 0.6)
-        };
-        cr.set_source_rgb(r, g, b);
+        let c = if alpha > 0.05 { pal.card } else { pal.accent };
+        cr.set_source_rgb(c.0, c.1, c.2);
         cr.paint().ok();
     }
 
-    // A soft light along the screen edge where the drag arrived.
+    // A soft blue light along the screen edge where the drag arrived.
     if st.dragging && alpha > 0.0 {
         let edge_x = if st.side == Side::Right { width } else { 0.0 };
         let glow = cairo::LinearGradient::new(
             edge_x,
             0.0,
-            edge_x + if st.side == Side::Right { -60.0 } else { 60.0 },
+            edge_x + if st.side == Side::Right { -48.0 } else { 48.0 },
             0.0,
         );
-        glow.add_color_stop_rgba(0.0, VIOLET.0, VIOLET.1, VIOLET.2, 0.45 * alpha);
-        glow.add_color_stop_rgba(1.0, VIOLET.0, VIOLET.1, VIOLET.2, 0.0);
-        let mask = cairo::LinearGradient::new(0.0, st.anchor_y - 260.0, 0.0, st.anchor_y + 260.0);
+        let a = pal.accent;
+        glow.add_color_stop_rgba(0.0, a.0, a.1, a.2, 0.28 * alpha);
+        glow.add_color_stop_rgba(1.0, a.0, a.1, a.2, 0.0);
+        let mask = cairo::LinearGradient::new(0.0, st.anchor_y - 240.0, 0.0, st.anchor_y + 240.0);
         mask.add_color_stop_rgba(0.0, 0.0, 0.0, 0.0, 0.0);
         mask.add_color_stop_rgba(0.5, 0.0, 0.0, 0.0, 1.0);
         mask.add_color_stop_rgba(1.0, 0.0, 0.0, 0.0, 0.0);
@@ -377,21 +400,28 @@ fn draw(st: &State, cr: &cairo::Context, width: f64, height: f64) {
     if alpha > 0.002 {
         draw_card(st, cr, width, height, open, alpha);
     }
+}
 
-    for p in &st.particles {
-        let t = p.age / p.life;
-        let fade = (1.0 - t).clamp(0.0, 1.0);
-        let (r, g, b) = hsl(p.hue, 0.9, 0.68);
-        let glow = cairo::RadialGradient::new(p.x, p.y, 0.0, p.x, p.y, p.size * 3.0);
-        glow.add_color_stop_rgba(0.0, r, g, b, 0.9 * fade);
-        glow.add_color_stop_rgba(1.0, r, g, b, 0.0);
-        cr.set_source(&glow).ok();
-        cr.arc(p.x, p.y, p.size * 3.0, 0.0, TAU);
-        cr.fill().ok();
+/// The app's mark: a blue rounded square with the waves glyph.
+fn draw_mark(cr: &cairo::Context, x: f64, y: f64, size: f64, color: Rgb, alpha: f64) {
+    rounded(cr, x, y, size, size, size * 0.225);
+    cr.set_source_rgba(color.0, color.1, color.2, alpha);
+    cr.fill().ok();
+    let (cx, cy) = (x + size / 2.0, y + size * 0.6);
+    cr.set_source_rgba(1.0, 1.0, 1.0, alpha);
+    cr.set_line_width(size * 0.075);
+    cr.set_line_cap(cairo::LineCap::Round);
+    for (radius, sweep) in [(size * 0.17, 0.85), (size * 0.32, 0.75)] {
+        cr.new_sub_path();
+        cr.arc(cx, cy, radius, -FRAC_PI_2 - sweep, -FRAC_PI_2 + sweep);
+        cr.stroke().ok();
     }
+    cr.arc(cx, cy, size * 0.065, 0.0, TAU);
+    cr.fill().ok();
 }
 
 fn draw_card(st: &State, cr: &cairo::Context, width: f64, height: f64, open: f64, alpha: f64) {
+    let pal = st.palette();
     let (x0, y, w, h) = st.card(width, height);
     let slide = (1.0 - open) * (CARD_W + CARD_MARGIN + 30.0);
     let x = match st.side {
@@ -399,82 +429,59 @@ fn draw_card(st: &State, cr: &cairo::Context, width: f64, height: f64, open: f64
         Side::Left => x0 - slide,
     } + st.shake.value;
 
-    // Glow and shadow.
-    for i in (1..=7).rev() {
-        let spread = i as f64 * 3.5;
+    // A soft, neutral shadow like a macOS popover.
+    for i in (1..=6).rev() {
+        let spread = i as f64 * 3.0;
         rounded(
             cr,
             x - spread,
-            y - spread + 4.0,
+            y - spread + 6.0,
             w + spread * 2.0,
             h + spread * 2.0,
-            26.0 + spread,
+            14.0 + spread,
         );
-        cr.set_source_rgba(
-            VIOLET.0 * 0.6,
-            VIOLET.1 * 0.5,
-            VIOLET.2 * 0.9,
-            0.035 * alpha,
-        );
+        cr.set_source_rgba(0.0, 0.0, 0.0, pal.shadow * alpha);
         cr.fill().ok();
     }
-    rounded(cr, x, y, w, h, 26.0);
-    let fill = cairo::LinearGradient::new(x, y, x + w * 0.4, y + h);
-    fill.add_color_stop_rgba(0.0, 0.09, 0.10, 0.20, 0.95 * alpha);
-    fill.add_color_stop_rgba(1.0, 0.13, 0.08, 0.22, 0.95 * alpha);
-    cr.set_source(&fill).ok();
+    rounded(cr, x, y, w, h, 14.0);
+    let (r, g, b, _) = rgba(pal.card, 0.0);
+    cr.set_source_rgba(r, g, b, 0.96 * alpha);
     cr.fill_preserve().ok();
-    let border = cairo::LinearGradient::new(x, y, x + w, y + h);
-    border.add_color_stop_rgba(0.0, VIOLET.0, VIOLET.1, VIOLET.2, 0.75 * alpha);
-    border.add_color_stop_rgba(1.0, PINK.0, PINK.1, PINK.2, 0.55 * alpha);
-    cr.set_source(&border).ok();
-    cr.set_line_width(1.2);
+    let l = pal.hairline;
+    cr.set_source_rgba(l.0, l.1, l.2, l.3 * alpha);
+    cr.set_line_width(1.0);
     cr.stroke().ok();
 
     // Header: the AirBridge mark, a title and what is going on.
-    let (mx, my) = (x + 30.0, y + 36.0);
-    let mark = cairo::LinearGradient::new(mx - 12.0, my - 12.0, mx + 12.0, my + 12.0);
-    mark.add_color_stop_rgba(0.0, VIOLET.0, VIOLET.1, VIOLET.2, alpha);
-    mark.add_color_stop_rgba(1.0, PINK.0, PINK.1, PINK.2, alpha);
-    cr.set_source(&mark).ok();
-    cr.arc(mx, my, 13.0, 0.0, TAU);
-    cr.fill().ok();
-    cr.set_source_rgba(1.0, 1.0, 1.0, 0.95 * alpha);
-    cr.set_line_width(1.8);
-    cr.set_line_cap(cairo::LineCap::Round);
-    for (radius, sweep) in [(4.0, 0.9), (7.5, 0.75)] {
-        cr.new_sub_path();
-        cr.arc(
-            mx - 2.0,
-            my + 3.0,
-            radius,
-            -FRAC_PI_2 - sweep,
-            -FRAC_PI_2 + sweep,
-        );
-        cr.stroke().ok();
-    }
-    cr.arc(mx - 2.0, my + 3.0, 1.6, 0.0, TAU);
-    cr.fill().ok();
-
+    draw_mark(cr, x + 16.0, y + 20.0, 28.0, pal.accent, alpha);
     let (title, subtitle) = header_text(st);
     text(
         cr,
         x + 54.0,
         y + 17.0,
         &title,
-        "Sans Bold 11.5",
-        (0.94, 0.95, 1.0, alpha),
-        w - 74.0,
+        "Sans Bold 11",
+        rgba(pal.text, alpha),
+        w - 72.0,
     );
+    let subtitle_color = match st.sending.as_ref().map(|s| &s.state) {
+        Some(SendState::Failed(_)) => pal.danger,
+        Some(SendState::Done | SendState::Transferring(_)) => pal.accent,
+        _ => pal.muted,
+    };
     text(
         cr,
         x + 54.0,
-        y + 38.0,
+        y + 37.0,
         &subtitle,
         "Sans 9",
-        (0.66, 0.69, 0.85, alpha),
-        w - 74.0,
+        rgba(subtitle_color, alpha),
+        w - 72.0,
     );
+    let sep = pal.separator;
+    cr.set_source_rgba(sep.0, sep.1, sep.2, sep.3 * alpha);
+    cr.rectangle(x + 16.0, y + HEADER_H - 6.0, w - 32.0, 0.6);
+    cr.fill().ok();
 
     if st.rows.is_empty() {
         draw_empty(st, cr, x, y, w, alpha);
@@ -487,12 +494,12 @@ fn draw_card(st: &State, cr: &cairo::Context, width: f64, height: f64, open: f64
         let fade = (1.0 - at.elapsed().as_secs_f64() / 3.0).clamp(0.0, 1.0) * alpha;
         text(
             cr,
-            x + 22.0,
+            x + 18.0,
             y + h - 22.0,
             message,
             "Sans 8.5",
-            (RED.0, RED.1, RED.2, fade),
-            w - 44.0,
+            rgba(pal.danger, fade),
+            w - 36.0,
         );
     }
 }
@@ -507,15 +514,15 @@ fn header_text(st: &State) -> (String, String) {
             .unwrap_or_else(|| "device".into());
         let subtitle = match &sending.state {
             SendState::Preparing => "Preparing…".to_string(),
-            SendState::Waiting => format!("Waiting for {name} to accept…"),
-            SendState::Transferring(p) => format!("Sending… {:.0}%", p * 100.0),
+            SendState::Waiting => format!("Waiting for {name}…"),
+            SendState::Transferring(_) => format!("Sending to {name}…"),
             SendState::Done => format!("Sent to {name}"),
             SendState::Failed(message) => message.clone(),
         };
         let title = match sending.state {
-            SendState::Done => "Done",
-            SendState::Failed(_) => "Not sent",
-            _ => "Sharing",
+            SendState::Done => "Sent",
+            SendState::Failed(_) => "Not Sent",
+            _ => "AirBridge",
         };
         return (title.into(), subtitle);
     }
@@ -530,21 +537,37 @@ fn header_text(st: &State) -> (String, String) {
         1 => "Drop here to send".to_string(),
         _ => "Drop on a device".to_string(),
     };
-    ("Drop to share".into(), subtitle)
+    ("AirBridge".into(), subtitle)
 }
 
 fn draw_empty(st: &State, cr: &cairo::Context, x: f64, y: f64, w: f64, alpha: f64) {
-    let (cx, cy) = (x + w / 2.0, y + HEADER_H + 46.0);
+    let pal = st.palette();
+    let (cx, cy) = (x + w / 2.0, y + HEADER_H + 40.0);
+    // Slow waves around the mark, like the window's "visible" beacon.
     let phase = st.born.elapsed().as_secs_f64();
-    for i in 0..3 {
-        let t = (phase * 0.6 + i as f64 / 3.0) % 1.0;
-        cr.set_source_rgba(CYAN.0, CYAN.1, CYAN.2, (1.0 - t) * 0.5 * alpha);
-        cr.set_line_width(1.5);
-        cr.arc(cx, cy, 8.0 + t * 38.0, 0.0, TAU);
+    if !st.offline {
+        for i in 0..2 {
+            let t = (phase / 4.0 + i as f64 / 2.0) % 1.0;
+            let a = pal.accent;
+            cr.set_source_rgba(a.0, a.1, a.2, (1.0 - t) * 0.32 * alpha);
+            cr.set_line_width(1.5);
+            cr.arc(cx, cy, 16.0 * (1.0 + 1.2 * t), 0.0, TAU);
+            cr.stroke().ok();
+        }
+    }
+    let mark = if st.offline { pal.muted } else { pal.accent };
+    cr.arc(cx, cy, 16.0, 0.0, TAU);
+    cr.set_source_rgba(mark.0, mark.1, mark.2, alpha);
+    cr.fill().ok();
+    cr.set_source_rgba(1.0, 1.0, 1.0, alpha);
+    cr.set_line_width(1.8);
+    cr.set_line_cap(cairo::LineCap::Round);
+    for (radius, sweep) in [(3.6, 0.85), (7.0, 0.75)] {
+        cr.new_sub_path();
+        cr.arc(cx, cy + 3.5, radius, -FRAC_PI_2 - sweep, -FRAC_PI_2 + sweep);
         cr.stroke().ok();
     }
-    cr.set_source_rgba(CYAN.0, CYAN.1, CYAN.2, alpha);
-    cr.arc(cx, cy, 4.0, 0.0, TAU);
+    cr.arc(cx, cy + 3.5, 1.4, 0.0, TAU);
     cr.fill().ok();
     let hint = if st.offline {
         "Nothing to send to yet"
@@ -556,8 +579,8 @@ fn draw_empty(st: &State, cr: &cairo::Context, x: f64, y: f64, w: f64, alpha: f6
     layout.set_text(hint);
     layout.set_width(((w - 40.0) * pango::SCALE as f64) as i32);
     layout.set_alignment(pango::Alignment::Center);
-    cr.set_source_rgba(0.66, 0.69, 0.85, alpha);
-    cr.move_to(x + 20.0, cy + 54.0);
+    cr.set_source_rgba(pal.muted.0, pal.muted.1, pal.muted.2, alpha);
+    cr.move_to(x + 20.0, cy + 44.0);
     pangocairo::functions::show_layout(cr, &layout);
     cr.new_path();
 }
@@ -573,11 +596,12 @@ fn draw_row(
     row: &Row,
     alpha: f64,
 ) {
+    let pal = st.palette();
     let appear = row.appear.value.max(0.0);
     if appear <= 0.001 {
         return;
     }
-    let hover = row.hover.value.clamp(0.0, 1.2);
+    let hover = row.hover.value.clamp(0.0, 1.0);
     let ry = y + HEADER_H + index as f64 * ROW_H;
     let sending = st.sending.as_ref().filter(|s| s.device_id == row.device.id);
     let dim = if st.hover.is_some() && st.hover != Some(index) && st.dragging {
@@ -588,44 +612,40 @@ fn draw_row(
         1.0
     };
     let a = alpha * appear.min(1.0) * dim;
+    // Rows fade in and rise a few pixels.
+    let ry = ry + (1.0 - appear.min(1.0)) * 6.0;
 
+    // The row under the pointer gets a blue selection, like a macOS list.
     if hover > 0.01 {
-        rounded(cr, x + 10.0, ry + 4.0, w - 20.0, ROW_H - 8.0, 18.0);
-        cr.set_source_rgba(VIOLET.0, VIOLET.1, VIOLET.2, 0.16 * hover.min(1.0) * alpha);
-        cr.fill_preserve().ok();
-        cr.set_source_rgba(VIOLET.0, VIOLET.1, VIOLET.2, 0.35 * hover.min(1.0) * alpha);
-        cr.set_line_width(1.0);
-        cr.stroke().ok();
+        rounded(cr, x + 8.0, ry + 4.0, w - 16.0, ROW_H - 8.0, 9.0);
+        let c = pal.accent;
+        cr.set_source_rgba(c.0, c.1, c.2, 0.13 * hover * alpha);
+        cr.fill().ok();
     }
 
     let (bx, by) = (x + 46.0, ry + ROW_H / 2.0);
-    let radius = 22.0 * appear * (1.0 + 0.12 * hover);
-    let (ha, hb) = hues(&row.device.id);
-    let (r1, g1, b1) = hsl(ha, 0.85, 0.64);
-    let (r2, g2, b2) = hsl(hb, 0.80, 0.52);
-
-    // Pulsing halo while hovered: "drop here".
+    let radius = 22.0 * (1.0 + 0.05 * hover);
     if hover > 0.01 {
-        let pulse = (st.born.elapsed().as_secs_f64() * 4.0).sin() * 0.5 + 0.5;
-        cr.set_source_rgba(r1, g1, b1, (0.25 + 0.25 * pulse) * hover.min(1.0) * alpha);
+        let c = pal.accent;
+        cr.set_source_rgba(c.0, c.1, c.2, hover * alpha);
         cr.set_line_width(2.0);
-        cr.arc(bx, by, radius + 5.0 + pulse * 3.0, 0.0, TAU);
+        cr.arc(bx, by, radius + 3.5, 0.0, TAU);
         cr.stroke().ok();
     }
-    let fill = cairo::LinearGradient::new(bx - radius, by - radius, bx + radius, by + radius);
-    fill.add_color_stop_rgba(0.0, r1, g1, b1, a);
-    fill.add_color_stop_rgba(1.0, r2, g2, b2, a);
+    let fill = cairo::LinearGradient::new(bx, by - radius, bx, by + radius);
+    let (t, b) = (pal.avatar_top, pal.avatar_bottom);
+    fill.add_color_stop_rgba(0.0, t.0, t.1, t.2, a);
+    fill.add_color_stop_rgba(1.0, b.0, b.1, b.2, a);
     cr.set_source(&fill).ok();
     cr.arc(bx, by, radius, 0.0, TAU);
     cr.fill().ok();
-    glyph(cr, bx, by, appear * (1.0 + 0.12 * hover), &row.device);
+    glyph(cr, bx, by, 1.0 + 0.05 * hover, &row.device);
 
     let status = sending.map(|s| match &s.state {
-        SendState::Preparing => "Preparing…".to_string(),
-        SendState::Waiting => "Waiting for accept…".to_string(),
-        SendState::Transferring(p) => format!("{:.0}%", p * 100.0),
-        SendState::Done => "Sent".to_string(),
-        SendState::Failed(_) => "Not sent".to_string(),
+        SendState::Preparing | SendState::Waiting => ("Waiting…".to_string(), pal.muted),
+        SendState::Transferring(_) => ("Sending…".to_string(), pal.accent),
+        SendState::Done => ("Sent".to_string(), pal.accent),
+        SendState::Failed(_) => ("Not Sent".to_string(), pal.danger),
     });
     let tx = bx + 36.0;
     text(
@@ -634,25 +654,27 @@ fn draw_row(
         by - 17.0,
         &row.device.alias,
         "Sans Bold 10.5",
-        (0.94, 0.95, 1.0, a),
+        rgba(pal.text, a),
         x + w - tx - 18.0,
     );
+    let (line, color) = status.unwrap_or_else(|| (row.device.subtitle().to_string(), pal.muted));
     text(
         cr,
         tx,
         by + 2.0,
-        status.as_deref().unwrap_or(row.device.subtitle()),
+        &line,
         "Sans 8.5",
-        (0.66, 0.69, 0.85, a),
+        rgba(color, a),
         x + w - tx - 18.0,
     );
 
     if let Some(sending) = sending {
         draw_progress(
             cr,
+            pal,
             bx,
             by,
-            radius + 6.0,
+            radius + 5.0,
             sending,
             alpha,
             st.born.elapsed().as_secs_f64(),
@@ -660,8 +682,11 @@ fn draw_row(
     }
 }
 
+/// The ring around the device being sent to, like the iOS share sheet.
+#[allow(clippy::too_many_arguments)]
 fn draw_progress(
     cr: &cairo::Context,
+    pal: &Palette,
     x: f64,
     y: f64,
     radius: f64,
@@ -671,56 +696,50 @@ fn draw_progress(
 ) {
     cr.set_line_width(3.0);
     cr.set_line_cap(cairo::LineCap::Round);
-    cr.set_source_rgba(1.0, 1.0, 1.0, 0.12 * alpha);
+    let f = pal.fill;
+    cr.set_source_rgba(f.0, f.1, f.2, f.3 * 2.0 * alpha);
     cr.arc(x, y, radius, 0.0, TAU);
     cr.stroke().ok();
-    let (color, fraction) = match &sending.state {
-        SendState::Done => (GREEN, 1.0),
-        SendState::Failed(_) => (RED, 1.0),
-        _ => (CYAN, sending.shown.value.clamp(0.0, 1.0)),
-    };
+    let accent = pal.accent;
     if matches!(sending.state, SendState::Preparing | SendState::Waiting) {
-        // Indeterminate: a short arc chasing around.
-        let spin = phase * 4.0;
-        cr.set_source_rgba(CYAN.0, CYAN.1, CYAN.2, alpha);
-        cr.arc(x, y, radius, spin, spin + 1.3);
+        // Indeterminate: a short arc turning calmly.
+        let spin = phase * 4.5;
+        cr.set_source_rgba(accent.0, accent.1, accent.2, alpha);
+        cr.arc(x, y, radius, spin, spin + 1.0);
         cr.stroke().ok();
         return;
     }
-    cr.set_source_rgba(color.0, color.1, color.2, alpha);
-    cr.arc(x, y, radius, -FRAC_PI_2, -FRAC_PI_2 + TAU * fraction);
-    cr.stroke().ok();
+    let (color, fraction) = match &sending.state {
+        SendState::Failed(_) => (pal.danger, 0.0),
+        _ => (accent, sending.shown.value.clamp(0.0, 1.0)),
+    };
+    if fraction > 0.0 {
+        cr.set_source_rgba(color.0, color.1, color.2, alpha);
+        cr.arc(x, y, radius, -FRAC_PI_2, -FRAC_PI_2 + TAU * fraction);
+        cr.stroke().ok();
+    }
     if matches!(sending.state, SendState::Done | SendState::Failed(_)) {
-        // The check mark (or cross) draws itself.
+        // A small badge fades in: a check mark, or a cross.
         let t = sending.check.clamp(0.0, 1.0);
         cr.save().ok();
         cr.translate(x + radius * 0.72, y + radius * 0.72);
-        cr.set_source_rgba(color.0, color.1, color.2, alpha);
-        cr.arc(0.0, 0.0, 9.0 * (0.6 + 0.4 * t), 0.0, TAU);
+        cr.set_source_rgba(pal.card.0, pal.card.1, pal.card.2, alpha * t);
+        cr.arc(0.0, 0.0, 10.5, 0.0, TAU);
         cr.fill().ok();
-        cr.set_source_rgba(1.0, 1.0, 1.0, alpha);
+        cr.set_source_rgba(color.0, color.1, color.2, alpha * t);
+        cr.arc(0.0, 0.0, 9.0, 0.0, TAU);
+        cr.fill().ok();
+        cr.set_source_rgba(1.0, 1.0, 1.0, alpha * t);
         cr.set_line_width(2.0);
         if sending.state == SendState::Done {
-            let points = [(-4.0, 0.2), (-1.2, 3.0), (4.2, -2.8)];
-            cr.move_to(points[0].0, points[0].1);
-            let first = (t * 2.0).min(1.0);
-            cr.line_to(
-                points[0].0 + (points[1].0 - points[0].0) * first,
-                points[0].1 + (points[1].1 - points[0].1) * first,
-            );
-            if t > 0.5 {
-                let second = (t - 0.5) * 2.0;
-                cr.line_to(
-                    points[1].0 + (points[2].0 - points[1].0) * second,
-                    points[1].1 + (points[2].1 - points[1].1) * second,
-                );
-            }
+            cr.move_to(-4.0, 0.2);
+            cr.line_to(-1.2, 3.0);
+            cr.line_to(4.2, -2.8);
         } else {
-            let s = 3.2 * t;
-            cr.move_to(-s, -s);
-            cr.line_to(s, s);
-            cr.move_to(s, -s);
-            cr.line_to(-s, s);
+            cr.move_to(-3.2, -3.2);
+            cr.line_to(3.2, 3.2);
+            cr.move_to(3.2, -3.2);
+            cr.line_to(-3.2, 3.2);
         }
         cr.stroke().ok();
         cr.restore().ok();
@@ -821,23 +840,6 @@ impl Panel {
                 sending.check = (sending.check + dt * 3.0).min(1.0);
             }
         }
-        for p in st.particles.iter_mut() {
-            p.age += dt;
-            if let Some((tx, ty)) = p.target {
-                // Steer into the bubble, faster as the particle ages.
-                let pull = 30.0 + p.age * 80.0;
-                p.vx += (tx - p.x) * pull * dt;
-                p.vy += (ty - p.y) * pull * dt;
-                p.vx *= 1.0 - (6.0 * dt).min(0.9);
-                p.vy *= 1.0 - (6.0 * dt).min(0.9);
-            } else {
-                p.vy += p.gravity * dt;
-                p.vx *= 1.0 - (1.2 * dt).min(0.9);
-            }
-            p.x += p.vx * dt;
-            p.y += p.vy * dt;
-        }
-        st.particles.retain(|p| p.age < p.life);
         if st
             .notice
             .as_ref()
@@ -848,48 +850,6 @@ impl Panel {
         st.animating() || st.notice.is_some()
     }
 
-    fn burst_into(&self, from: (f64, f64), to: (f64, f64)) {
-        let mut rng = rand::thread_rng();
-        let mut st = self.state.borrow_mut();
-        for _ in 0..28 {
-            let angle: f64 = rng.gen_range(0.0..TAU);
-            let speed = rng.gen_range(120.0..360.0);
-            st.particles.push(Particle {
-                x: from.0,
-                y: from.1,
-                vx: angle.cos() * speed,
-                vy: angle.sin() * speed,
-                age: 0.0,
-                life: rng.gen_range(0.55..0.85),
-                hue: rng.gen_range(230.0..330.0),
-                size: rng.gen_range(1.6..3.2),
-                target: Some(to),
-                gravity: 0.0,
-            });
-        }
-    }
-
-    fn confetti(&self, at: (f64, f64)) {
-        let mut rng = rand::thread_rng();
-        let mut st = self.state.borrow_mut();
-        for _ in 0..46 {
-            let angle: f64 = rng.gen_range(-2.3..-0.5);
-            let speed = rng.gen_range(140.0..360.0);
-            st.particles.push(Particle {
-                x: at.0,
-                y: at.1,
-                vx: angle.cos() * speed,
-                vy: angle.sin() * speed,
-                age: 0.0,
-                life: rng.gen_range(0.9..1.5),
-                hue: rng.gen_range(0.0..360.0),
-                size: rng.gen_range(1.4..3.0),
-                target: None,
-                gravity: 520.0,
-            });
-        }
-    }
-
     fn show(self: &Rc<Self>, open: bool) {
         {
             let mut st = self.state.borrow_mut();
@@ -898,7 +858,7 @@ impl Panel {
                 let start = Instant::now() + Duration::from_millis(60);
                 for (i, row) in st.rows.iter_mut().enumerate() {
                     row.appear_at = start + Duration::from_millis(45 * i as u64);
-                    row.appear = Spring::new(0.0, 260.0, 0.55);
+                    row.appear = Spring::new(0.0, 260.0, 0.9);
                 }
             }
             st.open.target = if open { 1.0 } else { 0.0 };
@@ -1036,8 +996,6 @@ impl Panel {
             });
             st.hover = Some(index);
         }
-        let to = self.state.borrow().bubble_center(width, height, index);
-        self.burst_into((x as f64, y as f64), to);
         widget.drag_get_data(context, &gdk::Atom::intern(&first), time);
         self.kick();
         true
@@ -1134,15 +1092,8 @@ impl Panel {
     }
 
     fn on_progress(self: &Rc<Self>, id: &str, progress: Progress) {
-        let (width, height) = self.size();
-        let mut celebrate = None;
         {
             let mut st = self.state.borrow_mut();
-            let device_index = st
-                .sending
-                .as_ref()
-                .and_then(|s| st.rows.iter().position(|r| r.device.id == s.device_id));
-            let center = device_index.map(|i| st.bubble_center(width, height, i));
             let Some(sending) = st
                 .sending
                 .as_mut()
@@ -1167,13 +1118,7 @@ impl Panel {
             };
             if matches!(sending.state, SendState::Done | SendState::Failed(_)) {
                 sending.finished_at = Some(Instant::now());
-                if sending.state == SendState::Done {
-                    celebrate = center;
-                }
             }
-        }
-        if let Some(center) = celebrate {
-            self.confetti(center);
         }
     }
 
@@ -1346,7 +1291,7 @@ pub fn run(side: &str) -> Result<()> {
             side,
             composited,
             dragging: false,
-            open: Spring::new(0.0, 210.0, 0.62),
+            open: Spring::new(0.0, 210.0, OPEN_DAMPING),
             shake: Spring::new(0.0, 600.0, 0.25),
             anchor_y: 400.0,
             rows: Vec::new(),
@@ -1354,7 +1299,7 @@ pub fn run(side: &str) -> Result<()> {
             offline: false,
             sending: None,
             session: None,
-            particles: Vec::new(),
+            dark: desktop_is_dark(),
             notice: None,
             leave_generation: 0,
             passing: false,
@@ -1507,7 +1452,7 @@ mod tests {
             side: Side::Right,
             composited: true,
             dragging: true,
-            open: Spring::new(1.0, 210.0, 0.62),
+            open: Spring::new(1.0, 210.0, OPEN_DAMPING),
             shake: Spring::new(0.0, 600.0, 0.25),
             anchor_y: 300.0,
             rows: Vec::new(),
@@ -1515,7 +1460,7 @@ mod tests {
             offline: false,
             sending: None,
             session: None,
-            particles: Vec::new(),
+            dark: false,
             notice: None,
             leave_generation: 0,
             passing: false,
@@ -1531,14 +1476,23 @@ mod tests {
         st
     }
 
-    /// Renders the card over a dark desktop into target/edge-snapshots.
-    fn render(name: &str, st: &State) {
+    /// Renders the card over a desktop wallpaper into target/edge-snapshots,
+    /// once in the light style and once in the dark one.
+    fn render(name: &str, st: &mut State) {
+        st.dark = false;
+        render_one(name, st);
+        st.dark = true;
+        render_one(&format!("dark-{name}"), st);
+        st.dark = false;
+    }
+
+    fn render_one(name: &str, st: &State) {
         let (w, h) = (WINDOW_W, 600);
         let surface = cairo::ImageSurface::create(cairo::Format::ARgb32, w + 160, h).unwrap();
         let cr = cairo::Context::new(&surface).unwrap();
         let bg = cairo::LinearGradient::new(0.0, 0.0, (w + 160) as f64, h as f64);
-        bg.add_color_stop_rgb(0.0, 0.13, 0.15, 0.27);
-        bg.add_color_stop_rgb(1.0, 0.25, 0.13, 0.29);
+        bg.add_color_stop_rgb(0.0, 0.36, 0.55, 0.78);
+        bg.add_color_stop_rgb(1.0, 0.22, 0.33, 0.55);
         cr.set_source(&bg).unwrap();
         cr.paint().unwrap();
         let window = cairo::ImageSurface::create(cairo::Format::ARgb32, w, h).unwrap();
@@ -1564,11 +1518,11 @@ mod tests {
             device("B2", "Work laptop", "localsend", "desktop"),
         ];
         let mut st = state(devices.clone());
-        render("1-open", &st);
+        render("1-open", &mut st);
 
         st.hover = Some(1);
         st.rows[1].hover = Spring::new(1.0, 1.0, 1.0);
-        render("2-hover", &st);
+        render("2-hover", &mut st);
 
         st.dragging = false;
         st.sending = Some(Sending {
@@ -1579,20 +1533,20 @@ mod tests {
             check: 0.0,
             finished_at: None,
         });
-        render("3-sending", &st);
+        render("3-sending", &mut st);
         if let Some(s) = st.sending.as_mut() {
             s.state = SendState::Done;
             s.shown = Spring::new(1.0, 1.0, 1.0);
             s.check = 1.0;
         }
-        render("4-done", &st);
+        render("4-done", &mut st);
         if let Some(s) = st.sending.as_mut() {
             s.state = SendState::Failed("Declined".into());
         }
-        render("5-declined", &st);
+        render("5-declined", &mut st);
 
-        let empty = state(Vec::new());
-        render("6-empty", &empty);
+        let mut empty = state(Vec::new());
+        render("6-empty", &mut empty);
         assert_eq!(empty.row_at(WINDOW_W as f64, 600.0, 200.0, 300.0), None);
         let three = state(devices);
         let (x, y) = three.bubble_center(WINDOW_W as f64, 600.0, 2);
@@ -1600,16 +1554,8 @@ mod tests {
     }
 
     #[test]
-    fn hues_match_the_web_ui() {
-        // Same as shared.js hues("A1").
-        let (a, b) = hues("A1");
-        assert!((0.0..360.0).contains(&a) && (0.0..360.0).contains(&b));
-        assert_eq!(hues("A1"), hues("A1"));
-    }
-
-    #[test]
     fn springs_settle() {
-        let mut spring = Spring::new(0.0, 210.0, 0.62);
+        let mut spring = Spring::new(0.0, 210.0, OPEN_DAMPING);
         spring.target = 1.0;
         let mut overshoot: f64 = 0.0;
         for _ in 0..240 {
@@ -1617,9 +1563,6 @@ mod tests {
             overshoot = overshoot.max(spring.value);
         }
         assert!(spring.settled());
-        assert!(
-            overshoot > 1.0 && overshoot < 1.2,
-            "a little bounce: {overshoot}"
-        );
+        assert!(overshoot < 1.02, "calm, barely any bounce: {overshoot}");
     }
 }
