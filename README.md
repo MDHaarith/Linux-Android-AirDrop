@@ -57,6 +57,8 @@ links are downloaded first when they point to a file.
 (Direct Share), like AirDrop on an iPhone. Tap one and a small sheet sends it right there, with a
 progress ring, then folds away. Or turn on the **edge panel**: a slim handle on the side of the
 screen, over any app, that sends your clipboard, your latest photo, or whatever you drop on it.
+While you drag something, the handle opens into a list of nearby devices: drop on one to send it
+there. (Android then shows its own "displaying over other apps" notice; long-press it to hide it.)
 Received photos show up as a preview in the notification.
 
 <p align="center">
@@ -64,6 +66,10 @@ Received photos show up as a preview in the notification.
   <img src="docs/screenshots/android-shareSheetSending.png" width="24%" alt="Sending with a progress ring">
   <img src="docs/screenshots/android-shareSheetSent.png" width="24%" alt="Sent">
   <img src="docs/screenshots/android-edgePanel.png" width="24%" alt="Edge panel over another app">
+</p>
+
+<p align="center">
+  <img src="docs/screenshots/android-dropTab.png" width="24%" alt="Dragging a photo to the screen edge: nearby devices, the one under the finger in blue">
 </p>
 
 <p align="center">
@@ -336,4 +342,5 @@ docs/       RESEARCH.md, screenshots
 ## License
 
 MIT. See [LICENSE](LICENSE). AirBridge is not affiliated with Apple, Google or the LocalSend
-project.
+project. The Android app uses the [Inter](https://rsms.me/inter/) typeface, under the SIL Open
+Font License ([android/third_party/inter/OFL.txt](android/third_party/inter/OFL.txt)).

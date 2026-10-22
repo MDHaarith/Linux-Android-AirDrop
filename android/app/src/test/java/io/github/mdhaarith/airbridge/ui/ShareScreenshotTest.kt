@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.ContentPaste
@@ -16,6 +17,7 @@ import androidx.compose.material.icons.rounded.Image
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
@@ -112,6 +114,28 @@ class ShareScreenshotTest {
     fun shareSheetDeclined() = sheet(
         ShareSheetUi(preview, peers, targetId = imac.id, phase = SharePhase.FAILED, error = "Office iMac declined"),
     )
+
+    /** The handle while something is dragged: the tab at its real window size, against the edge. */
+    private fun dropTab(ui: DropTabUi) = shoot {
+        Box(Modifier.fillMaxSize()) {
+            Box(
+                Modifier.align(if (ui.rightSide) Alignment.CenterEnd else Alignment.CenterStart)
+                    .size(DropTabLayout.width(ui.targets.size).dp, DropTabLayout.height(ui.targets.size).dp),
+            ) { DropTab(ui) }
+        }
+    }
+
+    private val dropTargets get() = listOf(DropTarget(DropTargets.ALL, "Send to all", "3 devices nearby", everyone = true)) +
+        peers.map { DropTarget(it.id, it.alias, if (it.id == laptop.id) "My device" else it.deviceModel, it.deviceType, it.deviceModel) }
+
+    @Test
+    fun dropTab() = dropTab(DropTabUi(true, dropTargets, hovered = laptop.id, over = true, defaultId = imac.id))
+
+    @Test
+    fun dropTabLeft() = dropTab(DropTabUi(false, dropTargets, defaultId = laptop.id))
+
+    @Test
+    fun dropTabNoDevices() = dropTab(DropTabUi(true, emptyList(), over = true))
 
     private fun actions(selected: String) = listOf(
         EdgeAction("clipboard", "Clipboard", "Flight AF 1234 lands 18:40, terminal 2E", Icons.Rounded.ContentPaste),

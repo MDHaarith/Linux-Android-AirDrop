@@ -83,7 +83,12 @@ fun SettingsScreen(vm: AppViewModel) {
                 }
             }
 
-            Group("Sending", footer = "Your devices also appear in Android's share sheet: share anything and tap your computer.") {
+            Group(
+                "Sending",
+                footer = "Your devices also appear in Android's share sheet: share anything and tap your computer." +
+                    if (settings.edgePanel) "\n\nWhile the handle is on, Android shows an “AirBridge is displaying over other apps” notification. " +
+                        "Long-press it to hide it; the handle keeps working." else "",
+            ) {
                 ListRow("Edge Panel", subtitle = "A handle on the screen edge: send your clipboard, latest photo or anything you drop on it", icon = Icons.Rounded.VerticalSplit, chevron = false) {
                     AppleSwitch(settings.edgePanel, { on ->
                         engine.settings.update { it.copy(edgePanel = on) }

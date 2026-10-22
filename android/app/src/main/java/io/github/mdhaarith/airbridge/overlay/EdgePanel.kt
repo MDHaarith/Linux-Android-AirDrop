@@ -18,6 +18,7 @@ import android.util.Size
 import android.view.ContentInfo
 import android.view.DragEvent
 import android.view.Gravity
+import android.view.HapticFeedbackConstants
 import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.View
@@ -54,6 +55,10 @@ import io.github.mdhaarith.airbridge.core.Transfer
 import io.github.mdhaarith.airbridge.share.ShareSheetActivity
 import io.github.mdhaarith.airbridge.share.ShareRequest
 import io.github.mdhaarith.airbridge.ui.AirBridgeTheme
+import io.github.mdhaarith.airbridge.ui.DropTab
+import io.github.mdhaarith.airbridge.ui.DropTabLayout
+import io.github.mdhaarith.airbridge.ui.DropTabUi
+import io.github.mdhaarith.airbridge.ui.DropTarget
 import io.github.mdhaarith.airbridge.ui.EdgeAction
 import io.github.mdhaarith.airbridge.ui.EdgePanelContent
 import io.github.mdhaarith.airbridge.ui.EdgePanelUi
@@ -78,7 +83,7 @@ class EdgePanel(private val context: Context) {
     private val engine = AirBridgeApp.engine
     private val windows = context.getSystemService(WindowManager::class.java)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
-    private var handle: HandleView? = null
+    private var handle: HandleRoot? = null
     private var panel: View? = null
     private var owner: OverlayOwner? = null
 
@@ -93,6 +98,11 @@ class EdgePanel(private val context: Context) {
     private var sendGeneration = 0L
     private var error by mutableStateOf<String?>(null)
     private var panelHover by mutableStateOf<String?>(null)
+
+    // The drop tab the handle turns into while something is dragged.
+    private var tabTargets by mutableStateOf<List<DropTarget>>(emptyList())
+    private var tabHovered by mutableStateOf<String?>(null)
+    private var tabOver by mutableStateOf(false)
     private val panelTargets = mutableMapOf<String, Rect>()
 
     // What keeps a drop's files readable (Android grants it with the drop and
@@ -110,8 +120,8 @@ class EdgePanel(private val context: Context) {
 
     fun show() {
         if (handle != null || !Settings.canDrawOverlays(context)) return
-        val view = HandleView(context)
         val rightSide = engine.settings.value.edgeSide != "left"
+        val view = HandleRoot(context, rightSide)
         val metrics = context.resources.displayMetrics
         val params = WindowManager.LayoutParams(
             dp(HANDLE_WIDTH), dp(HANDLE_HEIGHT),
@@ -122,15 +132,14 @@ class EdgePanel(private val context: Context) {
             gravity = Gravity.TOP or if (rightSide) Gravity.END else Gravity.START
             y = (metrics.heightPixels * engine.settings.value.edgeY).toInt()
         }
-        view.rightSide = rightSide
         runCatching { windows.addView(view, params) }
             .onSuccess { handle = view }
-            .onFailure { Log.w(TAG, "could not add the edge handle", it) }
+            .onFailure { Log.w(TAG, "could not add the edge handle", it); view.destroy() }
     }
 
     fun hide() {
         close()
-        handle?.let { runCatching { windows.removeView(it) } }
+        handle?.let { runCatching { windows.removeView(it) }; it.destroy() }
         handle = null
     }
 
@@ -456,39 +465,34 @@ class EdgePanel(private val context: Context) {
     private fun dp(value: Int) = (value * context.resources.displayMetrics.density).toInt()
 
     /**
-     * The handle: a quiet pill you can drag along the edge. While something
-     * is dragged anywhere on screen it grows into a "Drop to send" tab.
+     * The handle's window: a quiet pill you can drag along the edge
+     * ([HandleView]). While something is dragged anywhere on screen it grows
+     * into a card listing nearby devices ([DropTab]); dropping on a row sends
+     * there.
      */
-    @SuppressLint("ViewConstructor", "ClickableViewAccessibility")
-    private inner class HandleView(context: Context) : View(context) {
-        var rightSide = true
-        private var hovering = false
+    @SuppressLint("ViewConstructor")
+    private inner class HandleRoot(context: Context, private val rightSide: Boolean) : FrameLayout(context) {
+        private val pill = HandleView(context, rightSide, this)
+        private val owner = OverlayOwner()
+        private val tab = ComposeView(context).apply {
+            setViewTreeLifecycleOwner(owner)
+            setViewTreeSavedStateRegistryOwner(owner)
+            visibility = GONE
+            setContent {
+                AirBridgeTheme {
+                    val settings by engine.settings.state.collectAsState()
+                    DropTab(DropTabUi(rightSide, tabTargets, tabHovered, tabOver, settings.edgeRecipient))
+                }
+            }
+        }
         private var expanded = false
         private var restY = 0
-        private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
-        private val glow = Paint(Paint.ANTI_ALIAS_FLAG)
-        private val label = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = 0xFFFFFFFF.toInt()
-            textAlign = Paint.Align.CENTER
-            textSize = 13 * context.resources.displayMetrics.scaledDensity
-            isFakeBoldText = true
-        }
-        private val slop = ViewConfiguration.get(context).scaledTouchSlop
-        private var downX = 0f
-        private var downY = 0f
-        private var startY = 0
-        private var dragging = false
-        private var dragDevices = emptyList<Peer>()
-        private var hoveredTarget: String? = null
         private var receivingTarget: String? = null
-
-        private fun targets(): List<Pair<String, String>> =
-            if (dragDevices.isEmpty()) emptyList() else listOf(DropTargets.ALL to "Send to all") + dragDevices.map { it.id to it.alias }
-
-        private fun targetAt(y: Float): String? = targets().getOrNull(((y - dp(28)) / dp(72)).toInt().takeIf { y >= dp(28) } ?: -1)?.first
 
         init {
             contentDescription = "AirBridge edge panel"
+            addView(pill, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
+            addView(tab, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
             if (Build.VERSION.SDK_INT >= 31) {
                 // Android reads a drop for us here and lends us the right to
                 // open the other app's files, which an overlay can't ask for itself.
@@ -500,22 +504,21 @@ class EdgePanel(private val context: Context) {
             }
             setOnDragListener { _, event ->
                 when (event.action) {
-                    DragEvent.ACTION_DRAG_STARTED -> {
-                        if (busy()) false else {
-                            val maxRows = ((context.resources.displayMetrics.heightPixels / context.resources.displayMetrics.density - 76) / 72).toInt().coerceAtLeast(1)
-                            dragDevices = engine.peers.value.sortedBy { it.alias.lowercase() }.take((maxRows - 1).coerceAtLeast(0))
-                            engine.refresh()
-                            expand(true)
-                            true
-                        }
+                    DragEvent.ACTION_DRAG_STARTED -> if (busy()) false else { startDrag(); true }
+                    DragEvent.ACTION_DRAG_ENTERED, DragEvent.ACTION_DRAG_LOCATION -> {
+                        val target = targetAt(event.y)
+                        // A light tick each time the finger reaches a new device, like moving between AirDrop bubbles.
+                        if (target != null && target != tabHovered) performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                        tabOver = true
+                        tabHovered = target
+                        true
                     }
-                    DragEvent.ACTION_DRAG_ENTERED, DragEvent.ACTION_DRAG_LOCATION -> { hovering = true; hoveredTarget = targetAt(event.y); invalidate(); true }
-                    DragEvent.ACTION_DRAG_EXITED -> { hovering = false; hoveredTarget = null; invalidate(); true }
-                    DragEvent.ACTION_DRAG_ENDED -> { hovering = false; hoveredTarget = null; expand(false); true }
+                    DragEvent.ACTION_DRAG_EXITED -> { tabOver = false; tabHovered = null; true }
+                    DragEvent.ACTION_DRAG_ENDED -> { tabOver = false; tabHovered = null; expand(false); true }
                     DragEvent.ACTION_DROP -> {
-                        hovering = false
                         receivingTarget = targetAt(event.y)
-                        invalidate()
+                        tabOver = false
+                        tabHovered = null
                         // Android 12+ passes the drop, readable, to the content listener above.
                         if (Build.VERSION.SDK_INT < 31 || !onDragEvent(event)) onDrop(event.clipData, target = receivingTarget)
                         true
@@ -525,73 +528,61 @@ class EdgePanel(private val context: Context) {
             }
         }
 
-        /** A sliver at rest; a tab that is easy to hit while something is being dragged. */
+        /** Lists the devices to drop on: your default first, then by name; everyone when there are several. */
+        private fun startDrag() {
+            val metrics = context.resources.displayMetrics
+            val rows = ((metrics.heightPixels / metrics.density - DropTabLayout.HEADER - DropTabLayout.FOOTER - 40) / DropTabLayout.ROW).toInt().coerceAtLeast(1)
+            val settings = engine.settings.value
+            val devices = engine.peers.value.distinctBy { it.id }
+                .sortedWith(compareByDescending<Peer> { it.id == settings.edgeRecipient }.thenByDescending { it.id in settings.trusted }.thenBy { it.alias.lowercase() })
+            val everyone = if (devices.size > 1) listOf(DropTarget(DropTargets.ALL, "Send to all", "${devices.size} devices nearby", everyone = true)) else emptyList()
+            tabTargets = (everyone + devices.map { peer ->
+                DropTarget(peer.id, peer.alias, if (peer.id in settings.trusted) "My device" else peer.deviceModel, peer.deviceType, peer.deviceModel)
+            }).take(rows)
+            engine.refresh()
+            expand(true)
+        }
+
+        private fun targetAt(y: Float): String? =
+            DropTabLayout.rowAt(y / context.resources.displayMetrics.density, tabTargets.size)?.let { tabTargets[it].id }
+
+        /** A sliver at rest; a card that is easy to hit while something is being dragged. */
         private fun expand(on: Boolean) {
             if (expanded == on) return
             val params = layoutParams as? WindowManager.LayoutParams ?: return
             if (on) restY = params.y
-            val expandedHeight = if (targets().isEmpty()) 180 else 36 + targets().size * 72
-            params.width = dp(if (on) 188 else HANDLE_WIDTH)
-            params.height = dp(if (on) expandedHeight else HANDLE_HEIGHT)
-            params.y = if (on) (restY - dp(expandedHeight - HANDLE_HEIGHT) / 2).coerceIn(0, (context.resources.displayMetrics.heightPixels - params.height).coerceAtLeast(0)) else restY
+            val count = tabTargets.size
+            params.width = dp(if (on) DropTabLayout.width(count) else HANDLE_WIDTH)
+            params.height = dp(if (on) DropTabLayout.height(count) else HANDLE_HEIGHT)
+            val screen = context.resources.displayMetrics.heightPixels
+            params.y = if (on) (restY - (params.height - dp(HANDLE_HEIGHT)) / 2).coerceIn(0, (screen - params.height).coerceAtLeast(0)) else restY
             expanded = on
+            pill.visibility = if (on) GONE else VISIBLE
+            tab.visibility = if (on) VISIBLE else GONE
             runCatching { windows.updateViewLayout(this, params) }
-            invalidate()
         }
+
+        fun destroy() = owner.destroy()
+    }
+
+    /** The resting handle: a quiet gray pill, like the home indicator. Tap or swipe it in to open the panel; drag it along the edge to move it. */
+    @SuppressLint("ViewConstructor", "ClickableViewAccessibility")
+    private inner class HandleView(context: Context, private val rightSide: Boolean, private val window: View) : View(context) {
+        private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = HANDLE_IDLE }
+        private val slop = ViewConfiguration.get(context).scaledTouchSlop
+        private var downX = 0f
+        private var downY = 0f
+        private var startY = 0
+        private var dragging = false
 
         override fun onDraw(canvas: Canvas) {
-            if (expanded) return drawTab(canvas)
-            val w = width.toFloat()
-            val h = height.toFloat()
-            val pill = dp(if (hovering) 12 else 5).toFloat()
-            val left = if (rightSide) w - pill - dp(2) else dp(2).toFloat()
-            val rect = RectF(left, h * 0.08f, left + pill, h * 0.92f)
-            // A quiet gray pill, like the home indicator; blue while something is dragged over it.
-            paint.color = if (hovering) HANDLE_ACTIVE else HANDLE_IDLE
-            if (hovering) {
-                glow.color = HANDLE_ACTIVE
-                glow.alpha = 60
-                canvas.drawRoundRect(RectF(rect.left - dp(5), rect.top - dp(5), rect.right + dp(5), rect.bottom + dp(5)), pill, pill, glow)
-            }
-            canvas.drawRoundRect(rect, pill / 2, pill / 2, paint)
-        }
-
-        /** "Drop to send": a rounded tab against the screen edge, blue while something is over it. */
-        private fun drawTab(canvas: Canvas) {
-            val w = width.toFloat()
-            val h = height.toFloat()
-            val radius = dp(18).toFloat()
-            // Rounded on the inner side only: the outer corners run off the screen edge.
-            val rect = if (rightSide) RectF(dp(6).toFloat(), 0f, w + radius, h) else RectF(-radius, 0f, w - dp(6), h)
-            paint.color = if (hovering) HANDLE_ACTIVE else TAB_IDLE
-            canvas.drawRoundRect(rect, radius, radius, paint)
-            if (targets().isNotEmpty()) {
-                label.textAlign = Paint.Align.LEFT
-                canvas.drawText("Drop on a device", dp(16).toFloat(), dp(20).toFloat(), label)
-                for ((index, target) in targets().withIndex()) {
-                    val cy = dp(28 + index * 72 + 34).toFloat()
-                    paint.color = if (hoveredTarget == target.first) 0xFFFFFFFF.toInt() else 0x44FFFFFF
-                    canvas.drawCircle(dp(36).toFloat(), cy, dp(25).toFloat(), paint)
-                    label.color = if (hoveredTarget == target.first) HANDLE_ACTIVE else 0xFFFFFFFF.toInt()
-                    label.textAlign = Paint.Align.CENTER
-                    canvas.drawText(if (target.first == DropTargets.ALL) "All" else target.second.take(1).uppercase(), dp(36).toFloat(), cy + dp(5), label)
-                    label.color = 0xFFFFFFFF.toInt()
-                    label.textAlign = Paint.Align.LEFT
-                    val name = android.text.TextUtils.ellipsize(target.second, android.text.TextPaint(label), dp(104).toFloat(), android.text.TextUtils.TruncateAt.END).toString()
-                    canvas.drawText(name, dp(70).toFloat(), cy, label)
-                    if (engine.settings.value.edgeRecipient == target.first) canvas.drawText("Default", dp(70).toFloat(), cy + dp(18), label)
-                }
-                return
-            }
-            label.textAlign = Paint.Align.CENTER
-            val cx = (if (rightSide) dp(6) + w else w - dp(6)) / 2
-            val line = label.textSize * 1.25f
-            canvas.drawText(if (hovering) "Release" else "Drop", cx, h / 2 - line * 0.15f, label)
-            canvas.drawText(if (hovering) "to send" else "here", cx, h / 2 + line * 0.85f, label)
+            val pillWidth = dp(5).toFloat()
+            val left = if (rightSide) width - pillWidth - dp(2) else dp(2).toFloat()
+            canvas.drawRoundRect(RectF(left, height * 0.08f, left + pillWidth, height * 0.92f), pillWidth / 2, pillWidth / 2, paint)
         }
 
         override fun onTouchEvent(event: MotionEvent): Boolean {
-            val params = layoutParams as? WindowManager.LayoutParams ?: return false
+            val params = window.layoutParams as? WindowManager.LayoutParams ?: return false
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
                     downX = event.rawX
@@ -609,7 +600,7 @@ class EdgePanel(private val context: Context) {
                     } else if (dragging || abs(dy) > slop) {
                         dragging = true
                         params.y = (startY + dy).toInt().coerceAtLeast(0)
-                        runCatching { windows.updateViewLayout(this, params) }
+                        runCatching { windows.updateViewLayout(window, params) }
                     }
                 }
                 MotionEvent.ACTION_UP -> {
@@ -650,8 +641,6 @@ class EdgePanel(private val context: Context) {
     companion object {
         private const val TAG = "EdgePanel"
         private const val HANDLE_IDLE = 0x998E8E93.toInt()
-        private const val HANDLE_ACTIVE = 0xFF007AFF.toInt()
-        private const val TAB_IDLE = 0xE63A3A3C.toInt()
         private const val HANDLE_WIDTH = 26
         private const val HANDLE_HEIGHT = 120
         private val DROP_TYPES = arrayOf("image/*", "video/*", "audio/*", "text/*", "application/*", "font/*", "model/*")
