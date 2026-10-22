@@ -25,6 +25,7 @@ use crate::config;
 use crate::desktop;
 use crate::receiver::constant_time_eq;
 use crate::sender::{expand_paths, SendItem};
+use crate::update;
 
 const COOKIE: &str = "airbridge_token";
 
@@ -64,6 +65,7 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/open-downloads", post(open_downloads))
         .route("/show", post(show))
         .route("/quit", post(quit))
+        .route("/update", get(check_update).post(apply_update))
         .layer(middleware::from_fn_with_state(app.clone(), auth));
     Router::new()
         .route("/", get(index))
@@ -664,4 +666,41 @@ async fn show(State(app): State<Arc<App>>) -> StatusCode {
 async fn quit(State(app): State<Arc<App>>) -> StatusCode {
     app.shutdown.cancel();
     StatusCode::NO_CONTENT
+}
+
+async fn check_update() -> Response {
+    match update::check().await {
+        Ok(available) => Json(json!({
+            "current": update::current_build(),
+            "available": available,
+            "canInstall": update::appimage().is_some(),
+        }))
+        .into_response(),
+        Err(err) => bad_request(format!("Could not check for updates: {err:#}")),
+    }
+}
+
+/// Installs the newest build and restarts; outside the AppImage it opens the release page.
+async fn apply_update(State(app): State<Arc<App>>) -> Response {
+    let available = match update::check().await {
+        Ok(Some(available)) => available,
+        Ok(None) => return bad_request("AirBridge is up to date."),
+        Err(err) => return bad_request(format!("Could not check for updates: {err:#}")),
+    };
+    if update::appimage().is_none() {
+        desktop::open_url(&available.page);
+        return Json(json!({ "restarting": false })).into_response();
+    }
+    if let Err(err) = update::install(&available).await {
+        tracing::warn!("Update failed: {err:#}");
+        return bad_request(format!("Update failed: {err:#}"));
+    }
+    tracing::info!("Updated to {}; restarting", available.tag);
+    update::RESTART.store(true, Ordering::Relaxed);
+    // Let this answer reach the window before the server goes away.
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        app.shutdown.cancel();
+    });
+    Json(json!({ "restarting": true })).into_response()
 }

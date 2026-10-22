@@ -127,6 +127,20 @@ Received photos show up as a preview in the notification.
 
 ### Linux
 
+Download `airbridge-x86_64.AppImage` from the newest
+[release](https://github.com/MDHaarith/Linux-Android-AirDrop/releases), then:
+
+```bash
+chmod +x airbridge-x86_64.AppImage && ./airbridge-x86_64.AppImage
+```
+
+It uses the system's GTK 3, WebKitGTK 4.1 and gtk-layer-shell, which most desktops already have.
+When a newer build of `main` passes CI, an **Update** button appears in the toolbar. It
+downloads the new AppImage, checks its Ed25519 signature against the key built into the app,
+swaps the file and restarts. Unsigned or older builds are refused.
+
+#### From source
+
 You need [Rust](https://rustup.rs) 1.89 or newer and the Wayland client headers
 (`libwayland-dev` / `wayland-devel`, used by the file picker). For a native app window, also
 install WebKitGTK. Without it, AirBridge opens in a Chromium app window or your default browser.

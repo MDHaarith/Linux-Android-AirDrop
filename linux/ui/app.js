@@ -64,6 +64,35 @@ async function api(path, { method, body } = {}) {
   return data;
 }
 
+/* ---------------------------------------------------------------- updates */
+async function checkUpdate() {
+  try {
+    const { available, canInstall } = await api("/update");
+    const btn = $("btnUpdate");
+    btn.hidden = !available;
+    if (available) btn.title = `Build #${available.build} is ready` + (canInstall ? "" : " (opens the download page)");
+  } catch (_) { /* offline: try again later */ }
+}
+
+async function installUpdate() {
+  const btn = $("btnUpdate");
+  btn.disabled = true;
+  btn.textContent = "Updating…";
+  try {
+    const { restarting } = await api("/update", { body: {} });
+    if (restarting) {
+      toast("Updated. Restarting AirBridge…");
+      // The new version opens its own window.
+      setTimeout(() => window.ipc?.postMessage("close"), 300);
+      return;
+    }
+  } catch (err) {
+    toast(err.message);
+  }
+  btn.disabled = false;
+  btn.textContent = "Update";
+}
+
 function applyTheme(theme) {
   if (!theme || theme === "auto") delete document.documentElement.dataset.theme;
   else document.documentElement.dataset.theme = theme;
@@ -1003,6 +1032,9 @@ function init() {
   $("btnPair").addEventListener("click", openPairing);
   $("emptyPair").addEventListener("click", openPairing);
   $("btnSettings").addEventListener("click", openSettings);
+  $("btnUpdate").addEventListener("click", installUpdate);
+  checkUpdate();
+  setInterval(checkUpdate, 6 * 60 * 60 * 1000);
   $("btnActivity").addEventListener("click", () => toggleActivity());
   $("closeActivity").addEventListener("click", () => toggleActivity(false));
   $("clearHistory").addEventListener("click", () => api("/history", { method: "DELETE" }));
