@@ -29,6 +29,7 @@ jobs:
         with:
           workspaces: linux
       - run: cargo fmt --check
+      - run: node tools/test-desktop-drop.js
       - run: cargo clippy --all-targets --locked -- -D warnings
       - run: cargo clippy --all-targets --locked --features webview,edge -- -D warnings
       - run: cargo test --locked

@@ -23,6 +23,7 @@ pub struct Device {
 impl Device {
     pub fn subtitle(&self) -> &str {
         match self.kind.as_str() {
+            "broadcast" => "All nearby devices",
             "quickshare" => "Quick Share",
             "web" => "Browser",
             _ if self.device_type == "mobile" => "Phone",
@@ -50,7 +51,7 @@ pub enum Reply {
     Devices(Vec<Device>),
     /// The service is not running.
     Offline,
-    Sent(Result<String, String>),
+    Sent(Result<(String, Option<String>), String>),
     Progress(String, Progress),
 }
 
@@ -171,7 +172,7 @@ fn transfer_id(value: Value) -> Result<String, String> {
         .ok_or_else(|| "Unexpected answer from AirBridge".to_string())
 }
 
-async fn send(peer: String, payload: Payload) -> Result<String, String> {
+async fn send_one(peer: String, payload: Payload) -> Result<String, String> {
     match payload {
         Payload::Paths(paths) => {
             transfer_id(json_call("/api/send", json!({ "peer": peer, "paths": paths })).await?)
@@ -216,6 +217,46 @@ async fn send(peer: String, payload: Payload) -> Result<String, String> {
             transfer_id(json_call("/api/send", json!({ "peer": peer, "staged": [staged] })).await?)
         }
     }
+}
+
+async fn send(peer: String, payload: Payload) -> Result<(String, Option<String>), String> {
+    if peer != "@all" {
+        return send_one(peer, payload).await.map(|id| (id, None));
+    }
+    let (status, state) = call(
+        Method::GET,
+        "/api/state",
+        "application/json",
+        &[],
+        Bytes::new(),
+    )
+    .await?;
+    if status != 200 {
+        return Err("Could not find nearby devices".into());
+    }
+    let devices = parse_devices(&state);
+    if devices.is_empty() {
+        return Err("No nearby devices to send to".into());
+    }
+    let results = futures_util::future::join_all(
+        devices
+            .into_iter()
+            .map(|device| send_one(device.id, payload.clone())),
+    )
+    .await;
+    let mut ids = Vec::new();
+    let mut failure = None;
+    for result in results {
+        match result {
+            Ok(id) => ids.push(id),
+            Err(error) => failure = Some(error),
+        }
+    }
+    if ids.is_empty() {
+        return Err(failure.unwrap_or_else(|| "Could not send".into()));
+    }
+    // Transfer ids never contain commas. A batch is polled as one progress ring.
+    Ok((ids.join(","), failure))
 }
 
 pub fn parse_devices(state: &Value) -> Vec<Device> {
@@ -275,21 +316,21 @@ async fn handle(command: Command) -> Option<Reply> {
         }
         Command::Send { peer, payload } => Some(Reply::Sent(send(peer, payload).await)),
         Command::Progress(id) => {
-            let (status, t) = call(
-                Method::GET,
-                &format!("/api/transfers/{id}"),
-                "application/json",
-                &[],
-                Bytes::new(),
-            )
-            .await
-            .ok()?;
-            if status != 200 {
-                return None;
-            }
-            Some(Reply::Progress(
-                id,
-                Progress {
+            let mut batch = Vec::new();
+            for transfer in id.split(',') {
+                let (status, t) = call(
+                    Method::GET,
+                    &format!("/api/transfers/{transfer}"),
+                    "application/json",
+                    &[],
+                    Bytes::new(),
+                )
+                .await
+                .ok()?;
+                if status != 200 {
+                    return None;
+                }
+                batch.push(Progress {
                     status: t
                         .get("status")
                         .and_then(Value::as_str)
@@ -298,8 +339,59 @@ async fn handle(command: Command) -> Option<Reply> {
                     done: t.get("done").and_then(Value::as_u64).unwrap_or(0),
                     total: t.get("total").and_then(Value::as_u64).unwrap_or(0),
                     error: t.get("error").and_then(Value::as_str).map(str::to_string),
-                },
-            ))
+                });
+            }
+            Some(Reply::Progress(id, batch_progress(&batch)))
         }
+    }
+}
+
+fn batch_progress(batch: &[Progress]) -> Progress {
+    let active = batch
+        .iter()
+        .find(|p| p.status == "transferring")
+        .or_else(|| batch.iter().find(|p| p.status == "waiting"));
+    let failure = batch
+        .iter()
+        .find(|p| !["waiting", "transferring", "done"].contains(&p.status.as_str()));
+    Progress {
+        status: active
+            .or(failure)
+            .map(|p| p.status.clone())
+            .unwrap_or_else(|| "done".into()),
+        done: batch.iter().map(|p| p.done).sum(),
+        total: batch.iter().map(|p| p.total).sum(),
+        error: failure.and_then(|p| p.error.clone()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn broadcast_waits_for_every_transfer_and_preserves_failures() {
+        let mut batch = vec![
+            Progress {
+                status: "done".into(),
+                done: 10,
+                total: 10,
+                error: None,
+            },
+            Progress {
+                status: "transferring".into(),
+                done: 4,
+                total: 10,
+                error: None,
+            },
+        ];
+        assert_eq!(batch_progress(&batch).status, "transferring");
+        assert_eq!(batch_progress(&batch).done, 14);
+        batch[0].status = "failed".into();
+        batch[0].error = Some("Offline".into());
+        assert_eq!(batch_progress(&batch).status, "transferring");
+        batch[1].status = "done".into();
+        assert_eq!(batch_progress(&batch).status, "failed");
+        assert_eq!(batch_progress(&batch).error.as_deref(), Some("Offline"));
     }
 }

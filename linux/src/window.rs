@@ -11,7 +11,7 @@ use tao::window::WindowBuilder;
 use wry::{DragDropEvent, WebViewBuilder};
 
 enum UserEvent {
-    Dropped(Vec<std::path::PathBuf>),
+    Drag(DragDropEvent),
 }
 
 pub fn run(url: &str) -> Result<()> {
@@ -25,13 +25,16 @@ pub fn run(url: &str) -> Result<()> {
 
     let builder = WebViewBuilder::new()
         .with_url(url)
-        .with_drag_drop_handler(move |event| match event {
-            // Native drops carry real paths: no need to copy the files.
-            DragDropEvent::Drop { paths, .. } => {
-                let _ = proxy.send_event(UserEvent::Dropped(paths));
-                true
+        .with_drag_drop_handler(move |event| {
+            // WebKit also reports dragged browser URLs as paths. Let the DOM
+            // handle those with the original URL instead of sending a file path.
+            if let DragDropEvent::Drop { paths, .. } = &event {
+                if paths.iter().any(|path| !path.is_absolute()) {
+                    return false;
+                }
             }
-            _ => false,
+            let _ = proxy.send_event(UserEvent::Drag(event));
+            true
         });
 
     #[cfg(target_os = "linux")]
@@ -53,11 +56,25 @@ pub fn run(url: &str) -> Result<()> {
                 event: WindowEvent::CloseRequested,
                 ..
             } => *control_flow = ControlFlow::Exit,
-            Event::UserEvent(UserEvent::Dropped(paths)) => {
-                let json = serde_json::to_string(&paths).unwrap_or_else(|_| "[]".into());
-                let _ = webview.evaluate_script(&format!(
-                    "window.airbridgeNativeDrop && window.airbridgeNativeDrop({json})"
-                ));
+            Event::UserEvent(UserEvent::Drag(event)) => {
+                let script = match event {
+                    DragDropEvent::Drop {
+                        paths,
+                        position: (x, y),
+                    } => {
+                        let json = serde_json::to_string(&paths).unwrap_or_else(|_| "[]".into());
+                        format!("window.airbridgeNativeDrop?.({json}, {x}, {y})")
+                    }
+                    DragDropEvent::Enter {
+                        position: (x, y), ..
+                    }
+                    | DragDropEvent::Over { position: (x, y) } => {
+                        format!("window.airbridgeNativeDrag?.({x}, {y})")
+                    }
+                    DragDropEvent::Leave => "window.airbridgeNativeDrag?.(null, null)".into(),
+                    _ => return,
+                };
+                let _ = webview.evaluate_script(&script);
             }
             _ => {}
         }

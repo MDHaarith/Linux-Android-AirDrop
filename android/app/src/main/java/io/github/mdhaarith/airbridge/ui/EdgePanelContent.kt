@@ -24,8 +24,12 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Check
+import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.Groups
+import androidx.compose.material.icons.rounded.RadioButtonUnchecked
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -36,11 +40,14 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalInspectionMode
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
@@ -49,6 +56,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import io.github.mdhaarith.airbridge.R
 import io.github.mdhaarith.airbridge.core.Peer
+import io.github.mdhaarith.airbridge.overlay.DropTargets
 import kotlinx.coroutines.delay
 
 /** Something the edge panel can send. */
@@ -71,6 +79,8 @@ data class EdgePanelUi(
     val phase: SharePhase = SharePhase.PICK,
     val progress: Float = 0f,
     val error: String? = null,
+    val defaultTarget: String? = null,
+    val hoverTarget: String? = null,
 ) {
     val busy get() = phase == SharePhase.WAITING || phase == SharePhase.SENDING
 }
@@ -85,6 +95,9 @@ fun EdgePanelContent(
     onSelect: (String) -> Unit,
     onPick: (Peer) -> Unit,
     onClose: () -> Unit,
+    onDefault: (String?) -> Unit = {},
+    onSendAll: () -> Unit = {},
+    onDropBounds: (String, Rect) -> Unit = { _, _ -> },
 ) {
     val air = LocalAir.current
     val inspection = LocalInspectionMode.current
@@ -105,7 +118,7 @@ fun EdgePanelContent(
                 .align(if (ui.rightSide) Alignment.CenterEnd else Alignment.CenterStart)
                 .padding(vertical = 40.dp, horizontal = 10.dp)
                 .width(296.dp)
-                .heightIn(max = 640.dp)
+                .heightIn(max = 720.dp)
                 .graphicsLayer { translationX = sign * (1f - shown.value) * (size.width + 60f) }
                 .shadow(28.dp, RoundedCornerShape(22.dp))
                 .clip(RoundedCornerShape(22.dp))
@@ -125,7 +138,7 @@ fun EdgePanelContent(
                             SharePhase.SENDING -> "Sending…"
                             SharePhase.DONE -> "Sent"
                             SharePhase.FAILED -> ui.error ?: "Couldn't send"
-                            else -> if (ui.selected == null) "Tap a device to choose what to send" else "Send to a nearby device"
+                            else -> "Drop on a device bubble to send"
                         },
                         color = when (ui.phase) {
                             SharePhase.FAILED -> air.danger
@@ -150,13 +163,27 @@ fun EdgePanelContent(
             }
             Spacer(Modifier.size(18.dp))
             Text("TO", color = air.muted, fontSize = 12.sp, modifier = Modifier.padding(start = 14.dp, bottom = 6.dp))
+            Text("Choose a default for future drops.", color = air.muted, fontSize = 12.sp, modifier = Modifier.padding(start = 14.dp, bottom = 8.dp))
             Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(air.card)) {
                 if (ui.peers.isEmpty()) {
                     Text("Looking for devices… Open AirBridge on your computer.", color = air.muted, fontSize = 13.sp, modifier = Modifier.padding(14.dp))
                 }
                 ui.peers.forEachIndexed { index, peer ->
                     if (index > 0) RowSeparator(72.dp)
-                    DeviceRow(peer, index, ui) { onPick(peer) }
+                    DeviceRow(peer, index, ui, onDefault = { onDefault(if (ui.defaultTarget == peer.id) null else peer.id) }, onBounds = { onDropBounds(peer.id, it) }) { onPick(peer) }
+                }
+                if (ui.peers.isNotEmpty()) {
+                    RowSeparator(72.dp)
+                    Row(Modifier.fillMaxWidth().onGloballyPositioned { onDropBounds(DropTargets.ALL, it.boundsInRoot()) }.background(if (ui.hoverTarget == DropTargets.ALL) air.fill else Color.Transparent).pressable(onSendAll, enabled = !ui.busy).padding(horizontal = 10.dp, vertical = 7.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Box(Modifier.size(52.dp), contentAlignment = Alignment.Center) {
+                            Icon(Icons.Rounded.Groups, contentDescription = null, tint = air.accent, modifier = Modifier.size(42.dp).clip(CircleShape).background(air.fill).padding(8.dp))
+                        }
+                        Column(Modifier.weight(1f).padding(start = 10.dp)) {
+                            Text("Send to all", color = air.text, fontSize = 15.sp)
+                            Text("${ui.peers.size} nearby devices", color = air.muted, fontSize = 12.sp)
+                        }
+                        DefaultButton(ui.defaultTarget == DropTargets.ALL, !ui.busy, "all devices") { onDefault(if (ui.defaultTarget == DropTargets.ALL) null else DropTargets.ALL) }
+                    }
                 }
             }
         }
@@ -190,9 +217,9 @@ private fun ActionRow(action: EdgeAction, selected: Boolean, enabled: Boolean, o
 }
 
 @Composable
-private fun DeviceRow(peer: Peer, index: Int, ui: EdgePanelUi, onClick: () -> Unit) {
+private fun DeviceRow(peer: Peer, index: Int, ui: EdgePanelUi, onDefault: () -> Unit, onBounds: (Rect) -> Unit, onClick: () -> Unit) {
     val air = LocalAir.current
-    val isTarget = peer.id == ui.targetId
+    val isTarget = peer.id == ui.targetId || ui.targetId == DropTargets.ALL
     val inspection = LocalInspectionMode.current
     val appear = remember { Animatable(if (inspection) 1f else 0f) }
     LaunchedEffect(Unit) {
@@ -200,10 +227,12 @@ private fun DeviceRow(peer: Peer, index: Int, ui: EdgePanelUi, onClick: () -> Un
         appear.animateTo(1f, tween(260))
     }
     val dim by animateFloatAsState(if (ui.targetId != null && !isTarget) 0.4f else 1f, tween(250), label = "dim")
-    val (mode, subtitle) = targetState(peer, ui.targetId, ui.phase, ui.trusted)
+    val (mode, subtitle) = targetState(peer, if (ui.targetId == DropTargets.ALL) peer.id else ui.targetId, ui.phase, ui.trusted)
     Row(
         Modifier
             .fillMaxWidth()
+            .onGloballyPositioned { onBounds(it.boundsInRoot()) }
+            .background(if (ui.hoverTarget == peer.id) air.fill else Color.Transparent)
             .graphicsLayer { alpha = dim * appear.value }
             // Always tappable: with nothing chosen above, the device asks what to send.
             .pressable(onClick, enabled = !ui.busy && ui.phase != SharePhase.DONE)
@@ -228,5 +257,15 @@ private fun DeviceRow(peer: Peer, index: Int, ui: EdgePanelUi, onClick: () -> Un
                 maxLines = 1,
             )
         }
+        DefaultButton(ui.defaultTarget == peer.id, !ui.busy, peer.alias, onDefault)
+    }
+}
+
+@Composable
+private fun DefaultButton(selected: Boolean, enabled: Boolean, name: String, onClick: () -> Unit) {
+    val air = LocalAir.current
+    IconButton(onClick = onClick, enabled = enabled) {
+        Icon(if (selected) Icons.Rounded.CheckCircle else Icons.Rounded.RadioButtonUnchecked, contentDescription = if (selected) "Clear default: $name" else "Use $name for drops",
+            tint = if (selected) air.accent else air.muted.copy(alpha = 0.5f), modifier = Modifier.size(24.dp).clip(CircleShape).background(if (selected) air.fill else Color.Transparent))
     }
 }

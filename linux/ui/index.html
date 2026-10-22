@@ -19,9 +19,23 @@
     </div>
   </header>
 
-  <main class="stage" id="stage">
+  <aside class="device-rail" aria-label="Send to a device">
+    <h2>Send to</h2>
+    <p>Drop on a bubble to send.<br>Click to use it for future drops.</p>
+    <button class="peer all-peers" id="allPeers" hidden>
+      <div class="bubble"><div class="avatar" id="allAvatar"></div></div>
+      <div class="label"><b>Send to all</b><span>All nearby devices</span></div>
+    </button>
     <div class="peers" id="peers"></div>
+    <button class="btn ghost small" id="clearDropTarget" hidden>Clear default</button>
+  </aside>
 
+  <main class="stage" id="stage">
+    <div class="drop-prompt" id="dropPrompt" hidden>
+      <h2>Drop anything here</h2>
+      <p id="dropRecipient">Choose a device on the left, or drop directly on its bubble.</p>
+      <p class="muted">Right-click a device for more options.</p>
+    </div>
     <div class="empty" id="empty">
       <h2>No one nearby yet</h2>
       <p>Open <b>AirBridge</b>, <b>Quick Share</b> or <b>LocalSend</b> on your phone on the same Wi‑Fi, or pair your phone's browser.</p>
@@ -38,7 +52,7 @@
       <span class="pulse-dot" id="liveDot"></span>
       <span>Visible as <b id="meName">…</b></span>
     </button>
-    <p class="hint" id="hint">Drop files here, then choose a device</p>
+    <p class="hint" id="hint">Drop on a device bubble to send</p>
     <span class="me-ip" id="meIp"></span>
   </footer>
 

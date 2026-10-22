@@ -88,6 +88,7 @@ enum SendState {
 struct Sending {
     device_id: String,
     transfer: Option<String>,
+    preparation_error: Option<String>,
     state: SendState,
     shown: Spring,
     check: f64,
@@ -953,14 +954,27 @@ impl Panel {
         time: u32,
     ) -> bool {
         let (width, height) = self.size();
+        let default = crate::config::Settings::load().drop_recipient;
         let device = {
             let st = self.state.borrow();
             if st.sending.is_some() {
                 None
             } else {
                 st.row_at(width, height, x as f64, y as f64)
-                    .or(st.hover)
-                    .or((st.rows.len() == 1).then_some(0))
+                    .or_else(|| {
+                        default
+                            .as_ref()
+                            .and_then(|id| st.rows.iter().position(|r| &r.device.id == id))
+                    })
+                    .or_else(|| {
+                        let devices: Vec<_> = st
+                            .rows
+                            .iter()
+                            .enumerate()
+                            .filter(|(_, r)| r.device.id != "@all")
+                            .collect();
+                        (default.is_none() && devices.len() == 1).then(|| devices[0].0)
+                    })
                     .map(|i| (i, st.rows[i].device.id.clone()))
             }
         };
@@ -1038,6 +1052,7 @@ impl Panel {
                 self.state.borrow_mut().sending = Some(Sending {
                     device_id: session.device_id.clone(),
                     transfer: None,
+                    preparation_error: None,
                     state: SendState::Preparing,
                     shown: Spring::new(0.0, 120.0, 0.9),
                     check: 0.0,
@@ -1061,7 +1076,18 @@ impl Panel {
 
     fn on_reply(self: &Rc<Self>, reply: Reply) {
         match reply {
-            Reply::Devices(devices) => {
+            Reply::Devices(mut devices) => {
+                if !devices.is_empty() {
+                    devices.insert(
+                        0,
+                        Device {
+                            id: "@all".into(),
+                            alias: "Send to all".into(),
+                            device_type: "desktop".into(),
+                            kind: "broadcast".into(),
+                        },
+                    );
+                }
                 let mut st = self.state.borrow_mut();
                 st.offline = false;
                 st.set_devices(devices);
@@ -1075,8 +1101,9 @@ impl Panel {
                 let mut st = self.state.borrow_mut();
                 if let Some(sending) = st.sending.as_mut() {
                     match result {
-                        Ok(id) => {
+                        Ok((id, error)) => {
                             sending.transfer = Some(id);
+                            sending.preparation_error = error;
                             sending.state = SendState::Waiting;
                         }
                         Err(message) => {
@@ -1111,7 +1138,11 @@ impl Panel {
                 } else {
                     0.0
                 }),
-                "done" => SendState::Done,
+                "done" => sending
+                    .preparation_error
+                    .clone()
+                    .map(SendState::Failed)
+                    .unwrap_or(SendState::Done),
                 "declined" => SendState::Failed("Declined".into()),
                 "cancelled" => SendState::Failed("Cancelled".into()),
                 _ => SendState::Failed(progress.error.unwrap_or_else(|| "Could not send".into())),
@@ -1528,6 +1559,7 @@ mod tests {
         st.sending = Some(Sending {
             device_id: "quickshare:Xy12".into(),
             transfer: Some("t".into()),
+            preparation_error: None,
             state: SendState::Transferring(0.62),
             shown: Spring::new(0.62, 1.0, 1.0),
             check: 0.0,

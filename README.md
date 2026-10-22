@@ -177,9 +177,10 @@ secret key, so only someone who can see your screen can connect.
 
 **Desktop**
 
-- **Drop files** anywhere in the window and release over a device to send, or drop first and
-  click a device after.
-- **Click a device** to send files, a folder, a message or the clipboard, or to trust it.
+- **Drop files, folders, images, links or text** on a device bubble in the left panel to send
+  directly. **Send to all** sends to every nearby device.
+- **Click a device** to save it as the default for future drops anywhere in the window or on
+  the screen edge. Right-click for files, a folder, a message, the clipboard or trust options.
 - Incoming requests slide up with **Accept / Decline**. The desktop notification has the same
   buttons.
 - The tray icon offers *Open*, *Send clipboard to …*, *Open received files* and *Quit*.
@@ -217,7 +218,9 @@ airbridge quit
   sends. Or pick *AirBridge* and tap a device in the sheet that slides up.
 - **Edge panel** (Settings → *Edge panel*): a handle on the side of the screen over every app.
   Tap or swipe it for your clipboard, latest photo or files; drop text or files on it to send
-  them. Drag it up or down to move it.
+  them. During a drag it expands into device bubbles: release on a device or **Send to all**
+  to transfer immediately. Use the circle beside a device in the panel to save it as the
+  default for drops on the handle. Drag the handle up or down to move it.
 - Long-press the AirBridge icon for *Send to …* shortcuts to your devices.
 - In the app: tap **Send files**, **Photos** or **Text**, then tap a device.
 - Tap a device for more: send a message, the clipboard, or trust it.
@@ -299,6 +302,7 @@ on Android with LocalSend on Windows or a Mac.
 ```bash
 # Linux
 cd linux
+node tools/test-desktop-drop.js             # desktop drop recipient and broadcast regression check
 cargo test && cargo clippy --all-targets -- -D warnings
 cargo test --features edge edge::            # drop-zone logic + renders to target/edge-snapshots
 cargo build --features edge --examples && tools/edge-e2e.sh /tmp/shots   # real drag & drop under Xvfb

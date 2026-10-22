@@ -1,12 +1,24 @@
 package io.github.mdhaarith.airbridge.share
 
 import io.github.mdhaarith.airbridge.core.Peer
+import io.github.mdhaarith.airbridge.overlay.DropTargets
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
 
 class ShareLogicTest {
     private fun peer(id: String, alias: String = id) = Peer(id, alias, null, "desktop", "10.0.0.2", 53317, true, 0)
+
+    @Test
+    fun dropsUseTheChosenDeviceAndBroadcastOnlyWhenChosen() {
+        val peers = listOf(peer("a"), peer("b"))
+        assertEquals(listOf(peers[1]), DropTargets.resolve(peers, "b"))
+        assertEquals(peers, DropTargets.resolve(peers, DropTargets.ALL))
+        assertEquals(emptyList<Peer>(), DropTargets.resolve(peers, null))
+        assertEquals(emptyList<Peer>(), DropTargets.resolve(peers.take(1), "offline"))
+        assertEquals(peers.take(1), DropTargets.resolve(peers.take(1), null))
+        assertEquals(emptyList<Peer>(), DropTargets.resolve(emptyList(), DropTargets.ALL))
+    }
 
     @Test
     fun filesWinOverCaptions() {

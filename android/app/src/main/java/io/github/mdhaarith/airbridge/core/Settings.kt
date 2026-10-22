@@ -24,6 +24,8 @@ data class AppSettings(
     val edgeSide: String = "right",
     /** Vertical position of the handle, as a fraction of the screen height. */
     val edgeY: Float = 0.38f,
+    /** Device id, or DropTargets.ALL for an explicit broadcast. */
+    val edgeRecipient: String? = null,
 )
 
 /** Settings persisted as JSON in the app's private storage. */

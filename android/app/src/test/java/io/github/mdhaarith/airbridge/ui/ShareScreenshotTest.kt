@@ -29,6 +29,7 @@ import app.cash.paparazzi.DeviceConfig
 import app.cash.paparazzi.Paparazzi
 import com.android.resources.NightMode
 import io.github.mdhaarith.airbridge.core.Peer
+import io.github.mdhaarith.airbridge.overlay.DropTargets
 import org.junit.Rule
 import org.junit.Test
 
@@ -133,5 +134,17 @@ class ShareScreenshotTest {
                 onSelect = {}, onPick = {}, onClose = {},
             )
         }
+    }
+
+    @Test
+    fun edgePanelDefault() {
+        val (list, selected) = actions("photo")
+        shoot { EdgePanelContent(EdgePanelUi(false, list, selected, peers, defaultTarget = laptop.id), onSelect = {}, onPick = {}, onClose = {}) }
+    }
+
+    @Test
+    fun edgePanelAll() {
+        val (list, selected) = actions("clipboard")
+        shoot { EdgePanelContent(EdgePanelUi(true, list, selected, peers, targetId = DropTargets.ALL, phase = SharePhase.SENDING, progress = 0.5f, defaultTarget = DropTargets.ALL), onSelect = {}, onPick = {}, onClose = {}) }
     }
 }

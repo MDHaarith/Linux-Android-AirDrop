@@ -185,6 +185,8 @@ pub struct Settings {
     pub edge_drop: bool,
     /// "right" or "left".
     pub edge_side: String,
+    /// Device id, or "@all" when the user explicitly chooses every device.
+    pub drop_recipient: Option<String>,
     /// Open what your own (trusted) devices send right away, like AirDrop
     /// between your own Apple devices.
     pub open_received: bool,
@@ -214,6 +216,7 @@ impl Default for Settings {
             quick_share: true,
             edge_drop: true,
             edge_side: "right".into(),
+            drop_recipient: None,
             open_received: true,
         }
     }
@@ -329,6 +332,19 @@ impl Settings {
         set_bool!("quickShare", quick_share);
         set_bool!("edgeDrop", edge_drop);
         set_bool!("openReceived", open_received);
+        if let Some(value) = map.get("dropRecipient") {
+            if value.is_null()
+                || value
+                    .as_str()
+                    .is_some_and(|id| !id.is_empty() && id.len() <= 256)
+            {
+                let recipient = value.as_str().map(str::to_string);
+                if self.drop_recipient != recipient {
+                    self.drop_recipient = recipient;
+                    changed.push("dropRecipient");
+                }
+            }
+        }
         if let Some(side) = map.get("edgeSide").and_then(Value::as_str) {
             if ["left", "right"].contains(&side) && self.edge_side != side {
                 self.edge_side = side.into();
@@ -423,4 +439,24 @@ pub fn write_private(path: &Path, contents: &[u8]) -> std::io::Result<()> {
     std::fs::rename(&tmp, path).inspect_err(|_| {
         let _ = std::fs::remove_file(&tmp);
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn drop_recipient_round_trips_and_can_be_cleared() {
+        let mut settings = Settings::default();
+        settings.apply(&serde_json::json!({"dropRecipient": "phone"}));
+        let json = serde_json::to_string(&settings).unwrap();
+        let saved: Settings = serde_json::from_str(&json).unwrap();
+        assert_eq!(saved.drop_recipient.as_deref(), Some("phone"));
+        settings.apply(&serde_json::json!({"dropRecipient": "@all"}));
+        assert_eq!(settings.public_json()["dropRecipient"], "@all");
+        settings.apply(&serde_json::json!({"dropRecipient": null}));
+        assert!(settings.drop_recipient.is_none());
+        settings.apply(&serde_json::json!({"dropRecipient": 42}));
+        assert!(settings.drop_recipient.is_none());
+    }
 }

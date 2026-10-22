@@ -22,6 +22,33 @@ const incomingQueue = [];
 let currentIncoming = null;
 let hoverPeer = null;
 let dragDepth = 0;
+const ALL_DEVICES = "@all";
+let dropTarget = null;
+
+function recipients(target) {
+  if (target === ALL_DEVICES) return [...state.peers.keys()];
+  return state.peers.has(target) ? [target] : [];
+}
+
+function selectDropTarget(target) {
+  dropTarget = target;
+  api("/settings", { body: { dropRecipient: target } }).catch((err) => toast("Couldn't save default", err.message, "bad"));
+  renderDropTarget();
+}
+
+function renderDropTarget() {
+  for (const [id, node] of peerEls) {
+    node.classList.toggle("selected", id === dropTarget);
+    node.setAttribute("aria-pressed", String(id === dropTarget));
+  }
+  $("allPeers").hidden = state.peers.size === 0;
+  $("allPeers").classList.toggle("selected", dropTarget === ALL_DEVICES);
+  $("allPeers").setAttribute("aria-pressed", String(dropTarget === ALL_DEVICES));
+  $("clearDropTarget").hidden = !dropTarget;
+  $("dropPrompt").hidden = state.peers.size === 0;
+  const name = dropTarget === ALL_DEVICES ? "all nearby devices" : state.peers.get(dropTarget)?.alias;
+  $("dropRecipient").textContent = name ? `Drops here send to ${name}.` : dropTarget ? "Your default device is offline. Drop on another bubble to send." : "Choose a device on the left, or drop directly on its bubble.";
+}
 
 /* ------------------------------------------------------------------ api */
 async function api(path, { method, body } = {}) {
@@ -66,7 +93,7 @@ function handle({ event, data }) {
     case "transfer": return updateTransfer(data);
     case "incoming": return queueIncoming(data.id);
     case "message": return showMessage(data);
-    case "settings": state.settings = data; applyTheme(data.theme); return renderMe();
+    case "settings": state.settings = data; dropTarget = data.dropRecipient || null; renderDropTarget(); applyTheme(data.theme); return renderMe();
     case "companion": state.companion = data; return;
     case "staged": return addStagedPaths(data.files || []);
     case "scan": return setScanning(data.running, data.found);
@@ -80,6 +107,7 @@ function handle({ event, data }) {
 function loadState(data) {
   state.me = data.me;
   state.settings = data.settings || {};
+  dropTarget = state.settings.dropRecipient || null;
   state.companion = data.companion || {};
   state.multicast = data.multicast;
   applyTheme(state.settings.theme);
@@ -133,6 +161,7 @@ function upsertPeer(p, quiet = false) {
         <div class="label"><b></b><span></span></div>
       </button>`);
     node.addEventListener("click", (e) => onPeerClick(p.id, e));
+    node.addEventListener("contextmenu", (e) => { e.preventDefault(); openPeerMenu(p.id); });
     $("peers").appendChild(node);
     peerEls.set(p.id, node);
   }
@@ -172,6 +201,7 @@ function renderEmpty() {
   const empty = state.peers.size === 0;
   $("empty").hidden = !empty;
   $("hint").hidden = empty || state.staged.length > 0;
+  renderDropTarget();
 }
 
 /** Shows the latest transfer with a peer under its name, like the iOS share sheet. */
@@ -444,8 +474,8 @@ function showMessage({ id, from, text, copied }) {
 /* ------------------------------------------------------------ peer clicks */
 function onPeerClick(id, event) {
   event.stopPropagation();
+  selectDropTarget(id);
   if (state.staged.length) return sendStaged(id);
-  openPeerMenu(id);
 }
 
 function openPeerMenu(id) {
@@ -540,7 +570,13 @@ function stageUploads(files, sendTo = null) {
   const entries = files.map(({ file, name }) => ({ key: "u" + Math.random(), kind: "upload", name, size: file.size, type: file.type, progress: 0, done: false, file }));
   state.staged.push(...entries);
   renderTray();
-  const uploads = entries.map((entry) => new Promise((resolve) => {
+  const uploads = prepareUploads(entries);
+  if (sendTo) sendStaged(sendTo);
+  return uploads;
+}
+
+function prepareUploads(entries) {
+  return Promise.all(entries.map((entry) => new Promise((resolve) => {
     const xhr = new XMLHttpRequest();
     xhr.open("POST", "/api/stage");
     xhr.setRequestHeader("x-file-name", encodeURIComponent(entry.name));
@@ -565,15 +601,14 @@ function stageUploads(files, sendTo = null) {
       updateChip(entry);
       resolve();
     };
-    xhr.onerror = () => { entry.failed = true; resolve(); };
+    xhr.onerror = () => { entry.failed = true; toast(`Couldn't prepare ${entry.name}`, "Upload failed. Try dropping it again.", "bad"); updateChip(entry); resolve(); };
     xhr.send(entry.file);
-  }));
-  entries.uploads = Promise.all(uploads);
-  if (sendTo) sendStaged(sendTo);
-  return entries.uploads;
+  })));
 }
 
 async function sendStaged(peerId) {
+  const peers = recipients(peerId);
+  if (!peers.length) return toast("Device unavailable", "Your files are ready. Choose a nearby device.", "bad");
   const items = state.staged.splice(0);
   renderTray();
   const pending = items.filter((i) => i.kind === "upload" && !i.done);
@@ -582,12 +617,22 @@ async function sendStaged(peerId) {
     while (items.some((i) => i.kind === "upload" && !i.done && !i.failed)) await new Promise((r) => setTimeout(r, 120));
   }
   const paths = items.filter((i) => i.kind === "path").map((i) => i.path);
-  const staged = items.filter((i) => i.kind === "upload" && i.id).map((i) => i.id);
-  if (!paths.length && !staged.length) return;
-  try {
-    await api("/send", { body: { peer: peerId, paths, staged, pin: state.pins[peerId] } });
-  } catch (err) {
-    toast("Couldn't send", err.message, "bad");
+  const uploaded = items.filter((i) => i.kind === "upload" && i.id);
+  const messages = items.filter((i) => i.kind === "text");
+  if (!paths.length && !uploaded.length && !messages.length) return;
+  for (const [index, peer] of peers.entries()) {
+    // ponytail: stage a copy per recipient; share ownership if large broadcasts become common.
+    const copies = index === 0 ? uploaded : uploaded.map((i) => ({ ...i, id: undefined, chip: null, done: false, failed: false }));
+    if (index > 0) await prepareUploads(copies);
+    const staged = copies.filter((i) => i.id).map((i) => i.id);
+    try {
+      if (paths.length || staged.length) await api("/send", { body: { peer, paths, staged, pin: state.pins[peer] } });
+      for (const item of messages) {
+        await api(item.url ? "/send-url" : "/send-text", { body: { peer, ...(item.url ? { url: item.url } : { text: item.text }), pin: state.pins[peer] } });
+      }
+    } catch (err) {
+      toast(`Couldn't send to ${state.peers.get(peer)?.alias || "device"}`, err.message, "bad");
+    }
   }
 }
 
@@ -626,25 +671,22 @@ function updateChip(item) {
 }
 
 /* ------------------------------------------------------------ drag & drop */
-const hasFiles = (e) => [...(e.dataTransfer?.types || [])].includes("Files");
+const hasFiles = (e) => !e.target?.closest?.("input,textarea,[contenteditable]") && [...(e.dataTransfer?.types || [])].some((type) => ["Files", "text/uri-list", "text/plain"].includes(type));
 
 function peerAt(x, y) {
-  let best = null;
-  let bestDist = 78;
-  for (const [id, node] of peerEls) {
-    const c = center(node.querySelector(".bubble"));
-    if (!c) continue;
-    const d = Math.hypot(c.x - x, c.y - y);
-    if (d < bestDist) { best = id; bestDist = d; }
-  }
-  return best;
+  const node = document.elementFromPoint(x, y)?.closest(".peer");
+  if (node === $("allPeers")) return ALL_DEVICES;
+  return state.peers.has(node?.dataset.id) ? node.dataset.id : null;
 }
+
+const targetNode = (id) => id === ALL_DEVICES ? $("allPeers") : peerEls.get(id);
+const dropRecipientAt = (x, y) => peerAt(x, y) || dropTarget || (state.peers.size === 1 ? state.peers.keys().next().value : null);
 
 function setHover(id) {
   if (hoverPeer === id) return;
-  if (hoverPeer) peerEls.get(hoverPeer)?.classList.remove("drop-target");
+  if (hoverPeer) targetNode(hoverPeer)?.classList.remove("drop-target");
   hoverPeer = id;
-  if (id) peerEls.get(id)?.classList.add("drop-target");
+  if (id) targetNode(id)?.classList.add("drop-target");
 }
 
 function endDrag() {
@@ -674,14 +716,23 @@ addEventListener("dragleave", () => {
 addEventListener("drop", async (e) => {
   if (!hasFiles(e)) return;
   e.preventDefault();
-  const target = hoverPeer;
+  const target = dropRecipientAt(e.clientX, e.clientY);
   // Entries must be read synchronously, before the event ends.
   const entries = [...e.dataTransfer.items].map((i) => i.webkitGetAsEntry && i.webkitGetAsEntry()).filter(Boolean);
   const plain = [...e.dataTransfer.files];
+  const url = e.dataTransfer.getData("text/uri-list").split(/\r?\n/).find((line) => line && !line.startsWith("#") && /^https?:\/\//i.test(line));
+  const text = e.dataTransfer.getData("text/plain");
   endDrag();
-  const files = entries.length ? await readEntries(entries) : plain.map((file) => ({ file, name: file.name }));
-  if (!files.length) return;
-  stageUploads(files, target);
+  try {
+    const files = entries.length ? await readEntries(entries) : plain.map((file) => ({ file, name: file.name }));
+    if (files.length) return stageUploads(files, target);
+    if (!url && !text.trim()) return;
+    state.staged.push({ key: "t" + Math.random(), kind: "text", name: url || text.trim().slice(0, 60), type: "text/plain", text, url, done: true });
+    renderTray();
+    if (target) await sendStaged(target);
+  } catch (err) {
+    toast("Couldn't add drop", err.message, "bad");
+  }
 });
 
 async function readEntries(entries) {
@@ -704,12 +755,20 @@ async function readEntries(entries) {
 }
 
 /** Called by the native window (wry) with real paths: no copying needed. */
-window.airbridgeNativeDrop = async (paths) => {
-  const target = hoverPeer;
+window.airbridgeNativeDrag = (x, y) => {
+  if (x === null) return endDrag();
+  document.body.classList.add("dragging");
+  setHover(peerAt(x, y));
+};
+
+window.airbridgeNativeDrop = async (paths, x, y) => {
+  const target = dropRecipientAt(x, y);
   endDrag();
   if (!paths || !paths.length) return;
   try {
-    if (target) await sendPaths(target, paths);
+    if (target && recipients(target).length) {
+      for (const peer of recipients(target)) await sendPaths(peer, paths);
+    }
     else await api("/stage-paths", { body: { paths } });
   } catch (err) {
     toast("Couldn't add files", err.message, "bad");
@@ -932,6 +991,12 @@ function init() {
   $("clearHistory").innerHTML = icons.trash;
   $("closeActivity").innerHTML = icons.close;
   $("dropIcon").innerHTML = icons.upload;
+  $("allAvatar").innerHTML = icons.waves;
+  $("allPeers").addEventListener("click", () => {
+    selectDropTarget(ALL_DEVICES);
+    if (state.staged.length) sendStaged(ALL_DEVICES);
+  });
+  $("clearDropTarget").addEventListener("click", () => selectDropTarget(null));
 
   $("btnScan").addEventListener("click", scan);
   $("emptyScan").addEventListener("click", scan);

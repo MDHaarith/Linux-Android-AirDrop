@@ -31,10 +31,11 @@ import androidx.compose.material.icons.rounded.Image
 import androidx.compose.material.icons.rounded.Inbox
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.platform.ComposeView
 import androidx.compose.runtime.collectAsState
 import androidx.lifecycle.Lifecycle
@@ -49,6 +50,7 @@ import io.github.mdhaarith.airbridge.canReadPhotos
 import io.github.mdhaarith.airbridge.core.Log
 import io.github.mdhaarith.airbridge.core.Peer
 import io.github.mdhaarith.airbridge.core.Status
+import io.github.mdhaarith.airbridge.core.Transfer
 import io.github.mdhaarith.airbridge.share.ShareSheetActivity
 import io.github.mdhaarith.airbridge.share.ShareRequest
 import io.github.mdhaarith.airbridge.ui.AirBridgeTheme
@@ -86,8 +88,12 @@ class EdgePanel(private val context: Context) {
     private var dropped by mutableStateOf<Dropped?>(null)
     private var selected by mutableStateOf<String?>(null)
     private var targetId by mutableStateOf<String?>(null)
-    private var transferId by mutableStateOf<String?>(null)
+    private var transferIds by mutableStateOf<List<String>>(emptyList())
+    private var preparing by mutableStateOf(false)
+    private var sendGeneration = 0L
     private var error by mutableStateOf<String?>(null)
+    private var panelHover by mutableStateOf<String?>(null)
+    private val panelTargets = mutableMapOf<String, Rect>()
 
     // What keeps a drop's files readable (Android grants it with the drop and
     // takes it back once this is gone), held until the next drop.
@@ -137,9 +143,11 @@ class EdgePanel(private val context: Context) {
 
     fun open() {
         if (panel != null) return
-        error = null
-        targetId = null
-        transferId = null
+        if (!busy()) {
+            error = null
+            targetId = null
+            transferIds = emptyList()
+        }
         loadPhoto()
         val owner = OverlayOwner().also { this.owner = it }
         val compose = ComposeView(context).apply {
@@ -150,10 +158,10 @@ class EdgePanel(private val context: Context) {
                     val peers by engine.peers.collectAsState()
                     val transfers by engine.transfers.collectAsState()
                     val settings by engine.settings.state.collectAsState()
-                    val ui = remember(peers, transfers, settings, clipboard, photo, dropped, selected, targetId, transferId, error) {
-                        uiState(peers, settings.trusted, transfers.firstOrNull { it.id == transferId })
-                    }
-                    EdgePanelContent(ui, onSelect = ::select, onPick = ::send, onClose = ::close)
+                    val ui = uiState(peers, settings.trusted, transfers)
+                    EdgePanelContent(ui, onSelect = ::select, onPick = ::send, onClose = ::close,
+                        onDefault = ::setDefault, onSendAll = ::sendAll,
+                        onDropBounds = { id, bounds -> panelTargets[id] = bounds })
                 }
             }
         }
@@ -173,6 +181,30 @@ class EdgePanel(private val context: Context) {
             }
         }
         root.addView(compose)
+        var receivingTarget: String? = null
+        if (Build.VERSION.SDK_INT >= 31) {
+            root.setOnReceiveContentListener(DROP_TYPES) { _, payload ->
+                onDrop(payload.clip, grant = payload, target = receivingTarget)
+                null
+            }
+        }
+        root.setOnDragListener { _, event ->
+            val target = panelTargets.entries.firstOrNull { (id, bounds) ->
+                (id == DropTargets.ALL || engine.peers.value.any { it.id == id }) && bounds.contains(Offset(event.x, event.y))
+            }?.key
+            when (event.action) {
+                DragEvent.ACTION_DRAG_STARTED -> !busy()
+                DragEvent.ACTION_DRAG_ENTERED, DragEvent.ACTION_DRAG_LOCATION -> { panelHover = target; true }
+                DragEvent.ACTION_DRAG_EXITED, DragEvent.ACTION_DRAG_ENDED -> { panelHover = null; true }
+                DragEvent.ACTION_DROP -> {
+                    receivingTarget = target
+                    panelHover = null
+                    if (Build.VERSION.SDK_INT < 31 || !root.onDragEvent(event)) onDrop(event.clipData, target = target)
+                    true
+                }
+                else -> true
+            }
+        }
         val params = WindowManager.LayoutParams(
             WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.MATCH_PARENT,
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
@@ -190,7 +222,12 @@ class EdgePanel(private val context: Context) {
         panel = null
         owner?.destroy()
         owner = null
-        dropped = null
+        panelHover = null
+        panelTargets.clear()
+        if (!busy()) {
+            dropped = null
+            dropGrant = null
+        }
     }
 
     private fun actions(): List<EdgeAction> = buildList {
@@ -222,15 +259,23 @@ class EdgePanel(private val context: Context) {
     /** Whether choosing [key] sends something now (rather than asking for access first). */
     private fun ready(key: String) = key != PHOTO || (canReadPhotos(context) && photo != null)
 
-    private fun uiState(peers: List<Peer>, trusted: Set<String>, transfer: io.github.mdhaarith.airbridge.core.Transfer?): EdgePanelUi {
+    private fun busy() = preparing || engine.transfers.value.any { it.id in transferIds && !it.status.isFinal }
+
+    private fun setDefault(id: String?) {
+        engine.settings.update { it.copy(edgeRecipient = id) }
+    }
+
+    private fun uiState(peers: List<Peer>, trusted: Set<String>, transfers: List<Transfer>): EdgePanelUi {
         val actions = actions()
         val selected = selection(actions)
+        val batch = transfers.filter { it.id in transferIds }
         val phase = when {
+            preparing -> SharePhase.WAITING
+            batch.any { it.status == Status.TRANSFERRING } -> SharePhase.SENDING
+            batch.any { it.status == Status.WAITING } -> SharePhase.WAITING
             error != null -> SharePhase.FAILED
-            transfer == null -> SharePhase.PICK
-            transfer.status == Status.WAITING -> SharePhase.WAITING
-            transfer.status == Status.TRANSFERRING -> SharePhase.SENDING
-            transfer.status == Status.DONE -> SharePhase.DONE
+            batch.isEmpty() -> SharePhase.PICK
+            batch.all { it.status == Status.DONE } -> SharePhase.DONE
             else -> SharePhase.FAILED
         }
         return EdgePanelUi(
@@ -240,9 +285,11 @@ class EdgePanel(private val context: Context) {
             peers = peers.sortedWith(compareByDescending<Peer> { it.id in trusted }.thenBy { it.alias.lowercase() }),
             trusted = trusted,
             targetId = targetId,
+            defaultTarget = engine.settings.value.edgeRecipient,
+            hoverTarget = panelHover,
             phase = phase,
-            progress = transfer?.progress ?: 0f,
-            error = error ?: transfer?.takeIf { phase == SharePhase.FAILED }?.let { it.error ?: if (it.status == Status.DECLINED) "${it.peerAlias} declined" else "Couldn't send" },
+            progress = if (batch.isEmpty()) 0f else batch.map { it.progress }.average().toFloat(),
+            error = error ?: batch.firstOrNull { it.status.isFinal && it.status != Status.DONE }?.let { it.error ?: if (it.status == Status.DECLINED) "${it.peerAlias} declined" else "Couldn't send to ${it.peerAlias}" },
         )
     }
 
@@ -273,32 +320,69 @@ class EdgePanel(private val context: Context) {
     }
 
     private fun send(peer: Peer) {
+        setDefault(peer.id)
+        sendTo(listOf(peer), peer.id)
+    }
+
+    private fun sendAll() {
+        setDefault(DropTargets.ALL)
+        sendTo(engine.peers.value.toList(), DropTargets.ALL)
+    }
+
+    private fun sendTo(peers: List<Peer>, target: String) {
+        if (busy()) return
+        if (peers.isEmpty()) { error = "No nearby devices to send to"; return }
         // Nothing copied, no photo: a device still does something, it asks what to send.
-        val key = selection(actions()) ?: return pickFiles(peer)
+        val key = selection(actions()) ?: run {
+            if (peers.size == 1) pickFiles(peers.first()) else error = "Choose something to send first, then Send to all"
+            return
+        }
+        val text = clipboard
+        val image = photo
+        val payload = dropped
+        val grant = dropGrant
         error = null
-        targetId = peer.id
+        targetId = target
+        preparing = true
+        transferIds = emptyList()
+        val generation = ++sendGeneration
         scope.launch {
-            val id = withContext(Dispatchers.IO) {
-                when (key) {
-                    CLIPBOARD -> clipboard?.takeIf { it.isNotBlank() }?.let { engine.sendText(peer, it) }
-                    PHOTO -> photo?.let { engine.sendFiles(peer, listOf(it.uri.toString())) }
-                    DROPPED -> when (val d = dropped) {
-                        is Dropped.Text -> engine.sendText(peer, d.text)
-                        is Dropped.Files -> engine.sendFiles(peer, d.uris.map(Uri::toString))
-                        null -> null
+            try {
+                val ids = mutableListOf<String>()
+                for (peer in peers) {
+                    try {
+                        val id = withContext(Dispatchers.IO) {
+                            when (key) {
+                                CLIPBOARD -> text?.takeIf { it.isNotBlank() }?.let { engine.sendText(peer, it) }
+                                PHOTO -> image?.let { engine.sendFiles(peer, listOf(it.uri.toString())) }
+                                DROPPED -> when (payload) {
+                                    is Dropped.Text -> engine.sendText(peer, payload.text)
+                                    is Dropped.Files -> engine.sendFiles(peer, payload.uris.map(Uri::toString))
+                                    null -> null
+                                }
+                                else -> null
+                            }
+                        }
+                        if (id == null) error = "Couldn't prepare files for ${peer.alias}"
+                        else { ids += id; transferIds = ids.toList() }
+                    } catch (e: Exception) {
+                        if (e is kotlinx.coroutines.CancellationException) throw e
+                        error = "Couldn't send to ${peer.alias}: ${e.message ?: "try again"}"
                     }
-                    else -> null
                 }
-            }
-            if (id == null) {
-                error = "Nothing to send"
-                return@launch
-            }
-            transferId = id
-            val end = engine.transfers.first { list -> list.firstOrNull { it.id == id }?.status?.isFinal != false }
-            if (end.firstOrNull { it.id == id }?.status == Status.DONE) {
-                delay(1_400)
-                if (transferId == id) close()
+                preparing = false
+                if (ids.isEmpty()) { error = "Nothing to send"; return@launch }
+                val end = engine.transfers.first { list -> ids.all { id -> list.firstOrNull { it.id == id }?.status?.isFinal == true } }
+                if (error == null && ids.all { id -> end.first { it.id == id }.status == Status.DONE }) {
+                    delay(1_400)
+                    if (transferIds == ids) close()
+                }
+            } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
+                if (sendGeneration == generation) error = e.message ?: "Couldn't send"
+            } finally {
+                if (sendGeneration == generation) preparing = false
+                if (dropGrant === grant && !busy()) dropGrant = null
             }
         }
     }
@@ -333,8 +417,10 @@ class EdgePanel(private val context: Context) {
      * Something was dropped on the handle (text, or files from another app).
      * [grant] keeps the other app's files readable while we hold on to it.
      */
-    private fun onDrop(clip: ClipData?, grant: Any? = null) {
+    private fun onDrop(clip: ClipData?, grant: Any? = null, target: String? = null) {
         clip ?: return
+        if (busy()) return
+        open()
         dropGrant = grant
         val texts = mutableListOf<String>()
         val uris = mutableListOf<Uri>()
@@ -346,7 +432,7 @@ class EdgePanel(private val context: Context) {
         }
         // Files dragged from another app are only readable with a permission
         // that overlay windows cannot ask for; check before offering them.
-        val readable = uris.filter { uri -> runCatching { context.contentResolver.openInputStream(uri)?.close(); true }.getOrDefault(false) }
+        val readable = uris.filter { uri -> runCatching { context.contentResolver.openInputStream(uri)?.use { true } == true }.getOrDefault(false) }
         dropped = when {
             readable.isNotEmpty() -> Dropped.Files(readable)
             texts.isNotEmpty() -> Dropped.Text(texts.joinToString("\n"))
@@ -354,7 +440,12 @@ class EdgePanel(private val context: Context) {
         }
         error = if (dropped == null && uris.isNotEmpty()) "That app doesn't let others read its files. Use Share → AirBridge instead." else null
         selected = DROPPED.takeIf { dropped != null }
-        open()
+        if (dropped != null) {
+            val destination = target ?: engine.settings.value.edgeRecipient
+            val peers = DropTargets.resolve(engine.peers.value, destination)
+            if (peers.isNotEmpty()) sendTo(peers, destination ?: peers.single().id)
+            else error = if (destination != null) "Default device is offline. Choose a nearby device." else "Drop on a device bubble or choose a default."
+        }
     }
 
     private fun saveHandlePosition(y: Int) {
@@ -387,6 +478,14 @@ class EdgePanel(private val context: Context) {
         private var downY = 0f
         private var startY = 0
         private var dragging = false
+        private var dragDevices = emptyList<Peer>()
+        private var hoveredTarget: String? = null
+        private var receivingTarget: String? = null
+
+        private fun targets(): List<Pair<String, String>> =
+            if (dragDevices.isEmpty()) emptyList() else listOf(DropTargets.ALL to "Send to all") + dragDevices.map { it.id to it.alias }
+
+        private fun targetAt(y: Float): String? = targets().getOrNull(((y - dp(28)) / dp(72)).toInt().takeIf { y >= dp(28) } ?: -1)?.first
 
         init {
             contentDescription = "AirBridge edge panel"
@@ -395,21 +494,30 @@ class EdgePanel(private val context: Context) {
                 // open the other app's files, which an overlay can't ask for itself.
                 // (Android refuses a bare "*/*" here, so name the families.)
                 setOnReceiveContentListener(DROP_TYPES) { _, payload: ContentInfo ->
-                    onDrop(payload.clip, grant = payload)
+                    onDrop(payload.clip, grant = payload, target = receivingTarget)
                     null
                 }
             }
             setOnDragListener { _, event ->
                 when (event.action) {
-                    DragEvent.ACTION_DRAG_STARTED -> { expand(true); true }
-                    DragEvent.ACTION_DRAG_ENTERED -> { hovering = true; invalidate(); true }
-                    DragEvent.ACTION_DRAG_EXITED -> { hovering = false; invalidate(); true }
-                    DragEvent.ACTION_DRAG_ENDED -> { hovering = false; expand(false); true }
+                    DragEvent.ACTION_DRAG_STARTED -> {
+                        if (busy()) false else {
+                            val maxRows = ((context.resources.displayMetrics.heightPixels / context.resources.displayMetrics.density - 76) / 72).toInt().coerceAtLeast(1)
+                            dragDevices = engine.peers.value.sortedBy { it.alias.lowercase() }.take((maxRows - 1).coerceAtLeast(0))
+                            engine.refresh()
+                            expand(true)
+                            true
+                        }
+                    }
+                    DragEvent.ACTION_DRAG_ENTERED, DragEvent.ACTION_DRAG_LOCATION -> { hovering = true; hoveredTarget = targetAt(event.y); invalidate(); true }
+                    DragEvent.ACTION_DRAG_EXITED -> { hovering = false; hoveredTarget = null; invalidate(); true }
+                    DragEvent.ACTION_DRAG_ENDED -> { hovering = false; hoveredTarget = null; expand(false); true }
                     DragEvent.ACTION_DROP -> {
                         hovering = false
+                        receivingTarget = targetAt(event.y)
                         invalidate()
                         // Android 12+ passes the drop, readable, to the content listener above.
-                        if (Build.VERSION.SDK_INT < 31 || !onDragEvent(event)) onDrop(event.clipData)
+                        if (Build.VERSION.SDK_INT < 31 || !onDragEvent(event)) onDrop(event.clipData, target = receivingTarget)
                         true
                     }
                     else -> true
@@ -422,9 +530,10 @@ class EdgePanel(private val context: Context) {
             if (expanded == on) return
             val params = layoutParams as? WindowManager.LayoutParams ?: return
             if (on) restY = params.y
-            params.width = dp(if (on) EXPANDED_WIDTH else HANDLE_WIDTH)
-            params.height = dp(if (on) EXPANDED_HEIGHT else HANDLE_HEIGHT)
-            params.y = if (on) (restY - dp(EXPANDED_HEIGHT - HANDLE_HEIGHT) / 2).coerceAtLeast(0) else restY
+            val expandedHeight = if (targets().isEmpty()) 180 else 36 + targets().size * 72
+            params.width = dp(if (on) 188 else HANDLE_WIDTH)
+            params.height = dp(if (on) expandedHeight else HANDLE_HEIGHT)
+            params.y = if (on) (restY - dp(expandedHeight - HANDLE_HEIGHT) / 2).coerceIn(0, (context.resources.displayMetrics.heightPixels - params.height).coerceAtLeast(0)) else restY
             expanded = on
             runCatching { windows.updateViewLayout(this, params) }
             invalidate()
@@ -456,6 +565,25 @@ class EdgePanel(private val context: Context) {
             val rect = if (rightSide) RectF(dp(6).toFloat(), 0f, w + radius, h) else RectF(-radius, 0f, w - dp(6), h)
             paint.color = if (hovering) HANDLE_ACTIVE else TAB_IDLE
             canvas.drawRoundRect(rect, radius, radius, paint)
+            if (targets().isNotEmpty()) {
+                label.textAlign = Paint.Align.LEFT
+                canvas.drawText("Drop on a device", dp(16).toFloat(), dp(20).toFloat(), label)
+                for ((index, target) in targets().withIndex()) {
+                    val cy = dp(28 + index * 72 + 34).toFloat()
+                    paint.color = if (hoveredTarget == target.first) 0xFFFFFFFF.toInt() else 0x44FFFFFF
+                    canvas.drawCircle(dp(36).toFloat(), cy, dp(25).toFloat(), paint)
+                    label.color = if (hoveredTarget == target.first) HANDLE_ACTIVE else 0xFFFFFFFF.toInt()
+                    label.textAlign = Paint.Align.CENTER
+                    canvas.drawText(if (target.first == DropTargets.ALL) "All" else target.second.take(1).uppercase(), dp(36).toFloat(), cy + dp(5), label)
+                    label.color = 0xFFFFFFFF.toInt()
+                    label.textAlign = Paint.Align.LEFT
+                    val name = android.text.TextUtils.ellipsize(target.second, android.text.TextPaint(label), dp(104).toFloat(), android.text.TextUtils.TruncateAt.END).toString()
+                    canvas.drawText(name, dp(70).toFloat(), cy, label)
+                    if (engine.settings.value.edgeRecipient == target.first) canvas.drawText("Default", dp(70).toFloat(), cy + dp(18), label)
+                }
+                return
+            }
+            label.textAlign = Paint.Align.CENTER
             val cx = (if (rightSide) dp(6) + w else w - dp(6)) / 2
             val line = label.textSize * 1.25f
             canvas.drawText(if (hovering) "Release" else "Drop", cx, h / 2 - line * 0.15f, label)
@@ -526,8 +654,6 @@ class EdgePanel(private val context: Context) {
         private const val TAB_IDLE = 0xE63A3A3C.toInt()
         private const val HANDLE_WIDTH = 26
         private const val HANDLE_HEIGHT = 120
-        private const val EXPANDED_WIDTH = 92
-        private const val EXPANDED_HEIGHT = 220
         private val DROP_TYPES = arrayOf("image/*", "video/*", "audio/*", "text/*", "application/*", "font/*", "model/*")
         private const val CLIPBOARD = "clipboard"
         private const val PHOTO = "photo"
