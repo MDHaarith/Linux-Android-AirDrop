@@ -240,7 +240,8 @@ async fn client_session(
         protocol: "http".into(),
         download: false,
     };
-    app.registry.upsert(info, ip, PeerKind::Web);
+    // The pairing key proved who it is.
+    app.registry.upsert(info, ip, PeerKind::Web, true);
 
     let (mut sink, mut stream) = socket.split();
     let hello =
@@ -315,10 +316,13 @@ async fn announce_files(
     let Some(peer_id) = client_id(&params) else {
         return (StatusCode::BAD_REQUEST, "missing id").into_response();
     };
-    if body.files.is_empty() || body.files.len() > 10_000 {
+    if body.files.is_empty() || body.files.len() > crate::protocol::MAX_FILES {
         return (StatusCode::BAD_REQUEST, "no files").into_response();
     }
     let ip = net::canonical(addr.ip());
+    if !app.requests.hit(ip) {
+        return (StatusCode::TOO_MANY_REQUESTS, "slow down").into_response();
+    }
     let peer_json = app
         .registry
         .get(&peer_id)
@@ -344,9 +348,6 @@ async fn announce_files(
         .collect();
     let mut transfer = Transfer::new(Direction::In, &peer_id, peer_json, files);
     transfer.peer_ip = Some(ip);
-    // Whoever holds the QR key is you: no confirmation needed.
-    transfer.status = Status::Transferring;
-    transfer.started = Some(now());
     let total = transfer.total();
     let download_dir = app.settings().download_dir.clone();
     let _ = std::fs::create_dir_all(&download_dir);
@@ -363,6 +364,34 @@ async fn announce_files(
         .map(|f| json!({ "id": f.id, "name": f.name }))
         .collect();
     let id = app.transfers.lock().unwrap().add(transfer);
+    // The page talks plain HTTP on the local network, so its key could be
+    // overheard: like any other sender, it asks before anything is saved.
+    let mut guard = crate::receiver::WaitGuard {
+        app: app.clone(),
+        id: id.clone(),
+        armed: true,
+    };
+    let accepted = app.ask_accept(&id).await;
+    guard.armed = false;
+    if !accepted {
+        app.finish(&id, Status::Declined, None);
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({ "message": "The computer declined" })),
+        )
+            .into_response();
+    }
+    {
+        let mut transfers = app.transfers.lock().unwrap();
+        match transfers.get_mut(&id) {
+            Some(t) if !t.status.is_final() => {
+                t.status = Status::Transferring;
+                t.started = Some(now());
+            }
+            _ => return forbidden(),
+        }
+        transfers.emit(&id, true);
+    }
     Json(json!({ "transfer": id, "files": ids })).into_response()
 }
 
@@ -382,7 +411,9 @@ async fn upload(State(app): State<Arc<App>>, Query(params): Params, body: Body) 
         let Some(t) = transfers.get(transfer_id) else {
             return forbidden();
         };
-        if t.direction != Direction::In || t.peer_id != peer_id || t.status.is_final() {
+        // Only after the computer accepted (not while it still asks).
+        if t.direction != Direction::In || t.peer_id != peer_id || t.status != Status::Transferring
+        {
             return (StatusCode::CONFLICT, "transfer is over").into_response();
         }
         match t.file(file_id) {
@@ -409,8 +440,11 @@ async fn text(
     let Some(peer_id) = client_id(&params) else {
         return (StatusCode::BAD_REQUEST, "missing id").into_response();
     };
-    if body.is_empty() {
-        return (StatusCode::BAD_REQUEST, "empty").into_response();
+    if body.is_empty() || body.len() > crate::protocol::MAX_TEXT {
+        return (StatusCode::BAD_REQUEST, "empty or too long").into_response();
+    }
+    if !app.requests.hit(net::canonical(addr.ip())) {
+        return (StatusCode::TOO_MANY_REQUESTS, "slow down").into_response();
     }
     let peer_json = app
         .registry

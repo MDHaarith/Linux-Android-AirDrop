@@ -112,23 +112,25 @@ class Discovery(private val platform: Platform, private val engine: Engine) {
             val text = String(packet.data, 0, packet.length)
             val dto = runCatching { Protocol.json.decodeFromString(MulticastDto.serializer(), text) }.getOrNull() ?: continue
             val info = dto.info().sanitized() ?: continue
-            if (info.fingerprint.isEmpty() || info.fingerprint.equals(engine.identity.fingerprint, true)) continue
+            if (!Protocol.isPeerId(info.fingerprint) || info.fingerprint.equals(engine.identity.fingerprint, true)) continue
+            // A spoofed packet must not make us connect to arbitrary services.
+            if (info.port < 1024) continue
             val ip = packet.address.hostAddress ?: continue
-            if (dto.isAnnouncement) {
-                if (!pending.add(info.fingerprint)) continue
-                scope.launch {
-                    try {
-                        val ok = registerWith(ip, info.port, info.isHttps, info.fingerprint, 4_000)
-                        if (ok == null) {
-                            // Not reachable over TCP: answer over UDP so they can find us.
-                            send(Protocol.json.encodeToString(MulticastDto.serializer(), MulticastDto.of(engine.me(), false)).toByteArray())
-                        }
-                    } finally {
-                        pending.remove(info.fingerprint)
+            if (pending.size >= MAX_PENDING || !pending.add(info.fingerprint)) continue
+            // Announcements and UDP answers alike are confirmed over TCP: over
+            // HTTPS the certificate proves the id, so a packet alone never adds
+            // or changes a device.
+            val announce = dto.isAnnouncement
+            scope.launch {
+                try {
+                    val ok = registerWith(ip, info.port, info.isHttps, info.fingerprint, 4_000)
+                    if (ok == null && announce) {
+                        // Not reachable over TCP: answer over UDP so they can find us.
+                        send(Protocol.json.encodeToString(MulticastDto.serializer(), MulticastDto.of(engine.me(), false)).toByteArray())
                     }
+                } finally {
+                    pending.remove(info.fingerprint)
                 }
-            } else {
-                engine.upsertPeer(info, ip)
             }
         }
     }
@@ -156,8 +158,8 @@ class Discovery(private val platform: Platform, private val engine: Engine) {
             protocol = if (https) "https" else "http",
             download = info.download,
         ).sanitized() ?: return null
-        if (device.fingerprint.isEmpty() || device.fingerprint.equals(engine.identity.fingerprint, true)) return null
-        engine.upsertPeer(device, ip)
+        if (!Protocol.isPeerId(device.fingerprint) || device.fingerprint.equals(engine.identity.fingerprint, true)) return null
+        engine.upsertPeer(device, ip, verified = result.peerFingerprint != null)
         return device
     }
 
@@ -204,6 +206,8 @@ class Discovery(private val platform: Platform, private val engine: Engine) {
 
     companion object {
         private const val TAG = "Discovery"
+        /** Devices being confirmed at once (each costs a connection). */
+        private const val MAX_PENDING = 32
 
         fun localAddresses(): List<LocalAddress> =
             runCatching { NetworkInterface.getNetworkInterfaces().toList() }.getOrDefault(emptyList())

@@ -19,6 +19,13 @@ class ShareLogicTest {
         assertEquals(ShareRequest(emptyList(), "https://example.com/x"), ShareRequest.from(ShareRequest.SEND, emptyList(), "  https://example.com/x \n"))
         assertNull(ShareRequest.from(ShareRequest.SEND, emptyList(), "   "))
         assertNull(ShareRequest.from("android.intent.action.VIEW", listOf("content://a"), null))
+        // Our own private files can never be pushed into a share.
+        assertNull(ShareRequest.from(ShareRequest.SEND, listOf("file:///data/user/0/io.github.mdhaarith.airbridge/files/identity/identity.p12"), null))
+        assertNull(ShareRequest.from(ShareRequest.SEND, listOf("content://io.github.mdhaarith.airbridge.files/identity"), null))
+        assertEquals(
+            ShareRequest(listOf("content://media/external/images/media/12"), null),
+            ShareRequest.from(ShareRequest.SEND, listOf("content://media/external/images/media/12", "file:///sdcard/x.jpg"), null),
+        )
     }
 
     @Test

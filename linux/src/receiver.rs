@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::net::IpAddr;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use axum::body::Body;
 use axum::extract::{DefaultBodyLimit, Query, State};
@@ -13,7 +13,7 @@ use axum::routing::{get, post};
 use axum::{Extension, Json, Router};
 use bytes::Bytes;
 use hyper::body::Incoming;
-use hyper_util::rt::{TokioExecutor, TokioIo};
+use hyper_util::rt::{TokioExecutor, TokioIo, TokioTimer};
 use hyper_util::server::conn::auto;
 use hyper_util::service::TowerToHyperService;
 use rand::distributions::{Alphanumeric, DistString};
@@ -26,14 +26,17 @@ use tower::ServiceExt;
 
 use crate::app::App;
 use crate::identity::fingerprint;
+use crate::limits::ConnLimit;
 use crate::net;
 use crate::peers::PeerKind;
-use crate::protocol::{DeviceInfo, FileDto, PrepareUploadRequest, API};
+use crate::protocol::{is_localsend_id, DeviceInfo, FileDto, PrepareUploadRequest, API, MAX_FILES};
 use crate::storage::{self, SaveError};
 use crate::transfers::{now, Direction, FileState, FileStatus, Status, Transfer};
 
-const PIN_ATTEMPTS: usize = 5;
-const PIN_WINDOW: Duration = Duration::from_secs(60);
+/// Request bodies of register and prepare-upload (file lists, text).
+const MAX_BODY: usize = 4 * 1024 * 1024;
+/// Time a client gets to send a request's headers.
+const HEADER_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Who is on the other end of a connection.
 #[derive(Clone, Debug)]
@@ -58,7 +61,7 @@ pub fn router(app: Arc<App>) -> Router {
         .route(&format!("{API}/upload"), post(upload))
         .route(&format!("{API}/cancel"), post(cancel))
         .route("/", get(|| async { "AirBridge (LocalSend protocol v2)\n" }))
-        .layer(DefaultBodyLimit::max(32 * 1024 * 1024))
+        .layer(DefaultBodyLimit::max(MAX_BODY))
         .with_state(app)
 }
 
@@ -69,6 +72,8 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> Io for T {}
 pub async fn serve(app: Arc<App>, listener: TcpListener, tls: Option<Arc<ServerConfig>>) {
     let router = router(app);
     let acceptor = tls.map(TlsAcceptor::from);
+    // Enough for many devices at once, not for a flood of idle connections.
+    let limits = ConnLimit::new(128, 16);
     loop {
         let (tcp, addr) = match listener.accept().await {
             Ok(conn) => conn,
@@ -78,9 +83,14 @@ pub async fn serve(app: Arc<App>, listener: TcpListener, tls: Option<Arc<ServerC
                 continue;
             }
         };
+        let ip = net::canonical(addr.ip());
+        let Some(permit) = limits.try_acquire(ip) else {
+            tracing::debug!("too many connections from {ip}");
+            continue;
+        };
         let (router, acceptor) = (router.clone(), acceptor.clone());
         tokio::spawn(async move {
-            let ip = net::canonical(addr.ip());
+            let _permit = permit;
             let (io, cert_fingerprint): (Box<dyn Io>, Option<String>) = match acceptor {
                 Some(acceptor) => {
                     match tokio::time::timeout(Duration::from_secs(10), acceptor.accept(tcp)).await
@@ -111,7 +121,14 @@ pub async fn serve(app: Arc<App>, listener: TcpListener, tls: Option<Arc<ServerC
                 request.extensions_mut().insert(conn.clone());
                 request
             });
-            if let Err(err) = auto::Builder::new(TokioExecutor::new())
+            // HTTP/1.1 only (as negotiated), with a deadline for headers so
+            // half-open connections do not pile up.
+            let mut builder = auto::Builder::new(TokioExecutor::new()).http1_only();
+            builder
+                .http1()
+                .timer(TokioTimer::new())
+                .header_read_timeout(HEADER_TIMEOUT);
+            if let Err(err) = builder
                 .serve_connection(TokioIo::new(io), TowerToHyperService::new(service))
                 .await
             {
@@ -121,7 +138,10 @@ pub async fn serve(app: Arc<App>, listener: TcpListener, tls: Option<Arc<ServerC
     }
 }
 
-fn parse_info(app: &App, conn: &ConnInfo, info: DeviceInfo) -> Option<DeviceInfo> {
+/// The sender's device info, and whether its id is proven by its TLS client
+/// certificate (true) or merely claimed (false; e.g. the official LocalSend
+/// apps send no certificate). Only proven ids may match trusted devices.
+fn parse_info(app: &App, conn: &ConnInfo, info: DeviceInfo) -> Option<(DeviceInfo, bool)> {
     let mut info = info.sanitized().ok()?;
     if let Some(fp) = &conn.cert_fingerprint {
         // The certificate proves who they are; a different claim is spoofed.
@@ -134,14 +154,32 @@ fn parse_info(app: &App, conn: &ConnInfo, info: DeviceInfo) -> Option<DeviceInfo
         }
         info.fingerprint = fp.clone();
     }
-    if info.fingerprint.is_empty()
+    if !is_localsend_id(&info.fingerprint)
         || info
             .fingerprint
             .eq_ignore_ascii_case(&app.identity.fingerprint)
     {
         return None;
     }
-    Some(info)
+    let verified = conn.cert_fingerprint.is_some();
+    // Without a certificate, the id of one of your devices (or of any device
+    // that proved its id before) cannot be claimed: it would show up as that
+    // device in the prompt.
+    if !verified
+        && (app.registry.is_trusted(&info.fingerprint)
+            || app
+                .registry
+                .get(&info.fingerprint)
+                .is_some_and(|p| p.verified))
+    {
+        tracing::warn!(
+            "{}: claims to be {} without its certificate",
+            conn.ip,
+            info.alias
+        );
+        return None;
+    }
+    Some((info, verified))
 }
 
 async fn info(State(app): State<Arc<App>>) -> Response {
@@ -156,8 +194,9 @@ async fn register(
     let Ok(info) = serde_json::from_slice::<DeviceInfo>(&body) else {
         return error(400, "Invalid body");
     };
-    if let Some(info) = parse_info(&app, &conn, info) {
-        app.registry.upsert(info, conn.ip, PeerKind::LocalSend);
+    if let Some((info, verified)) = parse_info(&app, &conn, info) {
+        app.registry
+            .upsert(info, conn.ip, PeerKind::LocalSend, verified);
     }
     Json(app.me().info_json()).into_response()
 }
@@ -167,17 +206,14 @@ fn check_pin(app: &App, conn: &ConnInfo, given: Option<&String>) -> Option<Respo
     if pin.is_empty() {
         return None;
     }
-    let mut failures = app.pin_failures.lock().unwrap();
-    let attempts = failures.entry(conn.ip).or_default();
-    attempts.retain(|t| t.elapsed() < PIN_WINDOW);
-    if attempts.len() >= PIN_ATTEMPTS {
+    if !app.pin_failures.allows(conn.ip) {
         return Some(error(429, "Too many requests"));
     }
     match given {
         None => Some(error(401, "PIN required")),
-        Some(given) if constant_time_eq(given.as_bytes(), pin.as_bytes()) => None,
+        Some(given) if same_secret(given, &pin) => None,
         Some(_) => {
-            attempts.push(Instant::now());
+            app.pin_failures.record(conn.ip);
             Some(error(401, "Invalid PIN"))
         }
     }
@@ -187,12 +223,18 @@ pub fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
+/// Compares secrets without revealing their length or where they differ.
+pub fn same_secret(a: &str, b: &str) -> bool {
+    use sha2::{Digest, Sha256};
+    constant_time_eq(&Sha256::digest(a), &Sha256::digest(b))
+}
+
 /// Marks a waiting transfer as cancelled if the sender hangs up while we wait
 /// for the user (the request future is then dropped).
-struct WaitGuard {
-    app: Arc<App>,
-    id: String,
-    armed: bool,
+pub struct WaitGuard {
+    pub app: Arc<App>,
+    pub id: String,
+    pub armed: bool,
 }
 
 impl Drop for WaitGuard {
@@ -219,9 +261,12 @@ async fn prepare_upload(
     let Ok(request) = serde_json::from_slice::<PrepareUploadRequest>(&body) else {
         return error(400, "Invalid body");
     };
-    let Some(info) = parse_info(&app, &conn, request.info) else {
+    let Some((info, verified)) = parse_info(&app, &conn, request.info) else {
         return error(400, "Invalid sender");
     };
+    if request.files.len() > MAX_FILES {
+        return error(413, "Too many files");
+    }
     let files: Result<Vec<FileDto>, _> = request
         .files
         .into_values()
@@ -233,8 +278,25 @@ async fn prepare_upload(
     if files.is_empty() {
         return error(400, "No files provided");
     }
+    let mut ids = std::collections::HashSet::new();
+    if !files.iter().all(|f| ids.insert(f.id.as_str())) {
+        return error(400, "Duplicate file ids");
+    }
+    if files
+        .iter()
+        .try_fold(0u64, |total, f| total.checked_add(f.size))
+        .is_none()
+    {
+        return error(400, "Invalid file sizes");
+    }
+    // Every request reaches the user (a prompt or a message): not too many.
+    if !app.requests.hit(conn.ip) {
+        return error(429, "Too many requests");
+    }
 
-    let peer = app.registry.upsert(info, conn.ip, PeerKind::LocalSend);
+    let peer = app
+        .registry
+        .upsert(info, conn.ip, PeerKind::LocalSend, verified);
     let message = (files.len() == 1 && files[0].is_text_message())
         .then(|| files[0].preview.clone())
         .flatten();
@@ -249,6 +311,8 @@ async fn prepare_upload(
         states,
     );
     transfer.peer_ip = Some(conn.ip);
+    // Only a proven id counts as one of your devices.
+    transfer.peer_verified = verified;
 
     if let Some(text) = message {
         // Text is shown, not saved, so it needs no confirmation.
@@ -323,6 +387,7 @@ async fn upload(
     State(app): State<Arc<App>>,
     Extension(conn): Extension<ConnInfo>,
     Query(query): Query<HashMap<String, String>>,
+    headers: axum::http::HeaderMap,
     body: Body,
 ) -> Response {
     let (Some(session), Some(file_id), Some(token)) = (
@@ -358,6 +423,13 @@ async fn upload(
         }
         (t.id.clone(), f.dto.clone().unwrap_or_default())
     };
+    let declared = headers
+        .get(axum::http::header::CONTENT_LENGTH)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse::<u64>().ok());
+    if declared.is_some_and(|len| len > dto.size) {
+        return error(413, "More data than announced");
+    }
     match storage::save_stream(&app, &transfer_id, &dto, body.into_data_stream()).await {
         Ok(_) => StatusCode::OK.into_response(),
         Err(SaveError::ChecksumMismatch) => error(422, "Checksum mismatch"),

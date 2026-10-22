@@ -188,7 +188,14 @@ class ShareSheetViewModel(app: Application) : AndroidViewModel(app) {
             }
             val name = lookingFor
             lookingFor = null
-            if (peer != null) send(peer) else error = "Couldn't find $name. Is it on this Wi‑Fi with AirBridge open?"
+            when {
+                peer == null -> error = "Couldn't find $name. Is it on this Wi‑Fi with AirBridge open?"
+                // Any app can name a device in the intent: send at once only to
+                // your own devices (proven by their certificate); for others the
+                // sheet waits for your tap.
+                peer.verified && engine.isTrusted(peer.id) -> send(peer)
+                else -> Unit
+            }
         }
     }
 

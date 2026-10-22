@@ -14,6 +14,22 @@ object Protocol {
     const val DEFAULT_PORT = 53317
     const val MULTICAST_GROUP = "224.0.0.167"
     val DEVICE_TYPES = setOf("mobile", "desktop", "web", "headless", "server")
+    /** Longest text message accepted (texts arrive inline in `preview`). */
+    const val MAX_TEXT = 256 * 1024
+    /** Most files one request may offer. */
+    const val MAX_FILES = 10_000
+
+    /**
+     * A LocalSend device id: a certificate fingerprint, or a random token for
+     * plain-HTTP peers. Ids of other kinds of peers cannot be claimed.
+     */
+    fun isPeerId(id: String) =
+        id.length in 8..128 && !id.startsWith("web-") && id.all { it.isLetterOrDigit() && it.code < 128 || it == '-' || it == '_' }
+
+    /** Bidi overrides and zero-width marks: invisible, but they change how names read. */
+    fun isInvisible(c: Char) = c in '\u200B'..'\u200F' || c in '\u202A'..'\u202E' || c in '\u2060'..'\u2069' || c == '\uFEFF'
+
+    fun stripInvisible(s: String) = s.filterNot(::isInvisible)
 
     val json = Json {
         ignoreUnknownKeys = true
@@ -39,12 +55,12 @@ data class DeviceInfo(
 
     /** Normalizes untrusted input. */
     fun sanitized(): DeviceInfo? {
-        val name = alias.trim().take(128)
+        val name = Protocol.stripInvisible(alias.trim()).take(128)
         if (name.isEmpty()) return null
         return copy(
             alias = name,
             version = version.take(16),
-            deviceModel = deviceModel?.take(128),
+            deviceModel = deviceModel?.let { Protocol.stripInvisible(it).take(128) },
             deviceType = deviceType?.takeIf { it in Protocol.DEVICE_TYPES } ?: "desktop",
             fingerprint = fingerprint.take(128),
             port = if (port in 1..65535) port else Protocol.DEFAULT_PORT,
@@ -114,7 +130,16 @@ data class FileDto(
             "other", "" -> "application/octet-stream"
             else -> fileType.take(128)
         }
-        return copy(id = id.take(128), fileName = fileName.take(1024), fileType = type)
+        // Text arrives inline; anything else may carry a small image preview.
+        val text = type.startsWith("text") && preview != null
+        if (text && preview!!.length > Protocol.MAX_TEXT) return null
+        return copy(
+            id = id.take(128),
+            fileName = fileName.take(1024),
+            fileType = type,
+            preview = if (text) preview else Previews.accept(preview),
+            sha256 = sha256?.takeIf { h -> h.length == 64 && h.all { it in '0'..'9' || it.lowercaseChar() in 'a'..'f' } },
+        )
     }
 
     companion object {
@@ -139,7 +164,26 @@ data class ErrorDto(val message: String)
 /** Turns a sender-supplied name (maybe with folders) into safe path segments. */
 fun safeSegments(fileName: String): List<String> {
     val parts = fileName.replace('\\', '/').split('/')
-        .map { part -> part.filter { !it.isISOControl() }.trim().trimStart('.', ' ').take(255) }
+        .map { part ->
+            part.filter { !it.isISOControl() && !Protocol.isInvisible(it) }.trim().trimStart('.', ' ').let(::fitName).trimEnd()
+        }
         .filter { it.isNotEmpty() && it != "." && it != ".." }
+        .let { if (it.size > MAX_DEPTH) it.take(MAX_DEPTH - 1) + it.last() else it }
     return parts.ifEmpty { listOf("file") }
+}
+
+private const val MAX_DEPTH = 16
+
+/** At most 200 bytes of UTF-8 (file systems allow 255), cut between characters. */
+private fun fitName(name: String): String {
+    var bytes = 0
+    var end = 0
+    while (end < name.length) {
+        val codePoint = name.codePointAt(end)
+        val size = String(Character.toChars(codePoint)).toByteArray().size
+        if (bytes + size > 200) break
+        bytes += size
+        end += Character.charCount(codePoint)
+    }
+    return name.substring(0, end)
 }

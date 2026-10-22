@@ -245,7 +245,9 @@ async fn run(app: &Arc<App>, id: &str, peer: &Peer, pin: Option<String>) -> Outc
         json!({ "info": app.me().register_json(), "files": files })
     };
     let mut path = format!("{API}/prepare-upload");
-    if let Some(pin) = pin.as_deref().filter(|p| !p.is_empty()) {
+    // A PIN only travels encrypted, to a certificate-pinned device.
+    let pin = pin.filter(|p| !p.is_empty() && peer.info.is_https());
+    if let Some(pin) = pin.as_deref() {
         path.push('?');
         path.push_str(&serde_urlencoded::to_string([("pin", pin)]).unwrap_or_default());
     }

@@ -87,8 +87,10 @@ Received photos show up as a preview in the notification.
   - A blue ring fills around the device while sending, then "Sent" in blue
   - Calm motion: alerts scale in, sheets slide, the "visible" beacon sends out slow waves
   - Reduced-motion settings are respected
-- **Secure by default**: TLS everywhere, certificates pinned by fingerprint, mutual TLS, an
-  optional PIN, and the clipboard only accepts text from trusted devices.
+- **Secure by default**: TLS everywhere, certificates pinned by fingerprint, and mutual TLS.
+  Only your own devices that prove their identity with their certificate are accepted without
+  asking. Floods are rate-limited, an optional PIN must be at least 6 characters, and nothing
+  runnable opens by itself. Details: **[docs/SECURITY.md](docs/SECURITY.md)**.
 
 <table>
 <tr>

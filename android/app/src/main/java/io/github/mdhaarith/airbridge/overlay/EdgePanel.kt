@@ -50,6 +50,7 @@ import io.github.mdhaarith.airbridge.core.Log
 import io.github.mdhaarith.airbridge.core.Peer
 import io.github.mdhaarith.airbridge.core.Status
 import io.github.mdhaarith.airbridge.share.ShareSheetActivity
+import io.github.mdhaarith.airbridge.share.ShareRequest
 import io.github.mdhaarith.airbridge.ui.AirBridgeTheme
 import io.github.mdhaarith.airbridge.ui.EdgeAction
 import io.github.mdhaarith.airbridge.ui.EdgePanelContent
@@ -323,7 +324,9 @@ class EdgePanel(private val context: Context) {
         val uris = mutableListOf<Uri>()
         for (i in 0 until clip.itemCount) {
             val item = clip.getItemAt(i)
-            item.uri?.let(uris::add) ?: item.text?.toString()?.takeIf { it.isNotBlank() }?.let(texts::add)
+            // Only content another app hands over, never our own private files.
+            item.uri?.let { uri -> if (ShareRequest.isShareable(uri.toString())) uris += uri }
+                ?: item.text?.toString()?.takeIf { it.isNotBlank() }?.let(texts::add)
         }
         // Files dragged from another app are only readable with a permission
         // that overlay windows cannot ask for; check before offering them.

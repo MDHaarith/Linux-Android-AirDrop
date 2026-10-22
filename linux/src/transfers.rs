@@ -118,6 +118,13 @@ pub struct Transfer {
     /// Accepted without asking because it came from a trusted device.
     #[serde(skip)]
     pub auto_accepted: bool,
+    /// The sender proved who it is (TLS client certificate or the browser
+    /// pairing key). Only proven senders get the trusted-device treatment.
+    #[serde(skip)]
+    pub peer_verified: bool,
+    /// Holds a secret (a Wi‑Fi password): the message is not saved to disk.
+    #[serde(skip)]
+    pub sensitive: bool,
     #[serde(skip)]
     last_emit: Option<Instant>,
 }
@@ -141,6 +148,8 @@ impl Transfer {
             remote_session_id: None,
             cleanup: Vec::new(),
             auto_accepted: false,
+            peer_verified: false,
+            sensitive: false,
             last_emit: None,
         }
     }
@@ -149,8 +158,7 @@ impl Transfer {
         self.files
             .iter()
             .filter(|f| f.status != FileStatus::Skipped)
-            .map(|f| f.size)
-            .sum()
+            .fold(0u64, |total, f| total.saturating_add(f.size))
     }
 
     pub fn done_bytes(&self) -> u64 {
@@ -237,11 +245,18 @@ impl Transfers {
     }
 
     fn save_history(&self) {
-        let finals: Vec<&Transfer> = self
+        let finals: Vec<Transfer> = self
             .order
             .iter()
             .filter_map(|id| self.items.get(id))
             .filter(|t| t.status.is_final())
+            .map(|t| {
+                let mut t = t.clone();
+                if t.sensitive {
+                    t.message = Some("(not saved: it contained a password)".into());
+                }
+                t
+            })
             .collect();
         let start = finals.len().saturating_sub(HISTORY_LIMIT);
         match serde_json::to_vec(&finals[start..]) {

@@ -132,6 +132,8 @@ impl Service {
 }
 
 async fn accept_loop(app: Arc<App>, listener: TcpListener, stop: CancellationToken) {
+    // A phone shares over one connection; a handful covers several phones.
+    let limits = crate::limits::ConnLimit::new(8, 2);
     loop {
         let (stream, addr) = tokio::select! {
             _ = stop.cancelled() => return,
@@ -145,8 +147,13 @@ async fn accept_loop(app: Arc<App>, listener: TcpListener, stop: CancellationTok
                 }
             },
         };
+        let Some(permit) = limits.try_acquire(crate::net::canonical(addr.ip())) else {
+            tracing::debug!("Quick Share: too many connections from {addr}");
+            continue;
+        };
         let app = app.clone();
         tokio::spawn(async move {
+            let _permit = permit;
             if let Err(err) = inbound::handle(app, stream).await {
                 tracing::info!("Quick Share connection from {addr} ended: {err:#}");
             }
@@ -245,15 +252,37 @@ async fn browse_loop(
                 let Some(name) = info.name.clone().filter(|n| !n.trim().is_empty()) else {
                     continue;
                 };
-                let mut addresses: Vec<Ipv4Addr> =
-                    resolved.get_addresses_v4().into_iter().collect();
-                addresses.sort_by_key(|ip| (ip.is_loopback(), ip.is_link_local()));
+                // Only a phone on our own network, on a normal port: a record
+                // pointing at this computer or some other service is ignored.
+                let mut addresses: Vec<Ipv4Addr> = resolved
+                    .get_addresses_v4()
+                    .into_iter()
+                    .filter(|ip| {
+                        !ip.is_loopback()
+                            && !ip.is_unspecified()
+                            && !ip.is_multicast()
+                            && !ip.is_broadcast()
+                            && crate::net::is_local_network(IpAddr::V4(*ip))
+                    })
+                    .collect();
+                addresses.sort_by_key(|ip| ip.is_link_local());
                 let Some(&ip) = addresses.first() else {
                     continue;
                 };
+                if resolved.port < 1024 {
+                    continue;
+                }
                 let id = peer_id(&endpoint_id);
+                // A record reusing another phone's id does not take it over.
+                if app
+                    .registry
+                    .get(&id)
+                    .is_some_and(|known| known.ip != IpAddr::V4(ip))
+                {
+                    continue;
+                }
                 let device = DeviceInfo {
-                    alias: name,
+                    alias: name.chars().filter(|c| !c.is_control()).take(64).collect(),
                     version: "quickshare".into(),
                     device_model: Some("Quick Share".into()),
                     device_type: Some(info.kind.as_device_type().into()),
@@ -263,7 +292,7 @@ async fn browse_loop(
                     download: false,
                 };
                 app.registry
-                    .upsert(device, IpAddr::V4(ip), PeerKind::QuickShare);
+                    .upsert(device, IpAddr::V4(ip), PeerKind::QuickShare, false);
                 known.insert(resolved.fullname.to_lowercase(), id);
             }
             ServiceEvent::ServiceRemoved(_, fullname) => {

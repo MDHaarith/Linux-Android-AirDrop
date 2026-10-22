@@ -109,3 +109,23 @@ pub fn canonical(ip: IpAddr) -> IpAddr {
         v4 => v4,
     }
 }
+
+/// Whether `ip` belongs to a network this computer is on (or is this
+/// computer). Discovery packets from anywhere else are spoofed or routed in
+/// from outside and are ignored.
+pub fn is_local_network(ip: IpAddr) -> bool {
+    match canonical(ip) {
+        IpAddr::V4(v4) => {
+            v4.is_loopback()
+                || interfaces().iter().any(|iface| {
+                    let mask = u32::from(iface.netmask);
+                    u32::from(iface.ip) & mask == u32::from(v4) & mask
+                })
+        }
+        IpAddr::V6(v6) => {
+            v6.is_loopback()
+                || (v6.segments()[0] & 0xffc0) == 0xfe80 // link-local
+                || (v6.segments()[0] & 0xfe00) == 0xfc00 // unique local
+        }
+    }
+}

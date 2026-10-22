@@ -33,6 +33,8 @@ trait Notifications {
 
     fn close_notification(&self, id: u32) -> zbus::Result<()>;
 
+    fn get_capabilities(&self) -> zbus::Result<Vec<String>>;
+
     #[zbus(signal)]
     fn action_invoked(&self, id: u32, action_key: String) -> zbus::Result<()>;
 
@@ -44,6 +46,28 @@ trait Notifications {
 #[derive(Default)]
 pub struct Notifier {
     proxy: tokio::sync::OnceCell<Option<NotificationsProxy<'static>>>,
+    /// The server renders markup in the body (then text must be escaped).
+    markup: tokio::sync::OnceCell<bool>,
+}
+
+/// Text from other devices (names, messages) as plain notification text:
+/// markup escaped where the server renders it, so a hostile name cannot
+/// add links or hide what is being offered, and no invisible bidi controls.
+fn plain_text(text: &str, markup: bool) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        match c {
+            '\u{200B}'..='\u{200F}'
+            | '\u{202A}'..='\u{202E}'
+            | '\u{2060}'..='\u{2069}'
+            | '\u{FEFF}' => {}
+            '&' if markup => out.push_str("&amp;"),
+            '<' if markup => out.push_str("&lt;"),
+            '>' if markup => out.push_str("&gt;"),
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 /// Closes a question notification once it is no longer relevant.
@@ -91,6 +115,17 @@ impl Notifier {
         actions: &[(&str, &str)],
         critical: bool,
     ) -> Option<u32> {
+        let markup = *self
+            .markup
+            .get_or_init(|| async {
+                proxy
+                    .get_capabilities()
+                    .await
+                    .is_ok_and(|caps| caps.iter().any(|c| c == "body-markup"))
+            })
+            .await;
+        let summary = &plain_text(summary, false);
+        let body = &plain_text(body, markup);
         let mut flat = Vec::new();
         for (key, label) in actions {
             flat.push(*key);
@@ -305,6 +340,21 @@ pub fn open_url(url: &str) -> bool {
         && spawn_detached("xdg-open", &[url])
 }
 
+/// Kinds of files that open in a viewer or player by themselves without
+/// risk: photos, videos, music, PDFs and plain text. Decided from the name we
+/// saved it under, never from the type the sender claimed. Scriptable or
+/// runnable formats (HTML, SVG, scripts, .desktop, AppImage, …) are not.
+pub fn safe_to_open(path: &Path) -> bool {
+    const VIEWABLE: [&str; 27] = [
+        "jpg", "jpeg", "png", "gif", "webp", "heic", "heif", "avif", "bmp", "tif", "tiff", "mp4",
+        "m4v", "mov", "webm", "mkv", "avi", "mp3", "m4a", "aac", "flac", "ogg", "opus", "wav",
+        "pdf", "txt", "md",
+    ];
+    path.extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| VIEWABLE.contains(&e.to_ascii_lowercase().as_str()))
+}
+
 pub fn open_path(path: &Path) -> bool {
     path.exists() && spawn_detached("xdg-open", &[&path.to_string_lossy()])
 }
@@ -429,4 +479,35 @@ pub fn open_window(url: &str, profile_dir: &Path) -> &'static str {
     }
     tracing::warn!("Open {url} in a browser to use AirBridge");
     "none"
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn notification_text_cannot_carry_markup_or_bidi_tricks() {
+        assert_eq!(
+            plain_text("<a href=\"x\">Invoice</a> & co", true),
+            "&lt;a href=\"x\"&gt;Invoice&lt;/a&gt; &amp; co"
+        );
+        assert_eq!(plain_text("a & b", false), "a & b");
+        assert_eq!(plain_text("photo\u{202E}gpj.sh", false), "photogpj.sh");
+    }
+
+    #[test]
+    fn only_viewable_files_open_by_themselves() {
+        assert!(safe_to_open(Path::new("/d/IMG_1.JPG")));
+        assert!(safe_to_open(Path::new("/d/report.pdf")));
+        for risky in [
+            "x.desktop",
+            "run.sh",
+            "app.AppImage",
+            "page.html",
+            "logo.svg",
+            "noext",
+        ] {
+            assert!(!safe_to_open(&Path::new("/d").join(risky)), "{risky}");
+        }
+    }
 }

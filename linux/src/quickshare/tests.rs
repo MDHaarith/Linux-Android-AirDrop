@@ -63,6 +63,7 @@ async fn phone_and_laptop_share_over_quick_share() {
         kind: PeerKind::QuickShare,
         last_seen: std::time::Instant::now(),
         failures: 0,
+        verified: false,
     };
 
     // 1. Files, including an empty one and one inside a folder; accepted.

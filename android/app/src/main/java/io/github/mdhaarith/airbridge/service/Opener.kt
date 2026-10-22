@@ -18,13 +18,27 @@ object Opener {
 
     fun openReceived(context: Context, t: Transfer) {
         val saved = t.files.filter { it.uri != null }
-        val intent = when (saved.size) {
-            0 -> return
-            1 -> Intent(Intent.ACTION_VIEW).setDataAndType(Uri.parse(saved.first().uri), saved.first().mime)
-                .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        val single = saved.singleOrNull()?.let { Uri.parse(it.uri) }
+        // The type the system recorded for the saved file, not the one the
+        // sender claimed; and only viewers: a photo, video, song, PDF or text.
+        val type = single?.let { context.contentResolver.getType(it) }
+        val intent = when {
+            saved.isEmpty() -> return
+            single != null && type != null && isViewable(type) ->
+                Intent(Intent.ACTION_VIEW).setDataAndType(single, type).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
             else -> Intent(DownloadManager.ACTION_VIEW_DOWNLOADS)
         }
         start(context, intent)
+    }
+
+    /** Types that open in a viewer or player, never an installer, browser page or importer. */
+    fun isViewable(mime: String): Boolean {
+        val type = mime.lowercase().substringBefore(';').trim()
+        return (type.startsWith("image/") && type != "image/svg+xml") ||
+            type.startsWith("video/") ||
+            type.startsWith("audio/") ||
+            type == "application/pdf" ||
+            type == "text/plain"
     }
 
     fun openLink(context: Context, text: String) {

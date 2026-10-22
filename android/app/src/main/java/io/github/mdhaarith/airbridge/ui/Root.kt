@@ -1,6 +1,5 @@
 package io.github.mdhaarith.airbridge.ui
 
-import android.graphics.BitmapFactory
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
@@ -70,6 +69,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import io.github.mdhaarith.airbridge.PreviewImages
 import io.github.mdhaarith.airbridge.core.Direction
 import io.github.mdhaarith.airbridge.core.Previews
 import io.github.mdhaarith.airbridge.core.Status
@@ -190,8 +190,8 @@ fun IncomingContent(t: Transfer, onDecline: () -> Unit, onAccept: (trust: Boolea
     val air = LocalAir.current
     var trust by remember(t.id) { mutableStateOf(false) }
     val photos = remember(t.id) {
-        t.files.asSequence().mapNotNull { Previews.decode(it.preview) }.take(Previews.MAX_PREVIEWS)
-            .mapNotNull { BitmapFactory.decodeByteArray(it, 0, it.size)?.asImageBitmap() }.toList()
+        t.files.asSequence().mapNotNull { PreviewImages.decode(it.preview) }.take(Previews.MAX_PREVIEWS)
+            .map { it.asImageBitmap() }.toList()
     }
     AlertCard(
         listOf(

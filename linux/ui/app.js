@@ -778,10 +778,19 @@ function askPin(peer) {
 function openPairing() {
   const url = state.companion?.url;
   if (!url) {
-    openModal(`<h2>Phone browser pairing is off</h2><p class="muted">Turn on “Phone browser companion” in Settings to share with phones that don't have an app.</p>
-      <div class="actions"><button class="btn ghost" data-close>Close</button><button class="btn" id="goSettings">Open settings</button></div>`, (card) => {
+    openModal(`<h2>Pair a phone's browser?</h2><p class="muted">Phones without an app can share through their browser after scanning a QR code. The page talks plain HTTP on your Wi‑Fi, so it is off until you need it, and everything it sends asks you first.</p>
+      <div class="actions"><button class="btn ghost" data-close>Not Now</button><button class="btn" id="turnOn">Turn On</button></div>`, (card) => {
       card.querySelector("[data-close]").addEventListener("click", closeModal);
-      card.querySelector("#goSettings").addEventListener("click", () => { closeModal(); openSettings(); });
+      card.querySelector("#turnOn").addEventListener("click", async () => {
+        try {
+          state.settings = await api("/settings", { body: { webCompanion: true } });
+          const res = await api("/state");
+          state.companion = res.companion || {};
+          openPairing();
+        } catch (err) {
+          toast("Couldn't turn it on", err.message, "bad");
+        }
+      });
     });
     return;
   }
@@ -835,7 +844,7 @@ function openSettings() {
       <div class="field"><label for="sEdge">Drop zone side</label><select class="input" id="sEdge">
         <option value="right" ${s.edgeSide !== "left" ? "selected" : ""}>Right edge</option>
         <option value="left" ${s.edgeSide === "left" ? "selected" : ""}>Left edge</option></select></div>
-      ${settingSwitch("webCompanion", "Phone browser companion", "Phones without an app can pair with a QR code")}
+      ${settingSwitch("webCompanion", "Phone browser companion", "Phones without an app pair with a QR code (plain HTTP on your Wi‑Fi; what they send asks you first)")}
       <div class="field"><label for="sPin">Require a PIN (optional)</label><input class="input" id="sPin" placeholder="No PIN" value="${esc(s.pin || "")}" autocomplete="off"></div>
     </div>
     <p class="section-title">Appearance</p>

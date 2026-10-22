@@ -30,6 +30,9 @@ pub struct Peer {
     pub kind: PeerKind,
     pub last_seen: Instant,
     pub failures: u32,
+    /// Its id was proven by a TLS certificate (or, for a browser, the pairing
+    /// key), not just claimed in a packet.
+    pub verified: bool,
 }
 
 impl Peer {
@@ -60,6 +63,10 @@ impl Peer {
         })
     }
 }
+
+/// Most devices we keep at once; a flood of fake announcements evicts the
+/// oldest untrusted ones instead of growing without bound.
+const MAX_PEERS: usize = 256;
 
 pub struct Registry {
     peers: Mutex<HashMap<String, Peer>>,
@@ -98,9 +105,34 @@ impl Registry {
         peer.to_json(self.is_trusted(peer.id()))
     }
 
-    pub fn upsert(&self, info: DeviceInfo, ip: IpAddr, kind: PeerKind) -> Peer {
+    /// Adds or refreshes a device. `verified` says whether its id was proven
+    /// (a TLS certificate, the browser pairing key) or only claimed.
+    pub fn upsert(&self, info: DeviceInfo, ip: IpAddr, kind: PeerKind, verified: bool) -> Peer {
         let mut peers = self.peers.lock().unwrap();
         let id = info.fingerprint.clone();
+        let unchanged = |peers: &HashMap<String, Peer>, info: DeviceInfo| {
+            peers.get(&info.fingerprint).cloned().unwrap_or(Peer {
+                info,
+                ip,
+                kind,
+                last_seen: Instant::now(),
+                failures: 0,
+                verified,
+            })
+        };
+        // A packet claiming a known device's id may not take it over: no
+        // unverified update of a verified entry, no switch from HTTPS to plain
+        // HTTP (which would drop the certificate pin), and your own devices
+        // are only ever reached over HTTPS.
+        if !verified {
+            let downgrade = !info.is_https()
+                && (kind == PeerKind::LocalSend && self.is_trusted(&id)
+                    || peers.get(&id).is_some_and(|p| p.info.is_https()));
+            if downgrade || peers.get(&id).is_some_and(|p| p.verified) {
+                tracing::debug!("ignoring an unverified update for {id} from {ip}");
+                return unchanged(&peers, info);
+            }
+        }
         // A computer running AirBridge also answers as a Quick Share device.
         // Show it once, like AirDrop does, through the richer LocalSend side.
         let speaks_localsend = |peers: &HashMap<String, Peer>| {
@@ -109,13 +141,7 @@ impl Registry {
                 .any(|p| p.ip == ip && p.kind == PeerKind::LocalSend)
         };
         if kind == PeerKind::QuickShare && speaks_localsend(&peers) {
-            return Peer {
-                info,
-                ip,
-                kind,
-                last_seen: Instant::now(),
-                failures: 0,
-            };
+            return unchanged(&peers, info);
         }
         let mut merged = Vec::new();
         if kind == PeerKind::LocalSend {
@@ -135,9 +161,25 @@ impl Registry {
                 existing.kind = kind;
                 existing.last_seen = Instant::now();
                 existing.failures = 0;
+                existing.verified |= verified;
                 (existing.clone(), changed)
             }
             None => {
+                if peers.len() >= MAX_PEERS {
+                    let trusted = self.trusted.read().unwrap();
+                    let oldest = peers
+                        .iter()
+                        .filter(|(id, _)| !trusted.contains(*id))
+                        .min_by_key(|(_, p)| p.last_seen)
+                        .map(|(id, _)| id.clone());
+                    match oldest {
+                        Some(old) => {
+                            peers.remove(&old);
+                            merged.push(old);
+                        }
+                        None => return unchanged(&peers, info),
+                    }
+                }
                 tracing::info!("Found {} ({ip}, {kind:?})", info.alias);
                 let peer = Peer {
                     info,
@@ -145,6 +187,7 @@ impl Registry {
                     kind,
                     last_seen: Instant::now(),
                     failures: 0,
+                    verified,
                 };
                 peers.insert(id, peer.clone());
                 (peer, true)
@@ -232,15 +275,88 @@ mod tests {
 
         // Quick Share first, then LocalSend from the same address: merged.
         let registry = Registry::new(EventBus::default(), &[]);
-        registry.upsert(device("qs"), ip, PeerKind::QuickShare);
-        registry.upsert(device("qs-other"), other, PeerKind::QuickShare);
-        registry.upsert(device("ls"), ip, PeerKind::LocalSend);
+        registry.upsert(device("qs"), ip, PeerKind::QuickShare, false);
+        registry.upsert(device("qs-other"), other, PeerKind::QuickShare, false);
+        registry.upsert(device("ls"), ip, PeerKind::LocalSend, true);
         let ids: Vec<String> = registry.list().iter().map(|p| p.id().to_string()).collect();
         assert_eq!(ids.len(), 2);
         assert!(ids.contains(&"ls".to_string()) && ids.contains(&"qs-other".to_string()));
 
         // And Quick Share announcing after LocalSend is not added.
-        registry.upsert(device("qs"), ip, PeerKind::QuickShare);
+        registry.upsert(device("qs"), ip, PeerKind::QuickShare, false);
         assert!(registry.get("qs").is_none());
+    }
+
+    fn localsend(fingerprint: &str, protocol: &str, port: u16) -> DeviceInfo {
+        serde_json::from_value(json!({ "alias": "Phone", "fingerprint": fingerprint, "protocol": protocol, "port": port }))
+            .unwrap()
+    }
+
+    #[test]
+    fn a_claimed_id_cannot_take_over_a_device() {
+        let phone: IpAddr = "192.168.1.30".parse().unwrap();
+        let attacker: IpAddr = "192.168.1.66".parse().unwrap();
+        let registry = Registry::new(EventBus::default(), &["MINE".repeat(16)]);
+        let mine = "MINE".repeat(16);
+
+        // A verified device keeps its address against unverified claims.
+        registry.upsert(
+            localsend(&mine, "https", 53317),
+            phone,
+            PeerKind::LocalSend,
+            true,
+        );
+        registry.upsert(
+            localsend(&mine, "https", 8080),
+            attacker,
+            PeerKind::LocalSend,
+            false,
+        );
+        let peer = registry.get(&mine).unwrap();
+        assert_eq!(
+            (peer.ip, peer.info.port, peer.verified),
+            (phone, 53317, true)
+        );
+
+        // Your own devices are never reached over plain HTTP, even unverified.
+        let fresh = Registry::new(EventBus::default(), std::slice::from_ref(&mine));
+        fresh.upsert(
+            localsend(&mine, "http", 8080),
+            attacker,
+            PeerKind::LocalSend,
+            false,
+        );
+        assert!(fresh.get(&mine).is_none());
+
+        // And no device is downgraded from HTTPS to HTTP.
+        let other = "OTHR".repeat(16);
+        fresh.upsert(
+            localsend(&other, "https", 53317),
+            phone,
+            PeerKind::LocalSend,
+            false,
+        );
+        fresh.upsert(
+            localsend(&other, "http", 8080),
+            attacker,
+            PeerKind::LocalSend,
+            false,
+        );
+        assert!(fresh.get(&other).unwrap().info.is_https());
+    }
+
+    #[test]
+    fn floods_do_not_grow_the_list_without_bound() {
+        let registry = Registry::new(EventBus::default(), &[]);
+        let ip: IpAddr = "192.168.1.66".parse().unwrap();
+        for i in 0..(MAX_PEERS + 50) {
+            registry.upsert(
+                localsend(&format!("FAKE{i:08}"), "https", 53317),
+                ip,
+                PeerKind::LocalSend,
+                false,
+            );
+        }
+        assert_eq!(registry.list().len(), MAX_PEERS);
     }
 }

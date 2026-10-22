@@ -65,9 +65,9 @@ class ScreenshotTest {
 
     private fun engine(): Engine {
         val engine = Engine(FakePlatform(tmp.newFolder(), "Pixel 8"))
-        engine.upsertPeer(DeviceInfo("Mohamed's ThinkPad", deviceModel = "Fedora", deviceType = "desktop", fingerprint = laptop), "192.168.1.20")
-        engine.upsertPeer(DeviceInfo("Office iMac", deviceModel = "macOS", deviceType = "desktop", fingerprint = imac), "192.168.1.31")
-        engine.upsertPeer(DeviceInfo("Galaxy Tab", deviceModel = "Samsung SM-X710", deviceType = "mobile", fingerprint = tablet), "192.168.1.44")
+        engine.upsertPeer(DeviceInfo("Mohamed's ThinkPad", deviceModel = "Fedora", deviceType = "desktop", fingerprint = laptop), "192.168.1.20", verified = true)
+        engine.upsertPeer(DeviceInfo("Office iMac", deviceModel = "macOS", deviceType = "desktop", fingerprint = imac), "192.168.1.31", verified = true)
+        engine.upsertPeer(DeviceInfo("Galaxy Tab", deviceModel = "Samsung SM-X710", deviceType = "mobile", fingerprint = tablet), "192.168.1.44", verified = true)
         engine.settings.update { it.copy(trusted = setOf(laptop)) }
         val now = System.currentTimeMillis()
         engine.seedForPreview(

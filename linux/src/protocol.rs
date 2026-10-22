@@ -9,6 +9,10 @@ use serde_json::{json, Value};
 pub const PROTOCOL_VERSION: &str = "2.1";
 pub const API: &str = "/api/localsend/v2";
 pub const DEVICE_TYPES: [&str; 5] = ["mobile", "desktop", "web", "headless", "server"];
+/// Longest text message we accept (LocalSend sends texts inline in `preview`).
+pub const MAX_TEXT: usize = 256 * 1024;
+/// Most files one request may offer.
+pub const MAX_FILES: usize = 10_000;
 
 fn default_version() -> String {
     "1.0".into()
@@ -56,12 +60,14 @@ pub struct DeviceInfo {
 impl DeviceInfo {
     /// Normalizes untrusted input: bounded lengths, known enum values.
     pub fn sanitized(mut self) -> Result<Self, &'static str> {
-        self.alias = truncate(self.alias.trim(), 128);
+        self.alias = truncate(&strip_invisible(self.alias.trim()), 128);
         if self.alias.is_empty() {
             return Err("alias is required");
         }
         self.version = truncate(&self.version, 16);
-        self.device_model = self.device_model.map(|m| truncate(&m, 128));
+        self.device_model = self
+            .device_model
+            .map(|m| truncate(&strip_invisible(&m), 128));
         let device_type = self.device_type.unwrap_or_else(|| "desktop".into());
         self.device_type = Some(if DEVICE_TYPES.contains(&device_type.as_str()) {
             device_type
@@ -154,6 +160,26 @@ impl FileDto {
         }
         self.id = truncate(&self.id, 128);
         self.file_name = truncate(&self.file_name, 1024);
+        // Text arrives inline; anything else may carry a small image preview.
+        let text = self.file_type.starts_with("text") && self.preview.is_some();
+        if text && self.preview.as_ref().is_some_and(|p| p.len() > MAX_TEXT) {
+            return Err("text message too long");
+        }
+        if !text
+            && self
+                .preview
+                .as_ref()
+                .is_some_and(|p| p.len() > crate::thumbnail::MAX_DATA_URL)
+        {
+            self.preview = None;
+        }
+        if !self
+            .sha256
+            .as_ref()
+            .is_none_or(|h| h.len() == 64 && h.bytes().all(|b| b.is_ascii_hexdigit()))
+        {
+            self.sha256 = None;
+        }
         // Protocol v1 used short names instead of MIME types.
         self.file_type = match self.file_type.as_str() {
             "image" => "image/*".into(),
@@ -229,26 +255,71 @@ fn truncate(s: &str, max_chars: usize) -> String {
     s.chars().take(max_chars).collect()
 }
 
+/// Characters that change how text is displayed without being visible
+/// (bidi overrides and isolates, zero-width marks): "photo\u{202E}gpj.sh"
+/// would otherwise read as "photohs.jpg".
+fn is_invisible(c: char) -> bool {
+    matches!(c, '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2060}'..='\u{2069}' | '\u{FEFF}')
+}
+
+fn strip_invisible(s: &str) -> String {
+    s.chars().filter(|&c| !is_invisible(c)).collect()
+}
+
+/// A LocalSend device id: a certificate fingerprint (64 hex digits) or, for
+/// plain-HTTP peers, a random token. Ids of other kinds of peers ("web-…",
+/// "quickshare:…") cannot be claimed over LocalSend.
+pub fn is_localsend_id(id: &str) -> bool {
+    (8..=128).contains(&id.len())
+        && !id.starts_with("web-")
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+}
+
+/// Cuts `s` to at most `max` bytes on a character boundary.
+fn truncate_bytes(s: &str, max: usize) -> &str {
+    let mut end = s.len().min(max);
+    while !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
+}
+
+/// Longest file or folder name we create, in bytes (Linux allows 255; the
+/// partial download adds a short suffix).
+const MAX_NAME_BYTES: usize = 200;
+/// Deepest folder structure a sender may create.
+const MAX_DEPTH: usize = 16;
+
 /// Turns a sender-supplied name (which may contain folders) into a safe relative path.
 pub fn safe_relative_path(file_name: &str) -> PathBuf {
     let normalized = file_name.replace('\\', "/");
-    let mut out = PathBuf::new();
+    let mut parts: Vec<String> = Vec::new();
     for component in Path::new(&normalized).components() {
         if let Component::Normal(part) = component {
             let part = part.to_string_lossy();
             let cleaned: String = part
                 .chars()
+                .filter(|&c| !is_invisible(c))
                 .map(|c| if c.is_control() { '_' } else { c })
-                .take(255)
                 .collect();
-            let cleaned = cleaned.trim().trim_start_matches(['.', ' ']).to_string();
-            out.push(if cleaned.is_empty() {
+            let cleaned = cleaned.trim().trim_start_matches(['.', ' ']);
+            let cleaned = truncate_bytes(cleaned, MAX_NAME_BYTES).trim_end();
+            parts.push(if cleaned.is_empty() {
                 "_".to_string()
             } else {
-                cleaned
+                cleaned.to_string()
             });
         }
     }
+    if parts.len() > MAX_DEPTH {
+        // Keep the top folders and the file's own name.
+        let name = parts.pop().unwrap_or_default();
+        parts.truncate(MAX_DEPTH - 1);
+        parts.push(name);
+    }
+    let mut out: PathBuf = parts.into_iter().collect();
     if out.as_os_str().is_empty() {
         out.push("file");
     }
@@ -317,5 +388,40 @@ mod tests {
             safe_relative_path("Album/photo.jpg"),
             PathBuf::from("Album/photo.jpg")
         );
+        // Right-to-left override: would display as "photohs.jpg".
+        assert_eq!(
+            safe_relative_path("photo\u{202E}gpj.sh"),
+            PathBuf::from("photogpj.sh")
+        );
+        // Long multi-byte names fit the file system; deep trees are flattened.
+        let long = safe_relative_path(&"é".repeat(300));
+        assert!(long.as_os_str().len() <= 200);
+        let deep = safe_relative_path(&format!("{}x.txt", "d/".repeat(40)));
+        assert_eq!(deep.components().count(), 16);
+        assert!(deep.ends_with("x.txt"));
+    }
+
+    #[test]
+    fn hostile_requests_are_bounded() {
+        let dto = |file_type: &str, preview: &str| FileDto {
+            id: "1".into(),
+            file_name: "a".into(),
+            size: 1,
+            file_type: file_type.into(),
+            sha256: Some("not-a-hash".into()),
+            preview: Some(preview.into()),
+            metadata: None,
+        };
+        assert!(dto("text/plain", &"x".repeat(MAX_TEXT + 1))
+            .sanitized()
+            .is_err());
+        let file = dto("image/jpeg", &"x".repeat(400 * 1024))
+            .sanitized()
+            .unwrap();
+        assert_eq!((file.preview, file.sha256), (None, None));
+        assert!(is_localsend_id(&"AB12".repeat(16)));
+        assert!(!is_localsend_id("quickshare:ABCD"));
+        assert!(!is_localsend_id("web-0123456789"));
+        assert!(!is_localsend_id("short"));
     }
 }

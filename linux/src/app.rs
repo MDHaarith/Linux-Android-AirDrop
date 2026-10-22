@@ -1,11 +1,10 @@
 //! Application state shared by all servers, discovery and the UI.
 
 use std::collections::HashMap;
-use std::net::IpAddr;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU16, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, RwLock, RwLockReadGuard};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use anyhow::Result;
 use serde_json::{json, Value};
@@ -18,6 +17,7 @@ use crate::desktop::{self, Notifier};
 use crate::discovery::Discovery;
 use crate::events::EventBus;
 use crate::identity::Identity;
+use crate::limits::RateLimit;
 use crate::net;
 use crate::peers::{PeerKind, Registry};
 use crate::protocol::{DeviceInfo, PROTOCOL_VERSION};
@@ -27,6 +27,8 @@ use crate::storage::Reservations;
 use crate::transfers::{Direction, Status, Transfers};
 
 const DECISION_TIMEOUT: Duration = Duration::from_secs(300);
+/// How long a window launch code stays valid (it also works only once).
+const LAUNCH_CODE_TTL: Duration = Duration::from_secs(60);
 
 pub struct UiInfo {
     pub port: u16,
@@ -44,8 +46,14 @@ pub struct App {
     pub reservations: Reservations,
     /// Files dropped into the window, copied to the cache until sent.
     pub staged: Mutex<HashMap<String, SendItem>>,
-    pub pin_failures: Mutex<HashMap<IpAddr, Vec<Instant>>>,
+    /// Wrong PINs: a few per address, and a cap for everyone together so
+    /// guessing from many addresses does not help.
+    pub pin_failures: RateLimit,
+    /// Requests that reach the user (prompts, messages), per sender.
+    pub requests: RateLimit,
     decisions: Mutex<HashMap<String, oneshot::Sender<bool>>>,
+    /// One-time codes in window URLs, traded for the session cookie.
+    launch_codes: Mutex<Vec<(String, std::time::Instant)>>,
     cancels: Mutex<HashMap<String, CancellationToken>>,
     /// Port of the LocalSend HTTPS server actually bound.
     pub port: AtomicU16,
@@ -78,8 +86,10 @@ impl App {
             companion: Hub::default(),
             reservations: Reservations::default(),
             staged: Mutex::new(HashMap::new()),
-            pin_failures: Mutex::new(HashMap::new()),
+            pin_failures: RateLimit::new(5, 20, Duration::from_secs(600)),
+            requests: RateLimit::new(20, 120, Duration::from_secs(60)),
             decisions: Mutex::new(HashMap::new()),
+            launch_codes: Mutex::new(Vec::new()),
             cancels: Mutex::new(HashMap::new()),
             port: AtomicU16::new(port),
             web_port: AtomicU16::new(0),
@@ -121,10 +131,33 @@ impl App {
         }
     }
 
+    /// The address that opens the window. It carries a one-time code rather
+    /// than the API token, since URLs end up in process lists, logs and
+    /// browser history: once used (or after a minute) it is worthless.
     pub fn ui_url(&self) -> Option<String> {
-        self.ui
-            .get()
-            .map(|ui| format!("http://127.0.0.1:{}/?token={}", ui.port, ui.token))
+        use rand::distributions::{Alphanumeric, DistString};
+        let ui = self.ui.get()?;
+        let code = Alphanumeric.sample_string(&mut rand::thread_rng(), 32);
+        let mut codes = self.launch_codes.lock().unwrap();
+        codes.retain(|(_, at)| at.elapsed() < LAUNCH_CODE_TTL);
+        codes.push((code.clone(), std::time::Instant::now()));
+        Some(format!("http://127.0.0.1:{}/?code={code}", ui.port))
+    }
+
+    /// Uses up a launch code; true if it was valid.
+    pub fn redeem_launch_code(&self, code: &str) -> bool {
+        let mut codes = self.launch_codes.lock().unwrap();
+        codes.retain(|(_, at)| at.elapsed() < LAUNCH_CODE_TTL);
+        match codes
+            .iter()
+            .position(|(c, _)| crate::receiver::constant_time_eq(c.as_bytes(), code.as_bytes()))
+        {
+            Some(i) => {
+                codes.remove(i);
+                true
+            }
+            None => false,
+        }
     }
 
     pub fn companion_url(&self) -> Option<String> {
@@ -163,7 +196,7 @@ impl App {
     /// Asks the user whether to accept an incoming transfer (window and/or
     /// notification). Trusted devices are accepted automatically.
     pub async fn ask_accept(self: &Arc<Self>, id: &str) -> bool {
-        let (peer_id, alias, summary_files, pin, phrase, preview) = {
+        let (peer_id, verified, alias, summary_files, pin, phrase, preview) = {
             let transfers = self.transfers.lock().unwrap();
             let Some(t) = transfers.get(id) else {
                 return false;
@@ -176,6 +209,7 @@ impl App {
                 .to_string();
             (
                 t.peer_id.clone(),
+                t.peer_verified,
                 alias,
                 describe_files(
                     &t.files
@@ -193,30 +227,31 @@ impl App {
                         .map(|f| (f.name.as_str(), f.file_type.as_str()))
                         .collect::<Vec<_>>(),
                 ),
-                t.files.iter().find_map(|f| {
-                    f.dto
-                        .as_ref()
-                        .and_then(|d| d.preview.as_deref())
-                        .and_then(crate::thumbnail::decode)
-                }),
+                t.files
+                    .iter()
+                    .find_map(|f| f.dto.as_ref().and_then(|d| d.preview.clone())),
             )
         };
-        if self.settings().auto_accept_trusted && self.registry.is_trusted(&peer_id) {
+        // Your own devices, when they prove it with their certificate.
+        if self.settings().auto_accept_trusted && verified && self.registry.is_trusted(&peer_id) {
             // Your own devices: no question, like AirDrop on the same Apple ID.
             if let Some(t) = self.transfers.lock().unwrap().get_mut(id) {
                 t.auto_accepted = true;
             }
             return true;
         }
-        // The photo itself in the notification, when the sender included one.
-        let image = preview.and_then(|bytes| {
-            let path = config::cache_dir()
-                .join("previews")
-                .join(format!("{id}.jpg"));
-            std::fs::create_dir_all(path.parent()?).ok()?;
-            std::fs::write(&path, bytes).ok()?;
-            Some(path)
-        });
+        // The photo itself in the notification, when the sender included one
+        // (re-encoded by us first; the original bytes come from the network).
+        let image = match preview {
+            Some(preview) => {
+                tokio::task::spawn_blocking(move || crate::thumbnail::reencode(&preview))
+                    .await
+                    .ok()
+                    .flatten()
+                    .and_then(|jpeg| crate::thumbnail::save_for_notification(id, &jpeg))
+            }
+            None => None,
+        };
 
         let (tx, rx) = oneshot::channel();
         self.decisions.lock().unwrap().insert(id.to_string(), tx);
@@ -372,6 +407,12 @@ impl App {
     }
 
     pub fn set_trusted(&self, peer_id: &str, trusted: bool) {
+        // Only devices with a provable id (a certificate) can be trusted:
+        // Quick Share senders and browsers are known by address or by a
+        // pairing key that travels in the clear.
+        if trusted && !crate::protocol::is_localsend_id(peer_id) {
+            return;
+        }
         self.registry.set_trusted(peer_id, trusted);
         self.update_settings(|s| {
             s.trusted.retain(|t| t != peer_id);
@@ -401,15 +442,16 @@ impl App {
             (alias, files, t.auto_accepted)
         };
         tracing::info!("Received {} file(s) from {alias}", files.len());
-        // From your own devices it just opens, like AirDrop: one file in its
-        // app, several in the folder they landed in.
+        // From your own devices it just opens, like AirDrop: a photo, video,
+        // song or PDF in its app; anything else (or several files) only shows
+        // in its folder, so nothing runnable is ever started by itself.
         if auto_accepted && self.settings().open_received {
             let paths: Vec<PathBuf> = files
                 .iter()
                 .filter_map(|(_, _, p)| p.clone().map(PathBuf::from))
                 .collect();
             match paths.as_slice() {
-                [one] => {
+                [one] if desktop::safe_to_open(one) => {
                     desktop::open_path(one);
                 }
                 [first, ..] => {
@@ -432,15 +474,27 @@ impl App {
             .first()
             .and_then(|(_, _, p)| p.clone())
             .map(PathBuf::from);
-        // A received photo shows itself in the notification.
-        let image = files
+        // A received photo shows itself in the notification (as a thumbnail
+        // we made, not the received file itself).
+        let photo = files
             .iter()
             .filter(|(name, _, _)| {
                 mime_guess::from_path(name).first_or_octet_stream().type_() == "image"
             })
             .find_map(|(_, _, p)| p.clone().map(PathBuf::from));
         let app = self.clone();
+        let id = id.to_string();
         tokio::spawn(async move {
+            let image = match photo {
+                Some(photo) => tokio::task::spawn_blocking(move || {
+                    crate::thumbnail::jpeg(&photo)
+                        .and_then(|jpeg| crate::thumbnail::save_for_notification(&id, &jpeg))
+                })
+                .await
+                .ok()
+                .flatten(),
+                None => None,
+            };
             app.notifier
                 .notify(
                     &format!("Received {count} from {alias}"),
@@ -461,7 +515,7 @@ impl App {
     }
 
     pub fn on_text_received(self: &Arc<Self>, id: &str) {
-        let (alias, text, peer_id, web) = {
+        let (alias, text, peer_id, verified) = {
             let transfers = self.transfers.lock().unwrap();
             let Some(t) = transfers.get(id) else { return };
             let alias = t
@@ -470,17 +524,17 @@ impl App {
                 .and_then(Value::as_str)
                 .unwrap_or("A device")
                 .to_string();
-            let web = t.peer.get("kind").and_then(Value::as_str) == Some("web");
             (
                 alias,
                 t.message.clone().unwrap_or_default(),
                 t.peer_id.clone(),
-                web,
+                t.peer_verified,
             )
         };
-        // Only devices you trust (or your own paired browser) may write to your
-        // clipboard; anyone else's text waits for you to press "Copy".
-        let own = web || self.registry.is_trusted(&peer_id);
+        // Only your own devices, proven by their certificate, may write to
+        // your clipboard or open links; anyone else's text (including the
+        // browser page, whose key travels over plain HTTP) waits for "Copy".
+        let own = verified && self.registry.is_trusted(&peer_id);
         let auto_copy = self.settings().copy_received_text && own;
         // A link from your own device opens in the browser right away.
         let trimmed = text.trim();

@@ -38,8 +38,13 @@ pub async fn read_frame<R: AsyncRead + Unpin>(reader: &mut R) -> std::io::Result
             format!("frame of {length} bytes is too large"),
         ));
     }
-    let mut frame = vec![0u8; length];
-    reader.read_exact(&mut frame).await?;
+    // Grows with the data that actually arrives, not with the length a peer
+    // merely announced.
+    let mut frame = Vec::with_capacity(length.min(64 * 1024));
+    let read = reader.take(length as u64).read_to_end(&mut frame).await?;
+    if read != length {
+        return Err(std::io::ErrorKind::UnexpectedEof.into());
+    }
     Ok(frame)
 }
 
@@ -150,7 +155,16 @@ impl EndpointInfo {
         } else {
             let length = *bytes.get(17)? as usize;
             let raw = bytes.get(18..18 + length)?;
-            Some(String::from_utf8_lossy(raw).into_owned())
+            // Shown in prompts: no control or invisible direction characters.
+            Some(
+                String::from_utf8_lossy(raw)
+                    .chars()
+                    .filter(|&c| {
+                        !c.is_control()
+                            && !matches!(c, '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2060}'..='\u{2069}' | '\u{FEFF}')
+                    })
+                    .collect(),
+            )
         };
         Some(Self { kind, name })
     }
@@ -353,10 +367,16 @@ pub enum Incoming {
     },
 }
 
+/// BYTES payloads being joined at once (a share needs one or two).
+const MAX_OPEN_PAYLOADS: usize = 4;
+/// Bytes buffered for all of them together.
+const MAX_BUFFERED: usize = 8 * 1024 * 1024;
+
 /// Joins BYTES payload chunks; passes FILE chunks through.
 #[derive(Default)]
 pub struct Assembler {
     buffers: HashMap<i64, Vec<u8>>,
+    buffered: usize,
 }
 
 impl Assembler {
@@ -375,18 +395,25 @@ impl Assembler {
                 if header.total_size.unwrap_or_default() > MAX_FRAME as i64 {
                     bail!("bytes payload too large");
                 }
+                // Many half-sent payloads would add up to any amount of memory.
+                if !self.buffers.contains_key(&id) && self.buffers.len() >= MAX_OPEN_PAYLOADS {
+                    bail!("too many unfinished payloads");
+                }
+                self.buffered += body.len();
+                if self.buffered > MAX_BUFFERED {
+                    bail!("too much unfinished payload data");
+                }
                 let buffer = self.buffers.entry(id).or_default();
                 if offset != buffer.len() as i64 {
-                    self.buffers.remove(&id);
                     bail!("unexpected offset {offset} in bytes payload");
                 }
                 buffer.extend_from_slice(&body);
                 if buffer.len() > MAX_FRAME {
-                    self.buffers.remove(&id);
                     bail!("bytes payload too large");
                 }
                 if last {
                     let data = self.buffers.remove(&id).unwrap_or_default();
+                    self.buffered -= data.len();
                     return Ok(Some(Incoming::Bytes { id, data }));
                 }
                 Ok(None)
@@ -469,6 +496,22 @@ mod tests {
             }
             other => panic!("unexpected {other:?}"),
         }
+    }
+
+    #[test]
+    fn unfinished_payloads_are_bounded() {
+        let mut assembler = Assembler::default();
+        // Each first half of a payload that never finishes.
+        let mut opened = 0;
+        for id in 0..10 {
+            let [first, _] =
+                bytes_payload(id, vec![7; 1000]).map(|f| f.v1.unwrap().payload_transfer.unwrap());
+            if assembler.push(first).is_err() {
+                break;
+            }
+            opened += 1;
+        }
+        assert_eq!(opened, MAX_OPEN_PAYLOADS);
     }
 
     #[tokio::test]

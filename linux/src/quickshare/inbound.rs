@@ -95,6 +95,12 @@ pub async fn handle(app: Arc<App>, stream: TcpStream) -> Result<()> {
     .and_then(|v1| v1.introduction)
     .ok_or_else(|| anyhow!("empty introduction"))?;
 
+    // Every share reaches the user (a prompt or a message): not too many.
+    if !app.requests.hit(ip) {
+        let _ = link.send_sharing(&wire::response(Response::Reject)).await;
+        link.close().await;
+        bail!("too many requests from {ip}");
+    }
     if !intro.file_metadata.is_empty() {
         receive_files(&app, link, &sender, intro).await
     } else if !intro.text_metadata.is_empty() || !intro.wifi_credentials_metadata.is_empty() {
@@ -197,12 +203,28 @@ fn file_dto(meta: &sharing::FileMetadata) -> FileDto {
     }
 }
 
+/// Most files one Quick Share request may offer.
+const MAX_FILES: usize = 1000;
+/// Most text parts (texts, links, Wi‑Fi networks) in one share.
+const MAX_TEXTS: usize = 8;
+
 async fn receive_files(
     app: &Arc<App>,
     mut link: Link,
     sender: &Sender,
     intro: IntroductionFrame,
 ) -> Result<()> {
+    let mut seen = std::collections::HashSet::new();
+    if intro.file_metadata.len() > MAX_FILES
+        || !intro
+            .file_metadata
+            .iter()
+            .all(|m| seen.insert(m.payload_id.unwrap_or_default()))
+    {
+        let _ = link.send_sharing(&wire::response(Response::Reject)).await;
+        link.close().await;
+        bail!("too many or duplicate files offered");
+    }
     let dtos: Vec<FileDto> = intro.file_metadata.iter().map(file_dto).collect();
     let mut transfer = Transfer::new(
         Direction::In,
@@ -283,28 +305,25 @@ async fn receive_files(
     app.register_cancel(&id, cancel.clone());
     link.send_sharing(&wire::response(Response::Accept)).await?;
 
-    // One writer task per file, fed through a channel; the storage code does
-    // the .part file, progress, renaming and the "received" notification.
+    // One writer task per file, started when its data begins to arrive and
+    // fed through a channel; the storage code does the .part file, progress,
+    // renaming and the "received" notification.
     struct Sink {
         tx: mpsc::Sender<std::io::Result<Bytes>>,
         offset: i64,
+        size: i64,
     }
+    let mut waiting: HashMap<i64, FileDto> = intro
+        .file_metadata
+        .iter()
+        .map(|m| m.payload_id.unwrap_or_default())
+        .zip(dtos)
+        .collect();
     let mut sinks: HashMap<i64, Sink> = HashMap::new();
     let mut writers = Vec::new();
-    for (meta, dto) in intro.file_metadata.iter().zip(dtos) {
-        let (tx, mut rx) = mpsc::channel::<std::io::Result<Bytes>>(8);
-        let stream = futures_util::stream::poll_fn(move |cx| rx.poll_recv(cx));
-        let (app, id) = (app.clone(), id.clone());
-        writers.push(tokio::spawn(async move {
-            if let Err(err) = storage::save_stream(&app, &id, &dto, stream).await {
-                tracing::warn!("Quick Share: could not save {}: {err}", dto.file_name);
-            }
-        }));
-        sinks.insert(meta.payload_id.unwrap_or_default(), Sink { tx, offset: 0 });
-    }
 
     let outcome: Option<(Status, String)> = loop {
-        if sinks.is_empty() {
+        if sinks.is_empty() && waiting.is_empty() {
             break None;
         }
         let event = tokio::select! {
@@ -321,10 +340,30 @@ async fn receive_files(
                 body,
                 last,
             }) => {
+                if let Some(dto) = waiting.remove(&payload) {
+                    let (tx, mut rx) = mpsc::channel::<std::io::Result<Bytes>>(8);
+                    let stream = futures_util::stream::poll_fn(move |cx| rx.poll_recv(cx));
+                    let size = dto.size as i64;
+                    let (app, id) = (app.clone(), id.clone());
+                    writers.push(tokio::spawn(async move {
+                        if let Err(err) = storage::save_stream(&app, &id, &dto, stream).await {
+                            tracing::warn!("Quick Share: could not save {}: {err}", dto.file_name);
+                        }
+                    }));
+                    sinks.insert(
+                        payload,
+                        Sink {
+                            tx,
+                            offset: 0,
+                            size,
+                        },
+                    );
+                }
                 let Some(sink) = sinks.get_mut(&payload) else {
                     continue; // a file we already gave up on
                 };
-                if offset != sink.offset {
+                // In order, and never more than was announced and accepted.
+                if offset != sink.offset || sink.offset + body.len() as i64 > sink.size {
                     break Some((Status::Failed, "Corrupted transfer".into()));
                 }
                 if !body.is_empty() {
@@ -371,6 +410,11 @@ async fn receive_text(
         Text,
         Wifi(String),
     }
+    if intro.text_metadata.len() + intro.wifi_credentials_metadata.len() > MAX_TEXTS {
+        let _ = link.send_sharing(&wire::response(Response::Reject)).await;
+        link.close().await;
+        bail!("too many texts offered");
+    }
     let mut wanted: HashMap<i64, Part> = HashMap::new();
     // Plain text, links, addresses and phone numbers are all shown as text.
     for meta in &intro.text_metadata {
@@ -384,12 +428,24 @@ async fn receive_text(
     link.send_sharing(&wire::response(Response::Accept)).await?;
 
     let mut parts = Vec::new();
+    let mut length = 0;
+    let mut wifi = false;
+    // One deadline for the whole exchange, however chatty the sender.
+    let deadline = tokio::time::Instant::now() + SETUP_TIMEOUT;
     while !wanted.is_empty() {
-        match timeout(SETUP_TIMEOUT, link.next()).await {
+        match tokio::time::timeout_at(deadline, link.next()).await {
             Err(_) => bail!("timed out waiting for the text"),
             Ok(Event::Payload(Incoming::Bytes { id, data })) => match wanted.remove(&id) {
-                Some(Part::Text) => parts.push(String::from_utf8_lossy(&data).into_owned()),
+                Some(_) if length + data.len() > crate::protocol::MAX_TEXT => {
+                    bail!("text too long")
+                }
+                Some(Part::Text) => {
+                    length += data.len();
+                    parts.push(String::from_utf8_lossy(&data).into_owned())
+                }
                 Some(Part::Wifi(ssid)) => {
+                    length += data.len();
+                    wifi = true;
                     let password = WifiCredentials::decode(data.as_slice())
                         .ok()
                         .and_then(|c| c.password)
@@ -397,9 +453,9 @@ async fn receive_text(
                     parts.push(format!("Wi-Fi network “{ssid}”\nPassword: {password}"));
                 }
                 None if is_cancel(&data) => bail!("cancelled by the sender"),
-                None => {}
+                None => bail!("unexpected data"),
             },
-            Ok(Event::Payload(Incoming::FileChunk { .. })) => {}
+            Ok(Event::Payload(Incoming::FileChunk { .. })) => bail!("unexpected file data"),
             Ok(Event::Closed(reason)) => {
                 bail!(
                     "{}",
@@ -420,6 +476,8 @@ async fn receive_text(
     );
     transfer.peer_ip = Some(sender.ip);
     transfer.message = Some(text);
+    // A Wi‑Fi password is shown, but not kept in the history file.
+    transfer.sensitive = wifi;
     transfer.started = Some(now());
     for f in transfer.files.iter_mut() {
         f.status = crate::transfers::FileStatus::Done;

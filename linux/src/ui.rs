@@ -130,7 +130,7 @@ async fn auth(State(app): State<Arc<App>>, request: Request, next: Next) -> Resp
 
 #[derive(Deserialize)]
 struct IndexQuery {
-    token: Option<String>,
+    code: Option<String>,
 }
 
 async fn index(
@@ -141,9 +141,13 @@ async fn index(
     if !host_ok(&app, &headers) {
         return (StatusCode::FORBIDDEN, "bad host").into_response();
     }
-    if let Some(given) = query.token {
-        if constant_time_eq(given.as_bytes(), token(&app).as_bytes()) {
-            let cookie = format!("{COOKIE}={given}; Path=/; HttpOnly; SameSite=Strict");
+    // A one-time launch code from the window URL buys the session cookie.
+    if let Some(code) = query.code {
+        if app.redeem_launch_code(&code) {
+            let cookie = format!(
+                "{COOKIE}={}; Path=/; HttpOnly; SameSite=Strict",
+                token(&app)
+            );
             return ([(header::SET_COOKIE, cookie)], Redirect::to("/")).into_response();
         }
     }
@@ -571,7 +575,10 @@ async fn trust(
 
 // ---------------------------------------------------------------- settings
 
-async fn update_settings(State(app): State<Arc<App>>, Json(changes): Json<Value>) -> Json<Value> {
+async fn update_settings(State(app): State<Arc<App>>, Json(changes): Json<Value>) -> Response {
+    if let Err(message) = config::check_changes(&changes) {
+        return bad_request(message);
+    }
     let changed = app.update_settings(|s| s.apply(&changes));
     if changed.contains(&"alias") {
         if let Some(discovery) = app.discovery.get().cloned() {
@@ -596,7 +603,7 @@ async fn update_settings(State(app): State<Arc<App>>, Json(changes): Json<Value>
         app.bus
             .emit("companion", json!({ "url": app.companion_url() }));
     }
-    Json(app.settings().public_json())
+    Json(app.settings().public_json()).into_response()
 }
 
 async fn reset_pairing(State(app): State<Arc<App>>) -> Json<Value> {

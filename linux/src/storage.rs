@@ -1,8 +1,10 @@
 //! Writing received files to the download folder.
 
 use std::collections::HashSet;
-use std::path::{Path, PathBuf};
+use std::os::unix::fs::OpenOptionsExt;
+use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use bytes::Bytes;
 use futures_util::{Stream, StreamExt};
@@ -67,6 +69,84 @@ impl Reservations {
     }
 }
 
+/// A sender that goes quiet this long mid-file is dropped.
+const STALL_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Creates the folders of a received path one by one inside `root`, refusing
+/// any component that already exists as something other than a real folder
+/// (a symlink planted in the download folder must not lead outside it).
+fn create_folders(root: &Path, relative: &Path) -> Result<PathBuf, SaveError> {
+    let mut dir = root.to_path_buf();
+    for component in relative.components() {
+        let Component::Normal(name) = component else {
+            return Err(SaveError::Io("invalid file name".into()));
+        };
+        dir.push(name);
+        match std::fs::symlink_metadata(&dir) {
+            Ok(meta) if meta.is_dir() => {}
+            Ok(_) => return Err(SaveError::Io("invalid file name".into())),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                match std::fs::create_dir(&dir) {
+                    Ok(()) => {}
+                    // Created by a parallel upload of the same folder.
+                    Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+                        if !std::fs::symlink_metadata(&dir)?.is_dir() {
+                            return Err(SaveError::Io("invalid file name".into()));
+                        }
+                    }
+                    Err(err) => return Err(err.into()),
+                }
+            }
+            Err(err) => return Err(err.into()),
+        }
+    }
+    Ok(dir)
+}
+
+/// Opens the partial file without following symlinks and without reusing an
+/// existing file (a leftover from a crash is replaced, not appended to).
+fn create_part(path: &Path) -> std::io::Result<std::fs::File> {
+    let open = || {
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .custom_flags(nix::libc::O_NOFOLLOW)
+            .open(path)
+    };
+    match open() {
+        Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+            std::fs::remove_file(path)?;
+            open()
+        }
+        other => other,
+    }
+}
+
+/// Moves the finished file into place without replacing anything that
+/// appeared there meanwhile; returns where it landed.
+fn commit(app: &App, part: &Path, target: PathBuf) -> std::io::Result<PathBuf> {
+    let mut target = target;
+    for _ in 0..100 {
+        match std::fs::hard_link(part, &target) {
+            Ok(()) => {
+                std::fs::remove_file(part)?;
+                return Ok(target);
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+                let next = app.reservations.claim(&target);
+                app.reservations.release(&target);
+                target = next;
+            }
+            // File systems without hard links (FAT on a USB stick).
+            Err(_) => {
+                std::fs::rename(part, &target)?;
+                return Ok(target);
+            }
+        }
+    }
+    Err(std::io::Error::other("no free file name"))
+}
+
 /// Free bytes on the filesystem holding `path`.
 pub fn free_space(path: &Path) -> Option<u64> {
     let stat = nix::sys::statvfs::statvfs(path).ok()?;
@@ -117,19 +197,37 @@ where
     S: Stream<Item = Result<Bytes, E>> + Unpin,
     E: std::fmt::Display,
 {
+    // One upload per file at a time: a second request for the same file
+    // would write the data twice.
+    {
+        let mut transfers = app.transfers.lock().unwrap();
+        let Some(f) = transfers
+            .get_mut(transfer_id)
+            .and_then(|t| t.file_mut(&dto.id))
+        else {
+            return Err(SaveError::Aborted);
+        };
+        if f.status == FileStatus::Transferring {
+            return Err(SaveError::Io("this file is already being received".into()));
+        }
+        f.status = FileStatus::Transferring;
+        f.done = 0;
+        transfers.emit(transfer_id, true);
+    }
     let download_dir = app.settings().download_dir.clone();
     tokio::fs::create_dir_all(&download_dir).await?;
     let download_dir = tokio::fs::canonicalize(&download_dir).await?;
     let relative = safe_relative_path(&dto.file_name);
-    let wanted = download_dir.join(&relative);
-    let parent = wanted.parent().unwrap_or(&download_dir).to_path_buf();
-    tokio::fs::create_dir_all(&parent).await?;
+    let folders = relative.parent().map(Path::to_path_buf).unwrap_or_default();
+    let parent = create_folders(&download_dir, &folders)?;
     // Refuse to follow symlinked folders out of the download folder.
-    let parent = tokio::fs::canonicalize(&parent).await?;
-    if !parent.starts_with(&download_dir) {
+    if !tokio::fs::canonicalize(&parent)
+        .await?
+        .starts_with(&download_dir)
+    {
         return Err(SaveError::Io("invalid file name".into()));
     }
-    let file_name = wanted
+    let file_name = relative
         .file_name()
         .map(|n| n.to_os_string())
         .unwrap_or_else(|| "file".into());
@@ -147,23 +245,22 @@ where
         committed: false,
     };
 
-    {
-        let mut transfers = app.transfers.lock().unwrap();
-        if let Some(f) = transfers
-            .get_mut(transfer_id)
-            .and_then(|t| t.file_mut(&dto.id))
-        {
-            f.status = FileStatus::Transferring;
-            f.done = 0;
-        }
-        transfers.emit(transfer_id, true);
-    }
-
-    let mut file = tokio::fs::File::create(&part).await?;
+    let mut file = tokio::fs::File::from_std(create_part(&part)?);
     let mut hasher = dto.sha256.as_ref().map(|_| Sha256::new());
     let mut received = 0u64;
-    while let Some(chunk) = stream.next().await {
+    loop {
+        let next = tokio::time::timeout(STALL_TIMEOUT, stream.next())
+            .await
+            .map_err(|_| SaveError::Io("the sender stopped sending".into()))?;
+        let Some(chunk) = next else { break };
         let chunk = chunk.map_err(|e| SaveError::Io(e.to_string()))?;
+        // Never write more than was announced (and accepted).
+        if received + chunk.len() as u64 > dto.size {
+            return Err(SaveError::Io(format!(
+                "more data than the announced {} bytes",
+                dto.size
+            )));
+        }
         file.write_all(&chunk).await?;
         if let Some(h) = hasher.as_mut() {
             h.update(&chunk);
@@ -199,7 +296,13 @@ where
             return Err(SaveError::ChecksumMismatch);
         }
     }
-    tokio::fs::rename(&part, &target).await?;
+    let landed = {
+        let (app, part, target) = (app.clone(), part.clone(), target.clone());
+        tokio::task::spawn_blocking(move || commit(&app, &part, target))
+            .await
+            .map_err(|e| SaveError::Io(e.to_string()))??
+    };
+    let target = landed;
     let metadata = dto.metadata.clone().unwrap_or_default();
     if let Some(modified) = parse_iso(metadata.modified.as_deref()) {
         let accessed = parse_iso(metadata.accessed.as_deref()).unwrap_or(modified);

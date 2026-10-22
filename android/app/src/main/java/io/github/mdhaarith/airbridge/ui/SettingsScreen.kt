@@ -155,13 +155,21 @@ fun SettingsScreen(vm: AppViewModel) {
     if (pinning) {
         TextAlert(
             title = "Require a PIN",
-            message = "Senders must enter it before files arrive. Leave it empty for no PIN.",
+            message = "Senders must enter it (at least 6 characters) before files arrive. Leave it empty for no PIN.",
             initial = settings.pin,
             confirm = "Save",
             keyboardType = KeyboardType.Number,
             allowEmpty = true,
             filter = { it.filter(Char::isLetterOrDigit).take(32) },
-            onConfirm = { pin -> pinning = false; engine.settings.update { it.copy(pin = pin) } },
+            onConfirm = { pin ->
+                // Short PINs fall to guessing.
+                if (pin.isNotEmpty() && pin.length < 6) {
+                    vm.toast("Use at least 6 characters", "Or leave it empty for no PIN", good = false)
+                } else {
+                    pinning = false
+                    engine.settings.update { it.copy(pin = pin) }
+                }
+            },
             onDismiss = { pinning = false },
         )
     }

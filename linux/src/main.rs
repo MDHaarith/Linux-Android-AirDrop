@@ -14,6 +14,7 @@ mod edge;
 mod events;
 mod fetch;
 mod identity;
+mod limits;
 mod net;
 mod peers;
 mod protocol;
@@ -350,11 +351,13 @@ async fn serve(open_window: bool) -> Result<ExitCode> {
         if settings.https { "HTTPS" } else { "HTTP" }
     );
     tracing::info!("Fingerprint {}", me.fingerprint);
-    if let Some(url) = app.ui_url() {
-        tracing::info!("Window: {url}");
+    // Addresses only, never the secrets that open them.
+    if let Some(ui) = app.ui.get() {
+        tracing::info!("Window on http://127.0.0.1:{}/", ui.port);
     }
     if let Some(url) = app.companion_url() {
-        tracing::info!("Phone browser: {url}");
+        let address = url.split('#').next().unwrap_or_default();
+        tracing::info!("Phone browser page on {address} (pair with the QR code)");
     }
     if open_window {
         app.open_window();

@@ -57,7 +57,11 @@ private class AndroidPlatform(private val context: Context) : Platform {
     override fun copyToClipboard(text: String) {
         main.post {
             val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-            clipboard.setPrimaryClip(ClipData.newPlainText("AirBridge", text))
+            val clip = ClipData.newPlainText("AirBridge", text).apply {
+                // Received text may be a password: keep it out of clipboard previews.
+                description.extras = android.os.PersistableBundle().apply { putBoolean("android.content.extra.IS_SENSITIVE", true) }
+            }
+            clipboard.setPrimaryClip(clip)
         }
     }
 

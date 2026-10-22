@@ -11,6 +11,7 @@ class FakePlatform(root: File, alias: String) : Platform {
     override val filesDir = File(root, "files").apply { mkdirs() }
     override val defaultAlias = alias
     override val deviceModel = "JVM Test"
+    override val allowsLoopbackPeers = true
     val downloads = File(root, "downloads").apply { mkdirs() }
     val clipboard: MutableList<String> = Collections.synchronizedList(mutableListOf())
 

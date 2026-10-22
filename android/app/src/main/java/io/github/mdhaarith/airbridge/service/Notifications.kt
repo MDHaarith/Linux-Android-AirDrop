@@ -7,15 +7,14 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
-import android.graphics.BitmapFactory
 import android.net.Uri
 import android.util.Size
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import io.github.mdhaarith.airbridge.MainActivity
+import io.github.mdhaarith.airbridge.PreviewImages
 import io.github.mdhaarith.airbridge.R
 import io.github.mdhaarith.airbridge.core.Direction
-import io.github.mdhaarith.airbridge.core.Previews
 import io.github.mdhaarith.airbridge.core.Transfer
 import io.github.mdhaarith.airbridge.core.sharePhrase
 import io.github.mdhaarith.airbridge.ui.formatBytes
@@ -52,7 +51,9 @@ object Notifications {
         return PendingIntent.getActivity(context, transferId.hashCode(), intent, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
     }
 
-    private fun action(context: Context, action: String, transferId: String, requestCode: Int): PendingIntent {
+    /** Each transfer's buttons get their own PendingIntent (one per transfer and action). */
+    private fun action(context: Context, action: String, transferId: String, kind: Int): PendingIntent {
+        val requestCode = idFor(transferId) * 8 + kind
         val intent = Intent(context, ActionReceiver::class.java).setAction(action).putExtra(ActionReceiver.EXTRA_ID, transferId)
         return PendingIntent.getBroadcast(context, requestCode, intent, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
     }
@@ -81,7 +82,7 @@ object Notifications {
         if (!canPost(context)) return
         // Worded like AirDrop, with the photo itself when the sender included a preview.
         val title = "“${t.peerAlias}” would like to share ${sharePhrase(t.files)}"
-        val picture = Previews.decode(t.files.firstNotNullOfOrNull { it.preview })?.let { BitmapFactory.decodeByteArray(it, 0, it.size) }
+        val picture = PreviewImages.decode(t.files.firstNotNullOfOrNull { it.preview })
         val style = if (picture != null) {
             NotificationCompat.BigPictureStyle().bigPicture(picture).bigLargeIcon(null as Bitmap?)
         } else {
@@ -97,7 +98,8 @@ object Notifications {
             .setCategory(NotificationCompat.CATEGORY_CALL)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setContentIntent(openApp(context, t.id))
-            .setFullScreenIntent(openApp(context, t.id), false)
+            // Only your own devices (proven by certificate) may take over the screen.
+            .apply { if (t.peerVerified) setFullScreenIntent(openApp(context, t.id), false) }
             .setAutoCancel(true)
             .setTimeoutAfter(5 * 60_000)
             .addAction(0, "Decline", action(context, ActionReceiver.DECLINE, t.id, 2))

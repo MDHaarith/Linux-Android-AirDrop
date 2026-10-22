@@ -45,7 +45,8 @@ class AirBridgeService : LifecycleService() {
                     is EngineEvent.Incoming -> engine.transfer(event.transferId)?.let { Notifications.incoming(this@AirBridgeService, it) }
                     is EngineEvent.Message -> {
                         Notifications.message(this@AirBridgeService, event.transferId, event.from, event.text, event.copied)
-                        val fromTrusted = engine.transfer(event.transferId)?.peerId?.let(engine::isTrusted) == true
+                        // Only your own device, proven by its certificate.
+                        val fromTrusted = engine.transfer(event.transferId)?.let { it.peerVerified && engine.isTrusted(it.peerId) } == true
                         if (fromTrusted && engine.settings.value.openReceived) Opener.openLink(this@AirBridgeService, event.text)
                     }
                     is EngineEvent.Finished -> {

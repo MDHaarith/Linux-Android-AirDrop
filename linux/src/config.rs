@@ -129,11 +129,8 @@ pub fn runtime_dir() -> PathBuf {
 }
 
 fn current_uid() -> u32 {
-    // Avoid a libc dependency just for getuid(): /proc/self is owned by our uid.
-    use std::os::unix::fs::MetadataExt;
-    std::fs::metadata("/proc/self")
-        .map(|m| m.uid())
-        .unwrap_or(0)
+    // SAFETY: getuid() has no preconditions and cannot fail.
+    unsafe { nix::libc::getuid() }
 }
 
 fn home() -> PathBuf {
@@ -207,7 +204,8 @@ impl Default for Settings {
             auto_accept_trusted: true,
             pin: String::new(),
             copy_received_text: true,
-            web_companion: true,
+            // Plain HTTP on the local network: off until you pair a phone.
+            web_companion: false,
             web_port: DEFAULT_WEB_PORT,
             web_key: random_key(),
             ui_port: 0,
@@ -297,6 +295,10 @@ impl Settings {
             }
         }
         if let Some(dir) = map.get("downloadDir").and_then(Value::as_str) {
+            if let Err(err) = check_download_dir(Path::new(dir)) {
+                tracing::warn!("Ignoring download folder {dir}: {err}");
+                return changed;
+            }
             let dir = PathBuf::from(dir);
             if dir.is_absolute() && self.download_dir != dir {
                 self.download_dir = dir;
@@ -309,7 +311,7 @@ impl Settings {
                 .filter(|c| c.is_ascii_alphanumeric())
                 .take(32)
                 .collect();
-            if self.pin != pin {
+            if self.pin != pin && (pin.is_empty() || pin.len() >= MIN_PIN_LEN) {
                 self.pin = pin;
                 changed.push("pin");
             }
@@ -342,20 +344,83 @@ impl Settings {
 }
 
 /// Writes a file readable only by the current user, atomically.
+/// Shortest PIN we accept: short PINs fall to guessing.
+pub const MIN_PIN_LEN: usize = 6;
+
+/// Settings changes the window may not make, with the reason.
+pub fn check_changes(map: &Value) -> Result<(), String> {
+    if let Some(pin) = map.get("pin").and_then(Value::as_str) {
+        let len = pin.chars().filter(|c| c.is_ascii_alphanumeric()).count();
+        if len > 0 && len < MIN_PIN_LEN {
+            return Err(format!("A PIN needs at least {MIN_PIN_LEN} characters"));
+        }
+    }
+    if let Some(dir) = map.get("downloadDir").and_then(Value::as_str) {
+        check_download_dir(Path::new(dir))?;
+    }
+    Ok(())
+}
+
+/// Received files must not land where they would be run or trusted
+/// automatically (autostart, shell and SSH configuration, …): no hidden
+/// folders in the home folder, no system folders.
+fn check_download_dir(dir: &Path) -> Result<(), String> {
+    if !dir.is_absolute() {
+        return Err("Choose a full folder path".into());
+    }
+    let home = home();
+    let inside_home = dir.strip_prefix(&home).ok();
+    let hidden = inside_home.is_some_and(|rest| {
+        rest.components()
+            .any(|c| c.as_os_str().to_string_lossy().starts_with('.'))
+    });
+    let system = inside_home.is_none()
+        && [
+            "/etc", "/usr", "/bin", "/sbin", "/lib", "/boot", "/root", "/var", "/proc", "/sys",
+        ]
+        .iter()
+        .any(|p| dir.starts_with(p));
+    if hidden || system {
+        return Err("Choose a regular folder, not a hidden or system one".into());
+    }
+    Ok(())
+}
+
 pub fn write_private(path: &Path, contents: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
-    use std::os::unix::fs::OpenOptionsExt;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
+    use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
+    let parent = path.parent().unwrap_or(Path::new("."));
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(parent)?;
+    // The folder must be ours and not writable by others: a folder another
+    // user prepared (say under /tmp) could swap or read our files.
+    let meta = std::fs::symlink_metadata(parent)?;
+    if !meta.is_dir() || meta.uid() != current_uid() || meta.mode() & 0o022 != 0 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            format!("{} is not a private folder", parent.display()),
+        ));
     }
-    let tmp = path.with_extension("tmp");
+    // A fresh temporary file: never an existing one, never through a symlink.
+    let tmp = parent.join(format!(
+        ".{}.{}.tmp",
+        path.file_name().unwrap_or_default().to_string_lossy(),
+        uuid::Uuid::new_v4().simple()
+    ));
     let mut file = std::fs::OpenOptions::new()
         .write(true)
-        .create(true)
-        .truncate(true)
+        .create_new(true)
+        .custom_flags(nix::libc::O_NOFOLLOW)
         .mode(0o600)
         .open(&tmp)?;
-    file.write_all(contents)?;
-    file.sync_all()?;
-    std::fs::rename(tmp, path)
+    let written = file.write_all(contents).and_then(|()| file.sync_all());
+    if let Err(err) = written {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(err);
+    }
+    std::fs::rename(&tmp, path).inspect_err(|_| {
+        let _ = std::fs::remove_file(&tmp);
+    })
 }

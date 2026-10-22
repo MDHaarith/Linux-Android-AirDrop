@@ -22,13 +22,15 @@ use crate::app::App;
 use crate::client::{self, Body, Options, Target};
 use crate::net;
 use crate::peers::PeerKind;
-use crate::protocol::{DeviceInfo, MulticastMessage, API};
+use crate::protocol::{is_localsend_id, DeviceInfo, MulticastMessage, API};
 
 const ANNOUNCE_DELAYS_MS: [u64; 3] = [100, 500, 2000];
 const REANNOUNCE_INTERVAL: Duration = Duration::from_secs(45);
 const LIVENESS_INTERVAL: Duration = Duration::from_secs(12);
 const STALE_AFTER: Duration = Duration::from_secs(25);
 const MAX_FAILURES: u32 = 2;
+/// Devices being confirmed at once (each costs an outgoing connection).
+const MAX_PENDING: usize = 32;
 
 pub struct Discovery {
     socket: Option<Arc<UdpSocket>>,
@@ -163,36 +165,38 @@ impl Discovery {
             return;
         };
         let me = app.me();
-        if info.fingerprint.is_empty() || info.fingerprint.eq_ignore_ascii_case(&me.fingerprint) {
+        if !is_localsend_id(&info.fingerprint)
+            || info.fingerprint.eq_ignore_ascii_case(&me.fingerprint)
+        {
             return;
         }
         let ip = net::canonical(ip);
-        if announce {
-            if !self
-                .pending
-                .lock()
-                .unwrap()
-                .insert(info.fingerprint.clone())
-            {
+        // Only devices on our own networks, on a normal port: a spoofed packet
+        // must not make us connect to arbitrary hosts and services.
+        if !net::is_local_network(ip) || info.port < 1024 {
+            return;
+        }
+        {
+            let mut pending = self.pending.lock().unwrap();
+            if pending.len() >= MAX_PENDING || !pending.insert(info.fingerprint.clone()) {
                 return;
             }
-            let (app, discovery) = (app.clone(), self.clone());
-            tokio::spawn(async move {
-                let fingerprint = info.fingerprint.clone();
-                let confirmed =
-                    register_with(&app, ip, info.port, info.is_https(), Some(&fingerprint), 4)
-                        .await;
-                if confirmed.is_none() {
-                    // They cannot be reached over TCP; at least let them find us (UDP answer).
-                    let answer = app.me().announcement_json(false).to_string();
-                    discovery.send(answer.as_bytes()).await;
-                }
-                discovery.pending.lock().unwrap().remove(&fingerprint);
-            });
-        } else {
-            // A UDP answer to our announcement (older LocalSend versions).
-            app.registry.upsert(info, ip, PeerKind::LocalSend);
         }
+        // Announcements and UDP answers (older LocalSend versions) alike are
+        // confirmed over TCP: over HTTPS the certificate proves the id, so a
+        // packet alone never adds or changes a device.
+        let (app, discovery) = (app.clone(), self.clone());
+        tokio::spawn(async move {
+            let fingerprint = info.fingerprint.clone();
+            let confirmed =
+                register_with(&app, ip, info.port, info.is_https(), Some(&fingerprint), 4).await;
+            if confirmed.is_none() && announce {
+                // They cannot be reached over TCP; at least let them find us (UDP answer).
+                let answer = app.me().announcement_json(false).to_string();
+                discovery.send(answer.as_bytes()).await;
+            }
+            discovery.pending.lock().unwrap().remove(&fingerprint);
+        });
     }
 
     async fn liveness_loop(&self, app: &Arc<App>) {
@@ -204,17 +208,23 @@ impl Discovery {
                 .into_iter()
                 .filter(|p| p.kind == PeerKind::LocalSend && p.last_seen.elapsed() > STALE_AFTER)
                 .collect();
-            let checks = stale.iter().map(|peer| {
-                register_with(
-                    app,
-                    peer.ip,
-                    peer.info.port,
-                    peer.info.is_https(),
-                    Some(peer.id()),
-                    4,
-                )
-            });
-            let results = futures_util::future::join_all(checks).await;
+            // A few at a time, however many devices there are.
+            use futures_util::StreamExt;
+            let results: Vec<_> = futures_util::stream::iter(stale.clone())
+                .map(|peer| async move {
+                    register_with(
+                        app,
+                        peer.ip,
+                        peer.info.port,
+                        peer.info.is_https(),
+                        Some(peer.id()),
+                        4,
+                    )
+                    .await
+                })
+                .buffered(16)
+                .collect()
+                .await;
             for (peer, result) in stale.iter().zip(results) {
                 if result.is_none() {
                     app.registry.record_failure(peer.id(), MAX_FAILURES);
@@ -316,12 +326,15 @@ pub async fn register_with(
     let mut info: DeviceInfo = serde_json::from_value(value).ok()?;
     info = info.sanitized().ok()?;
     // Over HTTPS the certificate is the identity, not what the body claims.
+    let verified = response.peer_fingerprint.is_some();
     if let Some(fp) = response.peer_fingerprint {
         info.fingerprint = fp;
     }
-    if info.fingerprint.is_empty() || info.fingerprint.eq_ignore_ascii_case(&me.fingerprint) {
+    if !is_localsend_id(&info.fingerprint) || info.fingerprint.eq_ignore_ascii_case(&me.fingerprint)
+    {
         return None;
     }
-    app.registry.upsert(info.clone(), ip, PeerKind::LocalSend);
+    app.registry
+        .upsert(info.clone(), ip, PeerKind::LocalSend, verified);
     Some(info)
 }

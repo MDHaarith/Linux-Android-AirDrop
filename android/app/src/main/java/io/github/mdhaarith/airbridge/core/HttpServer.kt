@@ -32,7 +32,7 @@ class HttpRequest(
     val clientFingerprint: String?,
     private val watcher: (() -> Unit) -> Unit,
 ) {
-    fun readBody(limit: Int = 32 * 1024 * 1024): ByteArray {
+    fun readBody(limit: Int = 4 * 1024 * 1024): ByteArray {
         val out = ByteArrayOutputStream()
         val buffer = ByteArray(16 * 1024)
         while (true) {
@@ -97,6 +97,9 @@ class HttpServer(
         scope.cancel()
     }
 
+    /** Open connections per address: enough for real devices, not for a flood. */
+    private val open = mutableMapOf<String, Int>()
+
     private suspend fun acceptLoop(socket: ServerSocket) {
         while (scope.isActive && !socket.isClosed) {
             val client = try {
@@ -105,13 +108,36 @@ class HttpServer(
                 if (socket.isClosed) return
                 continue
             }
-            scope.launch { serve(client) }
+            val ip = client.inetAddress.hostAddress?.removePrefix("::ffff:") ?: ""
+            val admitted = synchronized(open) {
+                val mine = open[ip] ?: 0
+                if (mine >= MAX_PER_ADDRESS || open.values.sum() >= MAX_CONNECTIONS) {
+                    false
+                } else {
+                    open[ip] = mine + 1
+                    true
+                }
+            }
+            if (!admitted) {
+                runCatching { client.close() }
+                continue
+            }
+            scope.launch {
+                try {
+                    serve(client)
+                } finally {
+                    synchronized(open) {
+                        val left = (open[ip] ?: 1) - 1
+                        if (left <= 0) open.remove(ip) else open[ip] = left
+                    }
+                }
+            }
         }
     }
 
     private suspend fun serve(socket: Socket) {
         try {
-            socket.soTimeout = 60_000
+            socket.soTimeout = HEAD_TIMEOUT_MS
             var fingerprint: String? = null
             if (socket is SSLSocket) {
                 socket.startHandshake()
@@ -121,21 +147,34 @@ class HttpServer(
             val output = BufferedOutputStream(socket.getOutputStream(), 64 * 1024)
             val remoteIp = socket.inetAddress.hostAddress?.removePrefix("::ffff:") ?: ""
             while (true) {
-                val requestLine = readLine(input) ?: break
+                // The request line and headers must arrive promptly, and be small.
+                socket.soTimeout = HEAD_TIMEOUT_MS
+                val deadline = System.nanoTime() + HEAD_TIMEOUT_MS * 1_000_000L
+                val requestLine = readLine(input, deadline) ?: break
                 if (requestLine.isBlank()) continue
                 val parts = requestLine.split(" ")
                 if (parts.size < 3) break
                 val headers = mutableMapOf<String, String>()
+                var headBytes = requestLine.length
                 while (true) {
-                    val line = readLine(input) ?: return
+                    val line = readLine(input, deadline) ?: return
                     if (line.isEmpty()) break
+                    headBytes += line.length
+                    if (headers.size >= MAX_HEADERS || headBytes > MAX_HEAD_BYTES) throw IOException("request head too large")
                     val colon = line.indexOf(':')
                     if (colon > 0) headers[line.substring(0, colon).trim().lowercase()] = line.substring(colon + 1).trim()
                 }
-                val (path, query) = parseTarget(parts[1])
+                socket.soTimeout = BODY_TIMEOUT_MS
+                val target = runCatching { parseTarget(parts[1]) }.getOrNull()
+                val length = headers["content-length"]?.let { it.toLongOrNull()?.takeIf { n -> n >= 0 } ?: -1L }
+                if (target == null || length == -1L) {
+                    write(output, HttpResponse.error(400, "Bad request"), close = true)
+                    break
+                }
+                val (path, query) = target
                 val body: InputStream = when {
                     headers["transfer-encoding"]?.contains("chunked", true) == true -> ChunkedInputStream(input)
-                    headers["content-length"] != null -> BoundedInputStream(input, headers["content-length"]!!.toLong())
+                    length != null -> BoundedInputStream(input, length)
                     else -> BoundedInputStream(input, 0)
                 }
                 if (headers["expect"].equals("100-continue", true)) {
@@ -170,6 +209,9 @@ class HttpServer(
         } catch (_: SocketTimeoutException) {
         } catch (e: IOException) {
             Log.d(TAG, "connection ended: ${e.message}")
+        } catch (e: Exception) {
+            // A malformed request must never take the app down.
+            Log.w(TAG, "bad request", e)
         } finally {
             runCatching { socket.close() }
         }
@@ -190,6 +232,12 @@ class HttpServer(
 
     companion object {
         private const val TAG = "HttpServer"
+        private const val MAX_CONNECTIONS = 32
+        private const val MAX_PER_ADDRESS = 8
+        private const val MAX_HEADERS = 100
+        private const val MAX_HEAD_BYTES = 32 * 1024
+        private const val HEAD_TIMEOUT_MS = 15_000
+        private const val BODY_TIMEOUT_MS = 60_000
 
         private fun reason(status: Int) = when (status) {
             200 -> "OK"; 204 -> "No Content"; 400 -> "Bad Request"; 401 -> "Unauthorized"; 403 -> "Forbidden"
@@ -197,9 +245,10 @@ class HttpServer(
             else -> "Status"
         }
 
-        fun readLine(input: InputStream): String? {
+        fun readLine(input: InputStream, deadline: Long = Long.MAX_VALUE): String? {
             val bytes = ByteArrayOutputStream()
             while (true) {
+                if (System.nanoTime() > deadline) throw SocketTimeoutException("request head too slow")
                 val b = input.read()
                 if (b < 0) return if (bytes.size() == 0) null else bytes.toString(Charsets.ISO_8859_1.name())
                 if (b == '\n'.code) break
