@@ -51,7 +51,16 @@ jobs:
           REQUESTED_VERSION: ${{ inputs.version || (github.event_name == 'push' && github.ref_name) || '' }}
         run: |
           args=()
-          if [ "$GITHUB_EVENT_NAME" = workflow_run ]; then args+=(--automatic); fi
+          if [ "$GITHUB_EVENT_NAME" = workflow_run ]; then
+            # Check the live tip after waiting for the release concurrency group.
+            # Keep this guard here: an older checkout may predate script fixes.
+            main_sha=$(git ls-remote --exit-code origin refs/heads/main | cut -f1)
+            if [ "$(git rev-parse HEAD)" != "$main_sha" ]; then
+              echo "::error::Refusing to release stale CI commit; run CI on the current main tip."
+              exit 1
+            fi
+            args+=(--automatic)
+          fi
           python3 .github/scripts/release_version.py select "$REQUESTED_VERSION" "${args[@]}" >> "$GITHUB_OUTPUT"
 
   linux:
