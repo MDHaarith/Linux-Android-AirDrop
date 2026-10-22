@@ -19,6 +19,10 @@ import io.github.mdhaarith.airbridge.ui.AppViewModel
 class MainActivity : ComponentActivity() {
     private val vm: AppViewModel by viewModels()
     private val notificationPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
+    private val photoAccess = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { granted ->
+        // Asked for by the edge panel: back to the app the person was in.
+        if (granted.values.any { it }) moveTaskToBack(true)
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
@@ -49,9 +53,12 @@ class MainActivity : ComponentActivity() {
     /** A tap on an incoming-request notification. ("Share → AirBridge" opens ShareSheetActivity.) */
     private fun handleIntent(intent: Intent?) {
         intent?.getStringExtra(EXTRA_TRANSFER)?.let { vm.showIncoming(it) }
+        if (intent?.action == ACTION_ASK_PHOTOS && !canReadPhotos(this)) photoAccess.launch(photoPermissions)
     }
 
     companion object {
         const val EXTRA_TRANSFER = "transfer"
+        /** From the edge panel: ask for photo access so it can offer the latest photo. */
+        const val ACTION_ASK_PHOTOS = "io.github.mdhaarith.airbridge.action.ASK_PHOTOS"
     }
 }

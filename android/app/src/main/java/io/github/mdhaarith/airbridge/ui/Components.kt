@@ -103,21 +103,23 @@ fun SecondaryButton(text: String, icon: ImageVector? = null, modifier: Modifier 
     }
 }
 
-/** A tile with a blue glyph over a short label, like the action buttons on an iOS contact card. */
+/** A tile with a blue glyph in a tinted circle over a short label, like the buttons on an iOS contact card. */
 @Composable
 fun ActionTile(text: String, icon: ImageVector, modifier: Modifier = Modifier, onClick: () -> Unit) {
     val air = LocalAir.current
     Column(
         modifier
-            .clip(RoundedCornerShape(12.dp))
+            .clip(RoundedCornerShape(14.dp))
             .background(air.card)
             .pressable(onClick)
-            .padding(vertical = 10.dp),
+            .padding(vertical = 12.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        Icon(icon, null, tint = air.accent, modifier = Modifier.size(24.dp))
-        Spacer(Modifier.height(4.dp))
-        Text(text, color = air.accent, fontSize = 12.sp, fontWeight = FontWeight.Medium, maxLines = 1)
+        Box(Modifier.size(40.dp).clip(CircleShape).background(air.accent.copy(alpha = 0.12f)), contentAlignment = Alignment.Center) {
+            Icon(icon, null, tint = air.accent, modifier = Modifier.size(21.dp))
+        }
+        Spacer(Modifier.height(6.dp))
+        Text(text, color = air.text, fontSize = 12.sp, fontWeight = FontWeight.Medium, maxLines = 1)
     }
 }
 

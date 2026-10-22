@@ -1,7 +1,5 @@
 package io.github.mdhaarith.airbridge.ui
 
-import android.Manifest
-import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Column
@@ -38,6 +36,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import io.github.mdhaarith.airbridge.BuildConfig
 import io.github.mdhaarith.airbridge.core.Discovery
 import io.github.mdhaarith.airbridge.overlay.EdgePanel
+import io.github.mdhaarith.airbridge.photoPermissions
 import io.github.mdhaarith.airbridge.service.AirBridgeService
 
 @Composable
@@ -51,13 +50,6 @@ fun SettingsScreen(vm: AppViewModel) {
     var renaming by remember { mutableStateOf(false) }
     var pinning by remember { mutableStateOf(false) }
 
-    val photoPermissions = remember {
-        when {
-            Build.VERSION.SDK_INT >= 34 -> arrayOf(Manifest.permission.READ_MEDIA_IMAGES, Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED)
-            Build.VERSION.SDK_INT >= 33 -> arrayOf(Manifest.permission.READ_MEDIA_IMAGES)
-            else -> arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE)
-        }
-    }
     val askPhotos = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { }
 
     Column(Modifier.fillMaxSize().statusBarsPadding()) {

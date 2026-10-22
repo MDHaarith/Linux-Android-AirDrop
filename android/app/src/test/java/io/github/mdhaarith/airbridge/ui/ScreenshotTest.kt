@@ -115,6 +115,15 @@ class ScreenshotTest {
     @Test
     fun homeLight() = shoot(dark = false) { AirBridgeRoot(AppViewModel(engine())) }
 
+    /** A first run: just your laptop, nothing sent yet. */
+    @Test
+    fun homeFirstRun() {
+        val engine = Engine(FakePlatform(tmp.newFolder(), "Pixel 8"))
+        engine.upsertPeer(DeviceInfo("MDHLaptop", deviceModel = "Fedora", deviceType = "laptop", fingerprint = laptop), "192.168.1.20", verified = true)
+        engine.settings.update { it.copy(trusted = setOf(laptop)) }
+        shoot(dark = false) { AirBridgeRoot(AppViewModel(engine)) }
+    }
+
     @Test
     fun pickADevice() {
         val vm = AppViewModel(engine())
