@@ -11,7 +11,10 @@ on:
         required: true
 
 permissions:
-  contents: write
+  contents: read
+
+env:
+  VERSION: ${{ inputs.version || github.ref_name }}
 
 # Runs for one version wait for each other, so the tag check below cannot race.
 concurrency:
@@ -19,11 +22,10 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  build:
+  prepare:
+    name: Validate release
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
-    env:
-      VERSION: ${{ inputs.version || github.ref_name }}
+    timeout-minutes: 5
     steps:
       - name: Check the version
         if: github.event_name == 'workflow_dispatch'
@@ -40,23 +42,72 @@ jobs:
             echo "$VERSION is already tagged at $tagged, not at $GITHUB_SHA. Pick a new version."
             exit 1
           fi
-      - run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libxdo-dev libgtk-layer-shell-dev
+
+  linux:
+    name: Linux release
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - name: System libraries (native window feature)
+        timeout-minutes: 5
+        run: bash .github/scripts/install-system-deps.sh libwebkit2gtk-4.1-dev libgtk-3-dev libxdo-dev libgtk-layer-shell-dev
       - uses: dtolnay/rust-toolchain@stable
-      - uses: actions/setup-java@v5
+      # Match CI's linux job id and workspace to reuse its dependency cache.
+      - uses: Swatinem/rust-cache@v2
         with:
-          distribution: temurin
-          java-version: 17
-      - uses: gradle/actions/setup-gradle@v5
+          workspaces: linux
       - name: Linux binary
         working-directory: linux
         run: |
           cargo build --release --locked --features webview,edge
           tar -C target/release -czf ../airbridge-linux-x86_64.tar.gz airbridge
+      - uses: actions/upload-artifact@v6
+        with:
+          name: release-linux-x86_64
+          path: airbridge-linux-x86_64.tar.gz
+          if-no-files-found: error
+
+  android:
+    name: Android release
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: gradle/actions/setup-gradle@v5
       - name: Android APK
         working-directory: android
         run: |
           ./gradlew --no-daemon assembleRelease
           cp app/build/outputs/apk/release/app-release.apk ../airbridge-android.apk
+      - uses: actions/upload-artifact@v6
+        with:
+          name: release-android
+          path: airbridge-android.apk
+          if-no-files-found: error
+
+  publish:
+    name: Publish release
+    needs: [linux, android]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: release-*
+          merge-multiple: true
+      - name: Check release assets
+        run: |
+          test -s airbridge-linux-x86_64.tar.gz
+          test -s airbridge-android.apk
       - uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ env.VERSION }}

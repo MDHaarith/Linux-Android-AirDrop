@@ -20,7 +20,8 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - name: System libraries (native window feature)
-        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libxdo-dev libgtk-layer-shell-dev dbus
+        timeout-minutes: 5
+        run: bash ../.github/scripts/install-system-deps.sh libwebkit2gtk-4.1-dev libgtk-3-dev libxdo-dev libgtk-layer-shell-dev dbus
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
@@ -58,8 +59,11 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: linux
+      - name: System libraries (interop test)
+        timeout-minutes: 5
+        run: bash .github/scripts/install-system-deps.sh libwayland-dev
       - name: Build the Linux binary for the interop test
-        run: sudo apt-get update && sudo apt-get install -y libwayland-dev && cargo build --locked
+        run: cargo build --locked
         working-directory: linux
       - name: Unit, interop and screenshot tests
         working-directory: android
