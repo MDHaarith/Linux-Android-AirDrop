@@ -27,6 +27,7 @@ mod transfers;
 #[cfg(feature = "tray")]
 mod tray;
 mod ui;
+mod update;
 #[cfg(feature = "webview")]
 mod window;
 
@@ -157,13 +158,27 @@ fn main() -> ExitCode {
         };
     }
     let runtime = tokio::runtime::Runtime::new().expect("tokio runtime");
-    match runtime.block_on(run(cli)) {
+    let code = match runtime.block_on(run(cli)) {
         Ok(code) => code,
         Err(err) => {
             eprintln!("airbridge: {err:#}");
             ExitCode::FAILURE
         }
+    };
+    if update::RESTART.load(std::sync::atomic::Ordering::Relaxed) {
+        // Close every socket first so the new version can take the ports.
+        runtime.shutdown_timeout(Duration::from_secs(3));
+        if let Some(appimage) = update::appimage() {
+            use std::os::unix::process::CommandExt;
+            if let Err(err) = std::process::Command::new(appimage)
+                .process_group(0)
+                .spawn()
+            {
+                eprintln!("airbridge: could not restart after the update: {err}");
+            }
+        }
     }
+    code
 }
 
 async fn run(cli: Cli) -> Result<ExitCode> {

@@ -36,6 +36,10 @@ jobs:
       # The drop zone's pure logic and its offscreen renders (snapshots are uploaded).
       - run: "cargo test --locked --features edge edge::"
       - run: cargo build --release --locked --features webview,edge
+        env:
+          # Lets the in-app updater tell which main build this is.
+          AIRBRIDGE_BUILD: ${{ github.run_number }}
+      - run: packaging/appimage.sh target/release/airbridge
       - uses: actions/upload-artifact@v6
         with:
           name: edge-snapshots
@@ -43,7 +47,7 @@ jobs:
       - uses: actions/upload-artifact@v6
         with:
           name: airbridge-linux-x86_64
-          path: linux/target/release/airbridge
+          path: linux/airbridge-x86_64.AppImage
 
   android:
     name: Android app + interop with Linux
@@ -104,14 +108,24 @@ jobs:
         with:
           name: airbridge-android-apk
           path: release
-      - name: Package release assets
+      - name: Package and sign release assets
+        env:
+          UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
+          TAG: main-${{ github.run_number }}
         run: |
-          test -s release/airbridge
+          test -s release/airbridge-x86_64.AppImage
           test -s release/app-release.apk
+          [ -n "$UPDATE_SIGNING_KEY" ] || { echo "UPDATE_SIGNING_KEY secret is missing; refusing to publish an unsigned build"; exit 1; }
           # Artifact downloads do not preserve the Linux executable bit.
-          chmod +x release/airbridge
-          tar -C release -czf airbridge-linux-x86_64.tar.gz airbridge
+          install -m755 release/airbridge-x86_64.AppImage airbridge-x86_64.AppImage
           cp release/app-release.apk airbridge-android.apk
+          # The in-app updater checks this: the AppImage, a newline, then its tag.
+          umask 077
+          printf '%s\n' "$UPDATE_SIGNING_KEY" > "$RUNNER_TEMP/key.pem"
+          { cat airbridge-x86_64.AppImage; printf '\n%s' "$TAG"; } > "$RUNNER_TEMP/message"
+          openssl pkeyutl -sign -rawin -inkey "$RUNNER_TEMP/key.pem" -in "$RUNNER_TEMP/message" -out airbridge-x86_64.AppImage.sig
+          rm -f "$RUNNER_TEMP/key.pem" "$RUNNER_TEMP/message"
+          test "$(stat -c %s airbridge-x86_64.AppImage.sig)" -eq 64
       - uses: softprops/action-gh-release@v3
         with:
           tag_name: main-${{ github.run_number }}
@@ -126,9 +140,10 @@ jobs:
 
             **Downloads**
             - `airbridge-android.apk`: Android 10 or newer.
-            - `airbridge-linux-x86_64.tar.gz`: unpack and run `./airbridge`.
+            - `airbridge-x86_64.AppImage`: make it executable and run it. It updates itself from the app's Update button.
 
             The APK uses a debug signing key; Android may require uninstalling the previous build before installation.
           files: |
-            airbridge-linux-x86_64.tar.gz
+            airbridge-x86_64.AppImage
+            airbridge-x86_64.AppImage.sig
             airbridge-android.apk

@@ -210,6 +210,43 @@ async fn stage(name: &str, data: &[u8]) -> Result<SendItem> {
     })
 }
 
+/// Downloads `url` into memory over HTTPS only (redirects included), up to `max` bytes.
+pub async fn download(url: &str, max: u64) -> Result<Vec<u8>> {
+    let mut uri: Uri = url.parse().context("not a valid link")?;
+    for _ in 0..=MAX_REDIRECTS {
+        if uri.scheme_str() != Some("https") {
+            bail!("refusing a non-HTTPS download");
+        }
+        let response = get(&uri).await?;
+        let status = response.status();
+        if status.is_redirection() {
+            let location = response
+                .headers()
+                .get(hyper::header::LOCATION)
+                .and_then(|v| v.to_str().ok())
+                .ok_or_else(|| anyhow!("redirect without a location"))?;
+            uri = resolve(&uri, location)?;
+            continue;
+        }
+        if status != StatusCode::OK {
+            bail!("the server answered {status}");
+        }
+        let mut stream = response.into_body().into_data_stream();
+        let mut data = Vec::new();
+        while let Some(chunk) = timeout(IO_TIMEOUT, stream.next())
+            .await
+            .map_err(|_| anyhow!("the download stalled"))?
+        {
+            data.extend_from_slice(&chunk?);
+            if data.len() as u64 > max {
+                bail!("the download is too large");
+            }
+        }
+        return Ok(data);
+    }
+    bail!("too many redirects")
+}
+
 async fn stage_stream(name: &str, body: hyper::body::Incoming) -> Result<SendItem> {
     let path = staging_path(name);
     tokio::fs::create_dir_all(path.parent().unwrap()).await?;

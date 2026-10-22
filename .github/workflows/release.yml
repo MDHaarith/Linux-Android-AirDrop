@@ -62,11 +62,11 @@ jobs:
         working-directory: linux
         run: |
           cargo build --release --locked --features webview,edge
-          tar -C target/release -czf ../airbridge-linux-x86_64.tar.gz airbridge
+          packaging/appimage.sh target/release/airbridge ..
       - uses: actions/upload-artifact@v6
         with:
           name: release-linux-x86_64
-          path: airbridge-linux-x86_64.tar.gz
+          path: airbridge-x86_64.AppImage
           if-no-files-found: error
 
   android:
@@ -106,7 +106,8 @@ jobs:
           merge-multiple: true
       - name: Check release assets
         run: |
-          test -s airbridge-linux-x86_64.tar.gz
+          test -s airbridge-x86_64.AppImage
+          chmod +x airbridge-x86_64.AppImage
           test -s airbridge-android.apk
       - uses: softprops/action-gh-release@v3
         with:
@@ -116,10 +117,10 @@ jobs:
           body: |
             **Downloads**
             - `airbridge-android.apk`: the Android app (Android 10 or newer). Allow installs from your browser or file manager when asked.
-            - `airbridge-linux-x86_64.tar.gz`: the Linux app. Unpack it and run `./airbridge`, or install it with `packaging/install.sh` from the source.
+            - `airbridge-x86_64.AppImage`: the Linux app. Make it executable and run it (needs GTK 3 and WebKitGTK 4.1, present on most desktops).
 
             The APK is signed with a debug key made for this build, not a private release key, so a newer release may need the old app uninstalled first. See [SECURITY.md](https://github.com/${{ github.repository }}/blob/${{ env.VERSION }}/docs/SECURITY.md).
           files: |
-            airbridge-linux-x86_64.tar.gz
+            airbridge-x86_64.AppImage
             airbridge-android.apk
           generate_release_notes: true

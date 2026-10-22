@@ -12,11 +12,14 @@ use wry::{DragDropEvent, WebViewBuilder};
 
 enum UserEvent {
     Drag(DragDropEvent),
+    /// The page asked to close (the service is restarting after an update).
+    Close,
 }
 
 pub fn run(url: &str) -> Result<()> {
     let event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
     let proxy = event_loop.create_proxy();
+    let close = event_loop.create_proxy();
     let window = WindowBuilder::new()
         .with_title("AirBridge")
         .with_inner_size(LogicalSize::new(1120.0, 780.0))
@@ -25,6 +28,11 @@ pub fn run(url: &str) -> Result<()> {
 
     let builder = WebViewBuilder::new()
         .with_url(url)
+        .with_ipc_handler(move |request| {
+            if request.body() == "close" {
+                let _ = close.send_event(UserEvent::Close);
+            }
+        })
         .with_drag_drop_handler(move |event| {
             // WebKit also reports dragged browser URLs as paths. Let the DOM
             // handle those with the original URL instead of sending a file path.
@@ -55,7 +63,8 @@ pub fn run(url: &str) -> Result<()> {
             Event::WindowEvent {
                 event: WindowEvent::CloseRequested,
                 ..
-            } => *control_flow = ControlFlow::Exit,
+            }
+            | Event::UserEvent(UserEvent::Close) => *control_flow = ControlFlow::Exit,
             Event::UserEvent(UserEvent::Drag(event)) => {
                 let script = match event {
                     DragDropEvent::Drop {
