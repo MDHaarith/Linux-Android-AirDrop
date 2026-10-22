@@ -1,13 +1,11 @@
 package io.github.mdhaarith.airbridge.overlay
 
-import android.Manifest
 import android.annotation.SuppressLint
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.ContentUris
 import android.content.Context
 import android.content.Intent
-import android.content.pm.PackageManager
 import android.graphics.Canvas
 import android.graphics.Paint
 import android.graphics.PixelFormat
@@ -17,6 +15,7 @@ import android.os.Build
 import android.provider.MediaStore
 import android.provider.Settings
 import android.util.Size
+import android.view.ContentInfo
 import android.view.DragEvent
 import android.view.Gravity
 import android.view.KeyEvent
@@ -38,7 +37,6 @@ import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.ComposeView
 import androidx.compose.runtime.collectAsState
-import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleRegistry
 import androidx.lifecycle.setViewTreeLifecycleOwner
@@ -46,6 +44,8 @@ import androidx.savedstate.SavedStateRegistryController
 import androidx.savedstate.SavedStateRegistryOwner
 import androidx.savedstate.setViewTreeSavedStateRegistryOwner
 import io.github.mdhaarith.airbridge.AirBridgeApp
+import io.github.mdhaarith.airbridge.MainActivity
+import io.github.mdhaarith.airbridge.canReadPhotos
 import io.github.mdhaarith.airbridge.core.Log
 import io.github.mdhaarith.airbridge.core.Peer
 import io.github.mdhaarith.airbridge.core.Status
@@ -89,6 +89,10 @@ class EdgePanel(private val context: Context) {
     private var transferId by mutableStateOf<String?>(null)
     private var error by mutableStateOf<String?>(null)
 
+    // What keeps a drop's files readable (Android grants it with the drop and
+    // takes it back once this is gone), held until the next drop.
+    private var dropGrant: Any? = null
+
     private class Photo(val uri: Uri, val added: Long, val thumbnail: ImageBitmap?)
 
     private sealed interface Dropped {
@@ -104,7 +108,7 @@ class EdgePanel(private val context: Context) {
         val rightSide = engine.settings.value.edgeSide != "left"
         val metrics = context.resources.displayMetrics
         val params = WindowManager.LayoutParams(
-            dp(26), dp(120),
+            dp(HANDLE_WIDTH), dp(HANDLE_HEIGHT),
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
             PixelFormat.TRANSLUCENT,
@@ -202,7 +206,7 @@ class EdgePanel(private val context: Context) {
             val photo = photo
             add(
                 when {
-                    !canReadPhotos() -> EdgeAction(PHOTO, "Latest photo", "Allow photo access in AirBridge settings", Icons.Rounded.Image, enabled = false)
+                    !canReadPhotos(context) -> EdgeAction(PHOTO, "Latest photo", "Tap to allow photo access", Icons.Rounded.Image)
                     photo == null -> EdgeAction(PHOTO, "Latest photo", "No photos yet", Icons.Rounded.Image, enabled = false)
                     else -> EdgeAction(PHOTO, "Latest photo", timeAgo(photo.added), Icons.Rounded.Image, thumbnail = photo.thumbnail)
                 },
@@ -212,8 +216,11 @@ class EdgePanel(private val context: Context) {
 
     /** The chosen action, or the first one that has something to send. */
     private fun selection(actions: List<EdgeAction>): String? =
-        selected?.takeIf { key -> actions.any { it.key == key && it.enabled } }
-            ?: actions.firstOrNull { it.enabled && it.key != FILES }?.key
+        selected?.takeIf { key -> actions.any { it.key == key && it.enabled } && ready(key) }
+            ?: actions.firstOrNull { it.enabled && it.key != FILES && ready(it.key) }?.key
+
+    /** Whether choosing [key] sends something now (rather than asking for access first). */
+    private fun ready(key: String) = key != PHOTO || (canReadPhotos(context) && photo != null)
 
     private fun uiState(peers: List<Peer>, trusted: Set<String>, transfer: io.github.mdhaarith.airbridge.core.Transfer?): EdgePanelUi {
         val actions = actions()
@@ -240,20 +247,34 @@ class EdgePanel(private val context: Context) {
     }
 
     private fun select(key: String) {
-        if (key == FILES) {
-            close()
-            context.startActivity(
-                Intent(context, ShareSheetActivity::class.java)
-                    .setAction(ShareSheetActivity.ACTION_PICK)
-                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
-            )
-            return
+        when {
+            key == FILES -> pickFiles(null)
+            key == PHOTO && !canReadPhotos(context) -> {
+                close()
+                context.startActivity(
+                    Intent(context, MainActivity::class.java)
+                        .setAction(MainActivity.ACTION_ASK_PHOTOS)
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                )
+            }
+            else -> selected = key
         }
-        selected = key
+    }
+
+    /** Choose files in the system picker, then send them (to [peer] if given). */
+    private fun pickFiles(peer: Peer?) {
+        close()
+        context.startActivity(
+            Intent(context, ShareSheetActivity::class.java)
+                .setAction(ShareSheetActivity.ACTION_PICK)
+                .apply { if (peer != null) putExtra(ShareSheetActivity.EXTRA_PEER, peer.id) }
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+        )
     }
 
     private fun send(peer: Peer) {
-        val key = selection(actions()) ?: return
+        // Nothing copied, no photo: a device still does something, it asks what to send.
+        val key = selection(actions()) ?: return pickFiles(peer)
         error = null
         targetId = peer.id
         scope.launch {
@@ -287,17 +308,8 @@ class EdgePanel(private val context: Context) {
         clipboard = runCatching { manager.primaryClip?.getItemAt(0)?.coerceToText(context)?.toString() }.getOrNull()
     }
 
-    private fun canReadPhotos(): Boolean {
-        val permissions = when {
-            Build.VERSION.SDK_INT >= 34 -> listOf(Manifest.permission.READ_MEDIA_IMAGES, Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED)
-            Build.VERSION.SDK_INT >= 33 -> listOf(Manifest.permission.READ_MEDIA_IMAGES)
-            else -> listOf(Manifest.permission.READ_EXTERNAL_STORAGE)
-        }
-        return permissions.any { ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED }
-    }
-
     private fun loadPhoto() {
-        if (!canReadPhotos()) return
+        if (!canReadPhotos(context)) return
         scope.launch {
             photo = withContext(Dispatchers.IO) {
                 runCatching {
@@ -317,9 +329,13 @@ class EdgePanel(private val context: Context) {
         }
     }
 
-    /** Something was dropped on the handle (text, or files from another app). */
-    private fun onDrop(clip: ClipData?) {
+    /**
+     * Something was dropped on the handle (text, or files from another app).
+     * [grant] keeps the other app's files readable while we hold on to it.
+     */
+    private fun onDrop(clip: ClipData?, grant: Any? = null) {
         clip ?: return
+        dropGrant = grant
         val texts = mutableListOf<String>()
         val uris = mutableListOf<Uri>()
         for (i in 0 until clip.itemCount) {
@@ -336,7 +352,7 @@ class EdgePanel(private val context: Context) {
             texts.isNotEmpty() -> Dropped.Text(texts.joinToString("\n"))
             else -> null
         }
-        if (dropped == null && uris.isNotEmpty()) error = "That app doesn't let others read its files. Use Share → AirBridge instead."
+        error = if (dropped == null && uris.isNotEmpty()) "That app doesn't let others read its files. Use Share → AirBridge instead." else null
         selected = DROPPED.takeIf { dropped != null }
         open()
     }
@@ -348,13 +364,24 @@ class EdgePanel(private val context: Context) {
 
     private fun dp(value: Int) = (value * context.resources.displayMetrics.density).toInt()
 
-    /** The handle: a glowing pill you can drag along the edge. */
+    /**
+     * The handle: a quiet pill you can drag along the edge. While something
+     * is dragged anywhere on screen it grows into a "Drop to send" tab.
+     */
     @SuppressLint("ViewConstructor", "ClickableViewAccessibility")
     private inner class HandleView(context: Context) : View(context) {
         var rightSide = true
         private var hovering = false
+        private var expanded = false
+        private var restY = 0
         private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
         private val glow = Paint(Paint.ANTI_ALIAS_FLAG)
+        private val label = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = 0xFFFFFFFF.toInt()
+            textAlign = Paint.Align.CENTER
+            textSize = 13 * context.resources.displayMetrics.scaledDensity
+            isFakeBoldText = true
+        }
         private val slop = ViewConfiguration.get(context).scaledTouchSlop
         private var downX = 0f
         private var downY = 0f
@@ -363,18 +390,48 @@ class EdgePanel(private val context: Context) {
 
         init {
             contentDescription = "AirBridge edge panel"
+            if (Build.VERSION.SDK_INT >= 31) {
+                // Android reads a drop for us here and lends us the right to
+                // open the other app's files, which an overlay can't ask for itself.
+                // (Android refuses a bare "*/*" here, so name the families.)
+                setOnReceiveContentListener(DROP_TYPES) { _, payload: ContentInfo ->
+                    onDrop(payload.clip, grant = payload)
+                    null
+                }
+            }
             setOnDragListener { _, event ->
                 when (event.action) {
-                    DragEvent.ACTION_DRAG_STARTED -> true
+                    DragEvent.ACTION_DRAG_STARTED -> { expand(true); true }
                     DragEvent.ACTION_DRAG_ENTERED -> { hovering = true; invalidate(); true }
-                    DragEvent.ACTION_DRAG_EXITED, DragEvent.ACTION_DRAG_ENDED -> { hovering = false; invalidate(); true }
-                    DragEvent.ACTION_DROP -> { hovering = false; invalidate(); onDrop(event.clipData); true }
+                    DragEvent.ACTION_DRAG_EXITED -> { hovering = false; invalidate(); true }
+                    DragEvent.ACTION_DRAG_ENDED -> { hovering = false; expand(false); true }
+                    DragEvent.ACTION_DROP -> {
+                        hovering = false
+                        invalidate()
+                        // Android 12+ passes the drop, readable, to the content listener above.
+                        if (Build.VERSION.SDK_INT < 31 || !onDragEvent(event)) onDrop(event.clipData)
+                        true
+                    }
                     else -> true
                 }
             }
         }
 
+        /** A sliver at rest; a tab that is easy to hit while something is being dragged. */
+        private fun expand(on: Boolean) {
+            if (expanded == on) return
+            val params = layoutParams as? WindowManager.LayoutParams ?: return
+            if (on) restY = params.y
+            params.width = dp(if (on) EXPANDED_WIDTH else HANDLE_WIDTH)
+            params.height = dp(if (on) EXPANDED_HEIGHT else HANDLE_HEIGHT)
+            params.y = if (on) (restY - dp(EXPANDED_HEIGHT - HANDLE_HEIGHT) / 2).coerceAtLeast(0) else restY
+            expanded = on
+            runCatching { windows.updateViewLayout(this, params) }
+            invalidate()
+        }
+
         override fun onDraw(canvas: Canvas) {
+            if (expanded) return drawTab(canvas)
             val w = width.toFloat()
             val h = height.toFloat()
             val pill = dp(if (hovering) 12 else 5).toFloat()
@@ -388,6 +445,21 @@ class EdgePanel(private val context: Context) {
                 canvas.drawRoundRect(RectF(rect.left - dp(5), rect.top - dp(5), rect.right + dp(5), rect.bottom + dp(5)), pill, pill, glow)
             }
             canvas.drawRoundRect(rect, pill / 2, pill / 2, paint)
+        }
+
+        /** "Drop to send": a rounded tab against the screen edge, blue while something is over it. */
+        private fun drawTab(canvas: Canvas) {
+            val w = width.toFloat()
+            val h = height.toFloat()
+            val radius = dp(18).toFloat()
+            // Rounded on the inner side only: the outer corners run off the screen edge.
+            val rect = if (rightSide) RectF(dp(6).toFloat(), 0f, w + radius, h) else RectF(-radius, 0f, w - dp(6), h)
+            paint.color = if (hovering) HANDLE_ACTIVE else TAB_IDLE
+            canvas.drawRoundRect(rect, radius, radius, paint)
+            val cx = (if (rightSide) dp(6) + w else w - dp(6)) / 2
+            val line = label.textSize * 1.25f
+            canvas.drawText(if (hovering) "Release" else "Drop", cx, h / 2 - line * 0.15f, label)
+            canvas.drawText(if (hovering) "to send" else "here", cx, h / 2 + line * 0.85f, label)
         }
 
         override fun onTouchEvent(event: MotionEvent): Boolean {
@@ -451,6 +523,12 @@ class EdgePanel(private val context: Context) {
         private const val TAG = "EdgePanel"
         private const val HANDLE_IDLE = 0x998E8E93.toInt()
         private const val HANDLE_ACTIVE = 0xFF007AFF.toInt()
+        private const val TAB_IDLE = 0xE63A3A3C.toInt()
+        private const val HANDLE_WIDTH = 26
+        private const val HANDLE_HEIGHT = 120
+        private const val EXPANDED_WIDTH = 92
+        private const val EXPANDED_HEIGHT = 220
+        private val DROP_TYPES = arrayOf("image/*", "video/*", "audio/*", "text/*", "application/*", "font/*", "model/*")
         private const val CLIPBOARD = "clipboard"
         private const val PHOTO = "photo"
         private const val DROPPED = "dropped"

@@ -125,7 +125,7 @@ fun EdgePanelContent(
                             SharePhase.SENDING -> "Sending…"
                             SharePhase.DONE -> "Sent"
                             SharePhase.FAILED -> ui.error ?: "Couldn't send"
-                            else -> "Send to a nearby device"
+                            else -> if (ui.selected == null) "Tap a device to choose what to send" else "Send to a nearby device"
                         },
                         color = when (ui.phase) {
                             SharePhase.FAILED -> air.danger
@@ -205,7 +205,8 @@ private fun DeviceRow(peer: Peer, index: Int, ui: EdgePanelUi, onClick: () -> Un
         Modifier
             .fillMaxWidth()
             .graphicsLayer { alpha = dim * appear.value }
-            .pressable(onClick, enabled = ui.selected != null && !ui.busy && ui.phase != SharePhase.DONE)
+            // Always tappable: with nothing chosen above, the device asks what to send.
+            .pressable(onClick, enabled = !ui.busy && ui.phase != SharePhase.DONE)
             .padding(horizontal = 10.dp, vertical = 7.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
