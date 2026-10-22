@@ -671,7 +671,7 @@ async fn quit(State(app): State<Arc<App>>) -> StatusCode {
 async fn check_update() -> Response {
     match update::check().await {
         Ok(available) => Json(json!({
-            "current": update::current_build(),
+            "current": update::current_version(),
             "available": available,
             "canInstall": update::appimage().is_some(),
         }))

@@ -12,6 +12,7 @@ android/captures/
 android/.kotlin/
 
 # Editors / OS
+__pycache__/
 .DS_Store
 *.swp
 .vscode/

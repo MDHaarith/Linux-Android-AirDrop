@@ -61,11 +61,11 @@ requests cannot crash the app.
 
 ## Updates
 
-The Linux AppImage updates itself only from `main-N` prereleases on GitHub, over
+The Linux AppImage updates itself only from stable `vMAJOR.MINOR.PATCH` releases on GitHub, over
 HTTPS (system CA store, HTTPS-only redirects). CI signs each AppImage with an
 Ed25519 key kept in the `UPDATE_SIGNING_KEY` secret. The signature covers the
 file and its tag, and the public key is built into the app. A download with a
-bad signature, an older or equal build number, or one that is not an ELF file
+bad signature, an older or equal version, or one that is not an ELF file
 is rejected before anything is written. The swap is atomic (temp file, fsync,
 rename). Only the token-protected local UI can start an update.
 

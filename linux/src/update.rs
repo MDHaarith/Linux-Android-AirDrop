@@ -1,5 +1,5 @@
-//! In-app updates from the automatic `main-N` prereleases (every merge to main
-//! that passed CI). Only the AppImage replaces itself; the download must carry
+//! In-app updates from versioned releases (every merge to main that passed CI).
+//! Only the AppImage replaces itself; the download must carry
 //! an Ed25519 signature from the release key, bound to its tag so an older
 //! build cannot be replayed as a newer one.
 
@@ -25,11 +25,8 @@ const PUBLIC_KEY: [u8; 32] = [
 /// Set once a new AppImage is in place; `main` relaunches it after shutdown.
 pub static RESTART: AtomicBool = AtomicBool::new(false);
 
-/// CI run number of this build (0 for local builds).
-pub fn current_build() -> u64 {
-    option_env!("AIRBRIDGE_BUILD")
-        .and_then(|b| b.parse().ok())
-        .unwrap_or(0)
+pub fn current_version() -> &'static str {
+    env!("CARGO_PKG_VERSION")
 }
 
 /// The AppImage file we are running from, if any.
@@ -41,7 +38,6 @@ pub fn appimage() -> Option<PathBuf> {
 
 #[derive(Serialize, Clone)]
 pub struct Available {
-    pub build: u64,
     pub tag: String,
     pub page: String,
     #[serde(skip)]
@@ -56,6 +52,8 @@ struct Release {
     html_url: String,
     #[serde(default)]
     draft: bool,
+    #[serde(default)]
+    prerelease: bool,
     assets: Vec<Asset>,
 }
 
@@ -65,39 +63,58 @@ struct Asset {
     browser_download_url: String,
 }
 
-fn main_build(tag: &str) -> Option<u64> {
-    tag.strip_prefix("main-")?.parse().ok()
+fn version(tag: &str) -> Option<[u64; 3]> {
+    let mut parts = tag.strip_prefix('v')?.split('.');
+    let number = |part: &str| {
+        if part.is_empty()
+            || (part.len() > 1 && part.starts_with('0'))
+            || !part.bytes().all(|b| b.is_ascii_digit())
+        {
+            return None;
+        }
+        part.parse().ok()
+    };
+    let parsed = [
+        number(parts.next()?)?,
+        number(parts.next()?)?,
+        number(parts.next()?)?,
+    ];
+    parts.next().is_none().then_some(parsed)
 }
 
-/// The newest main build that is newer than this one and ships a signed AppImage.
+/// The newest stable version that is newer than this one and ships a signed AppImage.
 pub async fn check() -> Result<Option<Available>> {
     let url = format!("https://api.github.com/repos/{REPO}/releases?per_page=20");
     let releases: Vec<Release> = serde_json::from_slice(&download(&url, 4 * 1024 * 1024).await?)
         .context("unexpected answer from GitHub")?;
-    Ok(newest(releases, current_build()))
+    Ok(newest(releases, current_version()))
 }
 
-fn newest(releases: Vec<Release>, current: u64) -> Option<Available> {
+fn newest(releases: Vec<Release>, current: &str) -> Option<Available> {
+    let current = version(&format!("v{current}"))?;
     releases
         .into_iter()
-        .filter(|r| !r.draft)
+        .filter(|r| !r.draft && !r.prerelease)
         .filter_map(|r| {
-            let build = main_build(&r.tag_name).filter(|&b| b > current)?;
+            let release_version = version(&r.tag_name).filter(|&v| v > current)?;
             let url = |name: &str| {
                 r.assets
                     .iter()
                     .find(|a| a.name == name)
                     .map(|a| a.browser_download_url.clone())
             };
-            Some(Available {
-                build,
-                app_url: url(ASSET)?,
-                sig_url: url(&format!("{ASSET}.sig"))?,
-                tag: r.tag_name,
-                page: r.html_url,
-            })
+            Some((
+                release_version,
+                Available {
+                    app_url: url(ASSET)?,
+                    sig_url: url(&format!("{ASSET}.sig"))?,
+                    tag: r.tag_name,
+                    page: r.html_url,
+                },
+            ))
         })
-        .max_by_key(|a| a.build)
+        .max_by_key(|(v, _)| *v)
+        .map(|(_, available)| available)
 }
 
 /// What the signature covers: the file, then a newline and its tag.
@@ -165,11 +182,12 @@ mod tests {
     }
 
     #[test]
-    fn picks_the_newest_signed_main_build() {
+    fn picks_the_newest_signed_stable_version() {
         let release = |tag: &str, names: &[&str]| Release {
             tag_name: tag.into(),
             html_url: format!("https://example/{tag}"),
             draft: false,
+            prerelease: false,
             assets: names
                 .iter()
                 .map(|n| Asset {
@@ -181,13 +199,31 @@ mod tests {
         let signed = [ASSET, "airbridge-x86_64.AppImage.sig"];
         let releases = || {
             vec![
-                release("main-50", &[ASSET]), // unsigned: skipped
+                release("v9.0.0", &[ASSET]), // unsigned: skipped
                 release("main-42", &signed),
-                release("v0.2.0", &signed),
-                release("main-40", &signed),
+                release("v0.1.5", &signed),
+                release("v0.1.9", &signed),
+                release("v0.1.10", &signed),
+                release("v0.2.0-rc.1", &signed),
+                release("v0.01.99", &signed),
+                Release {
+                    draft: true,
+                    ..release("v1.0.0", &signed)
+                },
+                Release {
+                    prerelease: true,
+                    ..release("v2.0.0", &signed)
+                },
             ]
         };
-        assert_eq!(newest(releases(), 41).unwrap().tag, "main-42");
-        assert!(newest(releases(), 42).is_none());
+        assert_eq!(newest(releases(), "0.1.5").unwrap().tag, "v0.1.10");
+        assert!(newest(releases(), "0.1.10").is_none());
+        assert!(newest(releases(), "0.2.0").is_none());
+        assert_eq!(
+            newest(vec![release("v0.2.0", &signed)], "0.1.99")
+                .unwrap()
+                .tag,
+            "v0.2.0"
+        );
     }
 }

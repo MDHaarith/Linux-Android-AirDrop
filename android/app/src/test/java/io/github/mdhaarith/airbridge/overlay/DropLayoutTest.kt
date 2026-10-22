@@ -6,13 +6,15 @@ import android.view.DragEvent
 import android.view.View
 import android.widget.FrameLayout
 import app.cash.paparazzi.Paparazzi
+import app.cash.paparazzi.HtmlReportWriter
 import org.junit.Assert.assertEquals
 import org.junit.Rule
 import org.junit.Test
 
 class DropLayoutTest {
     @get:Rule
-    val paparazzi = Paparazzi()
+    // Render to drive View dispatch, without comparing an image baseline.
+    val paparazzi = Paparazzi(snapshotHandler = HtmlReportWriter())
 
     @Test
     fun deviceCardReceivesDropEvenWhenAChildHandlesDragEvents() {

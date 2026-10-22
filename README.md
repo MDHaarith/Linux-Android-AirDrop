@@ -135,9 +135,10 @@ chmod +x airbridge-x86_64.AppImage && ./airbridge-x86_64.AppImage
 ```
 
 It uses the system's GTK 3, WebKitGTK 4.1 and gtk-layer-shell, which most desktops already have.
-When a newer build of `main` passes CI, an **Update** button appears in the toolbar. It
+When a newer version is released after `main` passes CI, an **Update** button appears in the toolbar. It
 downloads the new AppImage, checks its Ed25519 signature against the key built into the app,
-swaps the file and restarts. Unsigned or older builds are refused.
+swaps the file and restarts. Unsigned or older versions are refused.
+If you installed an older `main-N` AppImage, download v0.1.5 once to switch to versioned updates.
 
 #### From source
 
@@ -319,7 +320,25 @@ on Android with LocalSend on Windows or a Mac.
 
 ## Development
 
+### Releases
+
+Every successful push CI run on `main` triggers the **Release** workflow. It chooses
+`v0.1.5` first, then `v0.1.6`, `v0.1.7`, and so on from the highest stable tag.
+Release runs queue so they cannot choose the same version. Retries reuse the tag
+already attached to that commit. Both app versions are stamped in the build checkout;
+the workflow does not create version-bump commits.
+
+The release contains the Android APK, the Linux AppImage and its Ed25519 signature.
+The repository's `UPDATE_SIGNING_KEY` secret must be configured. To choose a version
+manually, run **Release** from the Actions tab with e.g. `v0.2.0`, or push that tag.
+Leaving the manual version empty chooses the next patch automatically.
+
+### Checks
+
 ```bash
+# Release version selection and package stamping
+python3 -m unittest discover -s .github/scripts -p 'test_*.py'
+
 # Linux
 cd linux
 node tools/test-desktop-drop.js             # desktop drop recipient and broadcast regression check
