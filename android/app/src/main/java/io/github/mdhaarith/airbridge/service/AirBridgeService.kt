@@ -43,10 +43,18 @@ class AirBridgeService : LifecycleService() {
             engine.events.collect { event ->
                 when (event) {
                     is EngineEvent.Incoming -> engine.transfer(event.transferId)?.let { Notifications.incoming(this@AirBridgeService, it) }
-                    is EngineEvent.Message -> Notifications.message(this@AirBridgeService, event.transferId, event.from, event.text, event.copied)
+                    is EngineEvent.Message -> {
+                        Notifications.message(this@AirBridgeService, event.transferId, event.from, event.text, event.copied)
+                        val fromTrusted = engine.transfer(event.transferId)?.peerId?.let(engine::isTrusted) == true
+                        if (fromTrusted && engine.settings.value.openReceived) Opener.openLink(this@AirBridgeService, event.text)
+                    }
                     is EngineEvent.Finished -> {
                         progressShown.remove(event.transfer.id)
                         val t = event.transfer
+                        // From your own devices it just opens, like AirDrop.
+                        if (t.direction == Direction.IN && t.status == Status.DONE && t.autoAccepted && engine.settings.value.openReceived) {
+                            Opener.openReceived(this@AirBridgeService, t)
+                        }
                         // Received photos get a preview, like AirDrop's.
                         val picture = if (t.direction == Direction.IN && t.status == Status.DONE) {
                             withContext(Dispatchers.IO) { Notifications.thumbnail(this@AirBridgeService, t) }

@@ -7,6 +7,7 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.net.Uri
 import android.util.Size
 import androidx.core.app.NotificationCompat
@@ -14,7 +15,9 @@ import androidx.core.app.NotificationManagerCompat
 import io.github.mdhaarith.airbridge.MainActivity
 import io.github.mdhaarith.airbridge.R
 import io.github.mdhaarith.airbridge.core.Direction
+import io.github.mdhaarith.airbridge.core.Previews
 import io.github.mdhaarith.airbridge.core.Transfer
+import io.github.mdhaarith.airbridge.core.sharePhrase
 import io.github.mdhaarith.airbridge.ui.formatBytes
 
 object Notifications {
@@ -22,7 +25,7 @@ object Notifications {
     const val CHANNEL_REQUESTS = "requests"
     const val CHANNEL_TRANSFERS = "transfers"
     const val ID_VISIBLE = 1
-    private const val ACCENT = 0xFF7C6CFF.toInt()
+    private const val ACCENT = 0xFF007AFF.toInt()
 
     fun createChannels(context: Context) {
         val manager = context.getSystemService(NotificationManager::class.java)
@@ -76,13 +79,21 @@ object Notifications {
     @android.annotation.SuppressLint("MissingPermission")
     fun incoming(context: Context, t: Transfer) {
         if (!canPost(context)) return
-        val what = if (t.files.size == 1) t.files.first().name else "${t.files.size} files"
+        // Worded like AirDrop, with the photo itself when the sender included a preview.
+        val title = "“${t.peerAlias}” would like to share ${sharePhrase(t.files)}"
+        val picture = Previews.decode(t.files.firstNotNullOfOrNull { it.preview })?.let { BitmapFactory.decodeByteArray(it, 0, it.size) }
+        val style = if (picture != null) {
+            NotificationCompat.BigPictureStyle().bigPicture(picture).bigLargeIcon(null as Bitmap?)
+        } else {
+            NotificationCompat.BigTextStyle().bigText(t.files.take(6).joinToString("\n") { "• ${it.name}" })
+        }
         val notification = NotificationCompat.Builder(context, CHANNEL_REQUESTS)
             .setSmallIcon(R.drawable.ic_notification)
             .setColor(ACCENT)
-            .setContentTitle("${t.peerAlias} wants to share $what")
+            .setContentTitle(title)
             .setContentText(formatBytes(t.total))
-            .setStyle(NotificationCompat.BigTextStyle().bigText(t.files.take(6).joinToString("\n") { "• ${it.name}" }))
+            .setLargeIcon(picture)
+            .setStyle(style)
             .setCategory(NotificationCompat.CATEGORY_CALL)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setContentIntent(openApp(context, t.id))

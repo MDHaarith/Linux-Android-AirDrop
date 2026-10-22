@@ -28,7 +28,6 @@ import io.github.mdhaarith.airbridge.core.Peer
 import io.github.mdhaarith.airbridge.core.Status
 import io.github.mdhaarith.airbridge.service.AirBridgeService
 import io.github.mdhaarith.airbridge.ui.AirBridgeTheme
-import io.github.mdhaarith.airbridge.ui.Fx
 import io.github.mdhaarith.airbridge.ui.SharePhase
 import io.github.mdhaarith.airbridge.ui.SharePreview
 import io.github.mdhaarith.airbridge.ui.ShareSheetContent
@@ -58,13 +57,11 @@ class ShareSheetActivity : ComponentActivity() {
         if (savedInstanceState == null) handle(intent)
         setContent {
             AirBridgeTheme {
-                val fx = remember { Fx() }
                 val ui = vm.ui()
                 LaunchedEffect(vm.finished) { if (vm.finished) finish() }
                 BackHandler { dismiss(ui) }
                 ShareSheetContent(
                     ui = ui,
-                    fx = fx,
                     onPick = vm::send,
                     onDismiss = { dismiss(ui) },
                     onRetry = vm::retry,

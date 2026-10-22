@@ -59,6 +59,8 @@ data class TFile(
     val status: FileStatus = FileStatus.QUEUED,
     /** content:// of the source (sending) or of the saved file (received). */
     val uri: String? = null,
+    /** The sender's small preview (a data URL) while a request waits; never saved. */
+    @kotlinx.serialization.Transient val preview: String? = null,
 )
 
 @Serializable
@@ -76,6 +78,8 @@ data class Transfer(
     val created: Long = System.currentTimeMillis(),
     val started: Long? = null,
     val finished: Long? = null,
+    /** Accepted without asking because it came from one of your trusted devices. */
+    @kotlinx.serialization.Transient val autoAccepted: Boolean = false,
 ) {
     val total get() = files.filter { it.status != FileStatus.SKIPPED }.sumOf { it.size }
     val done get() = files.filter { it.status != FileStatus.SKIPPED }.sumOf { it.done }
@@ -221,7 +225,13 @@ class Engine(private val platform: Platform) {
         _transfers.update { list ->
             list.map { t ->
                 if (t.id != id || t.status.isFinal) t
-                else t.copy(status = status, error = error, finished = System.currentTimeMillis()).also { finished = it }
+                else t.copy(
+                    status = status,
+                    error = error,
+                    finished = System.currentTimeMillis(),
+                    // Previews only matter while a request waits.
+                    files = t.files.map { it.copy(preview = null) },
+                ).also { finished = it }
             }
         }
         sessions.remove(id)?.decision?.cancel()
@@ -247,9 +257,10 @@ class Engine(private val platform: Platform) {
         finish(id, Status.CANCELLED, "Cancelled")
     }
 
-    /** Fills the transfer list without any network activity (screenshot tests, previews). */
+    /** Fills the transfer list, and shows the phone as visible, without any network activity (screenshot tests, previews). */
     internal fun seedForPreview(list: List<Transfer>) {
         _transfers.value = list
+        _running.value = true
     }
 
     fun clearHistory() {
@@ -321,6 +332,7 @@ class Engine(private val platform: Platform) {
         val files = body.files.values.mapNotNull { it.sanitized() }
         if (files.isEmpty() || files.size != body.files.size) return HttpResponse.error(400, "Invalid files")
         upsertPeer(info, req.remoteIp)
+        val autoAccept = settings.value.autoAcceptTrusted && isTrusted(info.fingerprint)
 
         val base = Transfer(
             id = UUID.randomUUID().toString().take(12),
@@ -329,7 +341,8 @@ class Engine(private val platform: Platform) {
             peerAlias = info.alias,
             peerType = info.deviceType ?: "desktop",
             peerModel = info.deviceModel,
-            files = files.map { TFile(it.id, it.fileName, it.size, it.fileType) },
+            files = files.map { TFile(it.id, it.fileName, it.size, it.fileType, preview = Previews.accept(it.preview)) },
+            autoAccepted = autoAccept,
         )
 
         val text = files.singleOrNull()?.takeIf { it.isTextMessage }?.preview
@@ -343,7 +356,6 @@ class Engine(private val platform: Platform) {
 
         // The decision handle exists before the request becomes visible, so an
         // answer can never arrive "too early".
-        val autoAccept = settings.value.autoAcceptTrusted && isTrusted(info.fingerprint)
         val decision = if (autoAccept) null else CompletableDeferred<Boolean>()
         val session = Session(peerIp = req.remoteIp, sessionId = UUID.randomUUID().toString(), decision = decision)
         synchronized(this) {
@@ -499,9 +511,17 @@ class Engine(private val platform: Platform) {
 
     private suspend fun runSend(peer: Peer, id: String, session: Session) {
         val transfer = transfer(id) ?: return
+        // The first few photos travel with a small preview, so the other side
+        // sees what is coming before it accepts.
+        val previews = withContext(Dispatchers.IO) {
+            transfer.files.filter { transfer.message == null && it.uri != null && Previews.isPreviewable(it.mime) }
+                .take(Previews.MAX_PREVIEWS)
+                .mapNotNull { f -> runCatching { platform.thumbnail(f.uri!!, f.mime) }.getOrNull()?.let { f.id to Previews.dataUrl(it) } }
+                .toMap()
+        }
         val dtos = transfer.files.associate { f ->
             f.id to (if (transfer.message != null) FileDto.forText(transfer.message).copy(id = f.id, fileName = f.name)
-            else FileDto(f.id, f.name, f.size, f.mime))
+            else FileDto(f.id, f.name, f.size, f.mime, preview = previews[f.id]))
         }
         val body = Protocol.json.encodeToString(PrepareUploadRequest.serializer(), PrepareUploadRequest(me(), dtos))
         val pin = pins[peer.id]

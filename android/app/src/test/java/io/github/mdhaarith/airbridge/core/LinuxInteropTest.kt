@@ -7,7 +7,10 @@ import kotlinx.coroutines.withTimeoutOrNull
 import org.junit.After
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertTrue
 import org.junit.Assume.assumeTrue
 import org.junit.Before
 import org.junit.Rule
@@ -82,6 +85,21 @@ class LinuxInteropTest {
         return process.waitFor() to output
     }
 
+    /** Width and height from a JPEG's start-of-frame marker. */
+    private fun jpegSize(jpeg: ByteArray): Pair<Int, Int> {
+        var i = 2
+        while (i + 9 < jpeg.size) {
+            val marker = jpeg[i + 1].toInt() and 0xff
+            val length = ((jpeg[i + 2].toInt() and 0xff) shl 8) or (jpeg[i + 3].toInt() and 0xff)
+            if (marker in 0xc0..0xc2) {
+                fun u16(at: Int) = ((jpeg[at].toInt() and 0xff) shl 8) or (jpeg[at + 1].toInt() and 0xff)
+                return u16(i + 7) to u16(i + 5)
+            }
+            i += 2 + length
+        }
+        error("not a JPEG")
+    }
+
     private suspend fun awaitTransfer(predicate: (Transfer) -> Boolean): Transfer =
         engine.transfers.first { list -> list.any(predicate) }.first(predicate)
 
@@ -121,6 +139,7 @@ class LinuxInteropTest {
         File(folder, "sub/b.bin").writeBytes(payload)
         val (code, out) = cli("send", folder.path, "--to", "Kotlin Phone")
         assertEquals(out, 0, code)
+        assertTrue(engine.transfers.value.last { it.direction == Direction.IN && it.message == null }.autoAccepted)
         assertEquals("first", File(platform.downloads, "Album/a.txt").readText())
         assertArrayEquals(payload, File(platform.downloads, "Album/sub/b.bin").readBytes())
 
@@ -129,16 +148,25 @@ class LinuxInteropTest {
         assertEquals(textOut, 0, textCode)
         assertEquals("Clipboard from Linux", platform.clipboard.last())
 
-        // 6. Untrusted: the phone is asked, and declining is reported to the sender.
+        // 6. Untrusted: the phone is asked, with a preview of the photo like
+        //    AirDrop, and declining is reported to the sender.
         engine.settings.update { it.copy(trusted = emptySet()) }
-        val asked = Thread {
+        val picture = tmp.newFile("sunset.jpg").apply { writeBytes(LinuxInteropTest::class.java.getResource("/sunset.jpg")!!.readBytes()) }
+        var asked: Transfer? = null
+        val asking = Thread {
             runBlocking {
                 val incoming = withTimeout(20_000) { awaitTransfer { it.direction == Direction.IN && it.status == Status.WAITING } }
+                asked = incoming
                 engine.decide(incoming.id, accept = false)
             }
         }.apply { start() }
-        val (declinedCode, declinedOut) = cli("send", photo.path, "--to", "Kotlin Phone")
-        asked.join()
+        val (declinedCode, declinedOut) = cli("send", picture.path, "--to", "Kotlin Phone")
+        asking.join()
+        val preview = Previews.decode(asked!!.files.single().preview)
+        assertNotNull("the request carries a preview", preview)
+        assertEquals(360 to 240, jpegSize(preview!!))
+        assertEquals("a photo", sharePhrase(asked!!.files))
+        assertFalse(asked!!.autoAccepted)
         assertNotEquals(0, declinedCode)
         assert(declinedOut.contains("Declined", ignoreCase = true)) { declinedOut }
     }

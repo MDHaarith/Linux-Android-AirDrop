@@ -27,14 +27,12 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.ArrowDownward
 import androidx.compose.material.icons.rounded.ArrowUpward
-import androidx.compose.material.icons.rounded.DeleteSweep
 import androidx.compose.material.icons.rounded.Inbox
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
@@ -47,6 +45,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
@@ -70,26 +69,33 @@ fun ActivityScreen(vm: AppViewModel) {
     val transfers by vm.engine.transfers.collectAsStateWithLifecycle()
     val list = transfers.reversed()
     Column(Modifier.fillMaxSize().statusBarsPadding()) {
-        Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-            IconCircleButton(Icons.AutoMirrored.Rounded.ArrowBack, "Back") { vm.screen = Screen.HOME }
-            Spacer(Modifier.width(12.dp))
-            Text("Activity", color = air.text, fontWeight = FontWeight.Bold, fontSize = 22.sp, modifier = Modifier.weight(1f))
-            if (list.any { it.status.isFinal }) IconCircleButton(Icons.Rounded.DeleteSweep, "Clear finished") { vm.engine.clearHistory() }
+        NavBar("Activity", back = "AirBridge", onBack = { vm.screen = Screen.HOME }) {
+            if (list.any { it.status.isFinal }) BarTextButton("Clear") { vm.engine.clearHistory() }
         }
         if (list.isEmpty()) {
             Column(Modifier.fillMaxSize(), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
-                Icon(Icons.Rounded.Inbox, null, tint = air.faint, modifier = Modifier.size(56.dp))
+                Icon(Icons.Rounded.Inbox, null, tint = air.faint, modifier = Modifier.size(52.dp))
                 Spacer(Modifier.height(10.dp))
-                Text("Transfers will show up here", color = air.muted)
+                Text("No Activity", color = air.text, fontSize = 17.sp, fontWeight = FontWeight.SemiBold)
+                Text("Things you send and receive show up here.", color = air.muted, fontSize = 15.sp)
             }
             return
         }
+        // One grouped list, newest first, rows separated like iOS.
         LazyColumn(
             Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 32.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp),
+            contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 32.dp),
         ) {
-            items(list, key = { it.id }) { t -> TransferCard(t, vm, Modifier.animateItem()) }
+            itemsIndexed(list, key = { _, t -> t.id }) { i, t ->
+                val shape = RoundedCornerShape(
+                    topStart = if (i == 0) 12.dp else 0.dp, topEnd = if (i == 0) 12.dp else 0.dp,
+                    bottomStart = if (i == list.lastIndex) 12.dp else 0.dp, bottomEnd = if (i == list.lastIndex) 12.dp else 0.dp,
+                )
+                Column(Modifier.animateItem().clip(shape).background(air.card)) {
+                    if (i > 0) RowSeparator(68.dp)
+                    TransferRow(t, vm)
+                }
+            }
             item { Spacer(Modifier.navigationBarsPadding()) }
         }
     }
@@ -118,18 +124,18 @@ private fun shareOn(context: Context, files: List<TFile>) {
 }
 
 @Composable
-private fun TransferCard(t: Transfer, vm: AppViewModel, modifier: Modifier) {
+private fun TransferRow(t: Transfer, vm: AppViewModel) {
     val air = LocalAir.current
     val context = LocalContext.current
-    GlassCard(modifier.fillMaxWidth().animateContentSize()) {
+    Column(Modifier.fillMaxWidth().animateContentSize().padding(horizontal = 14.dp, vertical = 12.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Box {
-                Avatar(t.peerId, deviceIcon(t.peerType, t.peerModel), 40.dp)
+                Avatar(deviceIcon(t.peerType, t.peerModel), 42.dp)
                 Box(
-                    Modifier.align(Alignment.BottomEnd).size(18.dp).clip(CircleShape).background(air.solid),
+                    Modifier.align(Alignment.BottomEnd).size(18.dp).clip(CircleShape).background(air.card).padding(2.dp).clip(CircleShape).background(air.accent),
                     contentAlignment = Alignment.Center,
                 ) {
-                    Icon(if (t.direction == Direction.OUT) Icons.Rounded.ArrowUpward else Icons.Rounded.ArrowDownward, null, tint = Cyan, modifier = Modifier.size(12.dp))
+                    Icon(if (t.direction == Direction.OUT) Icons.Rounded.ArrowUpward else Icons.Rounded.ArrowDownward, null, tint = Color.White, modifier = Modifier.size(10.dp))
                 }
             }
             Spacer(Modifier.width(12.dp))
@@ -139,13 +145,13 @@ private fun TransferCard(t: Transfer, vm: AppViewModel, modifier: Modifier) {
                     t.files.size == 1 -> t.files.first().name
                     else -> "${t.files.size} files"
                 }
-                Text(title, color = air.text, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(title, color = air.text, fontSize = 16.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     when (t.status) {
-                        Status.DONE -> Pill(if (t.direction == Direction.OUT) "Sent" else "Received", Mint)
-                        Status.TRANSFERRING -> Pill(if (t.direction == Direction.OUT) "Sending" else "Receiving", Cyan)
-                        Status.WAITING -> Pill("Waiting", Cyan)
-                        else -> Pill(t.status.name.lowercase().replaceFirstChar { it.uppercase() }, Rose)
+                        Status.DONE -> Pill(if (t.direction == Direction.OUT) "Sent" else "Received", air.success)
+                        Status.TRANSFERRING -> Pill(if (t.direction == Direction.OUT) "Sending" else "Receiving", air.accent)
+                        Status.WAITING -> Pill("Waiting", air.accent)
+                        else -> Pill(t.status.name.lowercase().replaceFirstChar { it.uppercase() }, air.danger)
                     }
                     Spacer(Modifier.width(8.dp))
                     val detail = when (t.status) {
@@ -160,14 +166,15 @@ private fun TransferCard(t: Transfer, vm: AppViewModel, modifier: Modifier) {
         }
         if (t.message != null) {
             Spacer(Modifier.height(10.dp))
+            // A gray message bubble, like Messages.
             Text(
                 t.message,
                 color = air.text,
+                fontSize = 15.sp,
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(topStart = 14.dp, topEnd = 14.dp, bottomEnd = 14.dp, bottomStart = 4.dp))
-                    .background(air.surfaceStrong)
-                    .padding(12.dp),
+                    .clip(RoundedCornerShape(topStart = 18.dp, topEnd = 18.dp, bottomEnd = 18.dp, bottomStart = 5.dp))
+                    .background(air.fill)
+                    .padding(horizontal = 12.dp, vertical = 8.dp),
             )
         }
         val images = t.files.filter { it.mime.startsWith("image/") && it.uri != null && it.status == FileStatus.DONE }.take(4)
@@ -191,8 +198,8 @@ private fun TransferCard(t: Transfer, vm: AppViewModel, modifier: Modifier) {
         if (t.status == Status.TRANSFERRING) {
             Spacer(Modifier.height(10.dp))
             val progress by animateFloatAsState(t.progress, tween(300), label = "progress")
-            Box(Modifier.fillMaxWidth().height(6.dp).clip(RoundedCornerShape(50)).background(air.surfaceStrong)) {
-                Box(Modifier.fillMaxHeight().fillMaxWidth(progress).clip(RoundedCornerShape(50)).background(AccentGradient))
+            Box(Modifier.fillMaxWidth().height(4.dp).clip(RoundedCornerShape(50)).background(air.fill)) {
+                Box(Modifier.fillMaxHeight().fillMaxWidth(progress).clip(RoundedCornerShape(50)).background(air.accent))
             }
         }
         val received = t.direction == Direction.IN && t.status == Status.DONE && t.files.any { it.uri != null }
@@ -200,17 +207,17 @@ private fun TransferCard(t: Transfer, vm: AppViewModel, modifier: Modifier) {
             Spacer(Modifier.height(10.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 if (t.direction == Direction.IN && t.status == Status.WAITING) {
-                    GradientButton("Review", null, height = 36.dp) { vm.showIncoming(t.id) }
+                    PrimaryButton("Review", height = 32.dp) { vm.showIncoming(t.id) }
                 }
-                if (!t.status.isFinal) GhostButton(if (t.status == Status.WAITING && t.direction == Direction.IN) "Decline" else "Cancel", null, height = 36.dp) { vm.engine.cancel(t.id) }
+                if (!t.status.isFinal) SecondaryButton(if (t.status == Status.WAITING && t.direction == Direction.IN) "Decline" else "Cancel", height = 32.dp) { vm.engine.cancel(t.id) }
                 if (received) {
-                    GhostButton(if (t.files.size == 1) "Open" else "Downloads", null, height = 36.dp) {
+                    SecondaryButton(if (t.files.size == 1) "Open" else "Downloads", height = 32.dp) {
                         if (t.files.size == 1) open(context, t.files.first(), vm)
                         else context.startActivity(Intent(DownloadManager.ACTION_VIEW_DOWNLOADS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
                     }
-                    GhostButton("Share", null, height = 36.dp) { shareOn(context, t.files) }
+                    SecondaryButton("Share", height = 32.dp) { shareOn(context, t.files) }
                 }
-                if (t.message != null) GhostButton("Copy", null, height = 36.dp) {
+                if (t.message != null) SecondaryButton("Copy", height = 32.dp) {
                     vm.engine.copyToClipboard(t.message)
                     vm.toast("Copied")
                 }
@@ -229,7 +236,7 @@ private fun Thumbnail(file: TFile, onClick: () -> Unit) {
         }
     }
     val air = LocalAir.current
-    Box(Modifier.size(68.dp).clip(RoundedCornerShape(12.dp)).background(air.surfaceStrong).pressable(onClick)) {
+    Box(Modifier.size(68.dp).clip(RoundedCornerShape(8.dp)).background(air.fill).pressable(onClick)) {
         bitmap?.let { Image(it, file.name, Modifier.fillMaxSize(), contentScale = ContentScale.Crop) }
     }
 }

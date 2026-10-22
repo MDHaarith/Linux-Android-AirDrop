@@ -12,6 +12,8 @@ data class AppSettings(
     val port: Int = Protocol.DEFAULT_PORT,
     val autoAcceptTrusted: Boolean = true,
     val copyReceivedText: Boolean = true,
+    /** What your own (trusted) devices send opens right away, like AirDrop between your devices. */
+    val openReceived: Boolean = true,
     val pin: String = "",
     val trusted: Set<String> = emptySet(),
     /** Run the background service so the phone is visible and can receive. */

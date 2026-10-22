@@ -7,13 +7,10 @@ import androidx.activity.result.contract.ActivityResultContract
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalInspectionMode
 import androidx.core.app.ActivityOptionsCompat
 import app.cash.paparazzi.DeviceConfig
@@ -24,6 +21,7 @@ import io.github.mdhaarith.airbridge.core.Direction
 import io.github.mdhaarith.airbridge.core.Engine
 import io.github.mdhaarith.airbridge.core.FakePlatform
 import io.github.mdhaarith.airbridge.core.FileStatus
+import io.github.mdhaarith.airbridge.core.Previews
 import io.github.mdhaarith.airbridge.core.Status
 import io.github.mdhaarith.airbridge.core.TFile
 import io.github.mdhaarith.airbridge.core.Transfer
@@ -105,9 +103,9 @@ class ScreenshotTest {
         }
     }
 
-    private fun shoot(content: @Composable () -> Unit) = paparazzi.snapshot {
+    private fun shoot(dark: Boolean = true, content: @Composable () -> Unit) = paparazzi.snapshot {
         CompositionLocalProvider(LocalActivityResultRegistryOwner provides noResults, LocalInspectionMode provides true) {
-            AirBridgeTheme { content() }
+            AirBridgeTheme(dark = dark) { content() }
         }
     }
 
@@ -115,46 +113,76 @@ class ScreenshotTest {
     fun home() = shoot { AirBridgeRoot(AppViewModel(engine())) }
 
     @Test
+    fun homeLight() = shoot(dark = false) { AirBridgeRoot(AppViewModel(engine())) }
+
+    @Test
     fun pickADevice() {
         val vm = AppViewModel(engine())
         vm.stageText("Meeting notes: ship AirBridge 0.1 on Friday")
-        shoot { AirBridgeRoot(vm) }
+        shoot(dark = false) { AirBridgeRoot(vm) }
     }
 
     @Test
     fun activity() {
         val vm = AppViewModel(engine()).apply { screen = Screen.ACTIVITY }
-        shoot { AirBridgeRoot(vm) }
+        shoot(dark = false) { AirBridgeRoot(vm) }
     }
 
     @Test
     fun settings() {
         val vm = AppViewModel(engine()).apply { screen = Screen.SETTINGS }
-        shoot { AirBridgeRoot(vm) }
+        shoot(dark = false) { AirBridgeRoot(vm) }
+    }
+
+    /** A stand-in photo, as the sender's small JPEG preview (test resources). */
+    private fun photoPreview(name: String = "photo-wide.jpg") = Previews.dataUrl(javaClass.getResource("/$name")!!.readBytes())
+
+    private fun request(vararg files: TFile) =
+        Transfer("in", Direction.IN, laptop, "Mohamed's ThinkPad", "desktop", "Fedora", Status.WAITING, files.toList())
+
+    @Composable
+    private fun Dimmed(content: @Composable () -> Unit) {
+        Box(Modifier.fillMaxSize().background(LocalAir.current.bg)) {
+            AirBridgeRoot(AppViewModel(engine()))
+            Box(Modifier.fillMaxSize().background(androidx.compose.ui.graphics.Color.Black.copy(alpha = 0.4f)), contentAlignment = Alignment.Center) { content() }
+        }
     }
 
     @Test
-    fun incomingRequest() = shoot {
-        val air = LocalAir.current
-        Box(Modifier.fillMaxSize().background(air.bg)) {
-            Aurora(Modifier.fillMaxSize())
-            Box(
-                Modifier.align(Alignment.BottomCenter).clip(RoundedCornerShape(topStart = 28.dp(), topEnd = 28.dp())).background(air.solid).padding(top = 20.dp()),
-            ) {
-                IncomingContent(
-                    Transfer(
-                        "in", Direction.IN, laptop, "Mohamed's ThinkPad", "desktop", "Fedora", Status.WAITING,
-                        listOf(
-                            TFile("1", "Resume.pdf", 180_000, "application/pdf"),
-                            TFile("2", "Screenshot 2026-10-21.png", 1_200_000, "image/png"),
-                            TFile("3", "airbridge-0.1.0.apk", 5_900_000, "application/vnd.android.package-archive"),
-                        ),
-                    ),
-                    onDecline = {}, onAccept = {},
-                )
-            }
+    fun incomingRequest() = shoot(dark = false) {
+        Dimmed { IncomingContent(request(TFile("1", "IMG_4021.jpg", 2_400_000, "image/jpeg", preview = photoPreview())), onDecline = {}, onAccept = {}) }
+    }
+
+    @Test
+    fun incomingRequestDark() = shoot {
+        Dimmed { IncomingContent(request(TFile("1", "IMG_4021.jpg", 2_400_000, "image/jpeg", preview = photoPreview())), onDecline = {}, onAccept = {}) }
+    }
+
+    @Test
+    fun incomingPhotos() = shoot(dark = false) {
+        Dimmed {
+            IncomingContent(
+                request(
+                    TFile("1", "IMG_4021.jpg", 2_400_000, "image/jpeg", preview = photoPreview()),
+                    TFile("2", "IMG_4022.jpg", 2_100_000, "image/jpeg", preview = photoPreview("photo-square.jpg")),
+                    TFile("3", "IMG_4023.jpg", 1_900_000, "image/jpeg", preview = photoPreview("photo-tall.jpg")),
+                ),
+                onDecline = {}, onAccept = {},
+            )
+        }
+    }
+
+    @Test
+    fun incomingFiles() = shoot(dark = false) {
+        Dimmed {
+            IncomingContent(
+                request(
+                    TFile("1", "Resume.pdf", 180_000, "application/pdf"),
+                    TFile("2", "Screenshot 2026-10-21.png", 1_200_000, "image/png"),
+                    TFile("3", "airbridge-0.1.0.apk", 5_900_000, "application/vnd.android.package-archive"),
+                ),
+                onDecline = {}, onAccept = {},
+            )
         }
     }
 }
-
-private fun Int.dp() = androidx.compose.ui.unit.Dp(this.toFloat())

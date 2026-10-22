@@ -14,7 +14,7 @@ import androidx.core.content.pm.ShortcutManagerCompat
 import androidx.core.graphics.drawable.IconCompat
 import io.github.mdhaarith.airbridge.core.Log
 import io.github.mdhaarith.airbridge.core.Peer
-import io.github.mdhaarith.airbridge.ui.avatarColors
+import io.github.mdhaarith.airbridge.ui.LightAir
 
 /**
  * Nearby devices as Direct Share targets: they show up in the first row of
@@ -61,16 +61,16 @@ object DirectShare {
             .setRank(rank)
             .build()
 
-    /** An adaptive icon: the device's gradient with its glyph, like its bubble. */
+    /** An adaptive icon: a gray circle with the device's glyph, like its avatar in the app. */
     fun icon(context: Context, peer: Peer): Bitmap {
         val density = context.resources.displayMetrics.density
         val size = (108 * density).toInt().coerceAtLeast(108)
         val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
         val canvas = Canvas(bitmap)
-        val (a, b) = avatarColors(peer.id)
+        // The same gray as device avatars in the app.
         canvas.drawRect(
             0f, 0f, size.toFloat(), size.toFloat(),
-            Paint().apply { shader = LinearGradient(0f, 0f, size.toFloat(), size.toFloat(), a.toArgb(), b.toArgb(), Shader.TileMode.CLAMP) },
+            Paint().apply { shader = LinearGradient(0f, 0f, 0f, size.toFloat(), LightAir.avatarTop.toArgb(), LightAir.avatarBottom.toArgb(), Shader.TileMode.CLAMP) },
         )
         val stroke = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = android.graphics.Color.WHITE

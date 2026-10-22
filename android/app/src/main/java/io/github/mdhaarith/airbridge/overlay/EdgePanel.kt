@@ -9,11 +9,9 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Canvas
-import android.graphics.LinearGradient
 import android.graphics.Paint
 import android.graphics.PixelFormat
 import android.graphics.RectF
-import android.graphics.Shader
 import android.net.Uri
 import android.os.Build
 import android.provider.MediaStore
@@ -38,7 +36,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.ComposeView
 import androidx.compose.runtime.collectAsState
 import androidx.core.content.ContextCompat
@@ -57,10 +54,7 @@ import io.github.mdhaarith.airbridge.ui.AirBridgeTheme
 import io.github.mdhaarith.airbridge.ui.EdgeAction
 import io.github.mdhaarith.airbridge.ui.EdgePanelContent
 import io.github.mdhaarith.airbridge.ui.EdgePanelUi
-import io.github.mdhaarith.airbridge.ui.Fx
-import io.github.mdhaarith.airbridge.ui.Pink
 import io.github.mdhaarith.airbridge.ui.SharePhase
-import io.github.mdhaarith.airbridge.ui.Violet
 import io.github.mdhaarith.airbridge.ui.timeAgo
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -143,7 +137,6 @@ class EdgePanel(private val context: Context) {
         transferId = null
         loadPhoto()
         val owner = OverlayOwner().also { this.owner = it }
-        val fx = Fx()
         val compose = ComposeView(context).apply {
             setViewTreeLifecycleOwner(owner)
             setViewTreeSavedStateRegistryOwner(owner)
@@ -155,7 +148,7 @@ class EdgePanel(private val context: Context) {
                     val ui = remember(peers, transfers, settings, clipboard, photo, dropped, selected, targetId, transferId, error) {
                         uiState(peers, settings.trusted, transfers.firstOrNull { it.id == transferId })
                     }
-                    EdgePanelContent(ui, fx, onSelect = ::select, onPick = ::send, onClose = ::close)
+                    EdgePanelContent(ui, onSelect = ::select, onPick = ::send, onClose = ::close)
                 }
             }
         }
@@ -384,11 +377,11 @@ class EdgePanel(private val context: Context) {
             val pill = dp(if (hovering) 12 else 5).toFloat()
             val left = if (rightSide) w - pill - dp(2) else dp(2).toFloat()
             val rect = RectF(left, h * 0.08f, left + pill, h * 0.92f)
-            paint.shader = LinearGradient(0f, rect.top, 0f, rect.bottom, Violet.toArgb(), Pink.toArgb(), Shader.TileMode.CLAMP)
-            paint.alpha = if (hovering) 255 else 200
+            // A quiet gray pill, like the home indicator; blue while something is dragged over it.
+            paint.color = if (hovering) HANDLE_ACTIVE else HANDLE_IDLE
             if (hovering) {
-                glow.shader = paint.shader
-                glow.alpha = 70
+                glow.color = HANDLE_ACTIVE
+                glow.alpha = 60
                 canvas.drawRoundRect(RectF(rect.left - dp(5), rect.top - dp(5), rect.right + dp(5), rect.bottom + dp(5)), pill, pill, glow)
             }
             canvas.drawRoundRect(rect, pill / 2, pill / 2, paint)
@@ -453,6 +446,8 @@ class EdgePanel(private val context: Context) {
 
     companion object {
         private const val TAG = "EdgePanel"
+        private const val HANDLE_IDLE = 0x998E8E93.toInt()
+        private const val HANDLE_ACTIVE = 0xFF007AFF.toInt()
         private const val CLIPBOARD = "clipboard"
         private const val PHOTO = "photo"
         private const val DROPPED = "dropped"

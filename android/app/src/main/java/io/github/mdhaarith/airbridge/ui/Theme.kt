@@ -8,65 +8,89 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.staticCompositionLocalOf
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 
-val Violet = Color(0xFF7C6CFF)
-val Pink = Color(0xFFFF5FA2)
-val Cyan = Color(0xFF33D1FF)
-val Mint = Color(0xFF34D399)
-val Rose = Color(0xFFFB7185)
-val Amber = Color(0xFFFBBF24)
-
-val AccentGradient = Brush.linearGradient(listOf(Violet, Pink))
-
+/**
+ * An Apple-like palette: grouped gray backgrounds, white (or dark gray)
+ * cards, one blue accent and gray device avatars. The values follow the iOS
+ * system colors so the phone matches the Linux app and the browser page.
+ */
 @Immutable
 data class AirColors(
     val dark: Boolean,
+    /** The grouped background behind cards. */
     val bg: Color,
-    val surface: Color,
-    val surfaceStrong: Color,
-    val solid: Color,
-    val border: Color,
+    /** Cards, lists and sheets. */
+    val card: Color,
+    /** Alerts and menus floating above everything. */
+    val elevated: Color,
+    /** Gray fill for secondary buttons, chips and tracks. */
+    val fill: Color,
+    val separator: Color,
     val text: Color,
     val muted: Color,
     val faint: Color,
+    val accent: Color,
+    val success: Color,
+    val danger: Color,
+    val warning: Color,
+    val avatarTop: Color,
+    val avatarBottom: Color,
 )
 
-private val DarkAir = AirColors(
-    dark = true,
-    bg = Color(0xFF070914),
-    surface = Color.White.copy(alpha = 0.06f),
-    surfaceStrong = Color.White.copy(alpha = 0.1f),
-    solid = Color(0xFF141831),
-    border = Color.White.copy(alpha = 0.1f),
-    text = Color(0xFFEEF0FF),
-    muted = Color(0xFF9BA1C6),
-    faint = Color(0xFF646A92),
-)
-
-private val LightAir = AirColors(
+val LightAir = AirColors(
     dark = false,
-    bg = Color(0xFFF2F3FB),
-    surface = Color.White.copy(alpha = 0.7f),
-    surfaceStrong = Color.White,
-    solid = Color.White,
-    border = Color(0x1A181C46),
-    text = Color(0xFF12152B),
-    muted = Color(0xFF555B80),
-    faint = Color(0xFF8C91B0),
+    bg = Color(0xFFF2F2F7),
+    card = Color.White,
+    elevated = Color(0xFFF9F9F9),
+    fill = Color(0x1F787880),
+    separator = Color(0x4A3C3C43),
+    text = Color.Black,
+    muted = Color(0x993C3C43),
+    faint = Color(0x4D3C3C43),
+    accent = Color(0xFF007AFF),
+    success = Color(0xFF34C759),
+    danger = Color(0xFFFF3B30),
+    warning = Color(0xFFFF9500),
+    avatarTop = Color(0xFFB7BBC4),
+    avatarBottom = Color(0xFF8B9099),
 )
 
-val LocalAir = staticCompositionLocalOf { DarkAir }
+val DarkAir = AirColors(
+    dark = true,
+    bg = Color.Black,
+    card = Color(0xFF1C1C1E),
+    elevated = Color(0xFF2C2C2E),
+    fill = Color(0x3D767680),
+    separator = Color(0x99545458),
+    text = Color.White,
+    muted = Color(0x99EBEBF5),
+    faint = Color(0x4DEBEBF5),
+    accent = Color(0xFF0A84FF),
+    success = Color(0xFF30D158),
+    danger = Color(0xFFFF453A),
+    warning = Color(0xFFFF9F0A),
+    avatarTop = Color(0xFF7D7D83),
+    avatarBottom = Color(0xFF55555A),
+)
+
+val LocalAir = staticCompositionLocalOf { LightAir }
 
 @Composable
-fun AirBridgeTheme(content: @Composable () -> Unit) {
-    val dark = isSystemInDarkTheme()
+fun AirBridgeTheme(dark: Boolean = isSystemInDarkTheme(), content: @Composable () -> Unit) {
     val air = if (dark) DarkAir else LightAir
     val scheme = if (dark) {
-        darkColorScheme(primary = Violet, secondary = Pink, tertiary = Cyan, background = air.bg, surface = air.solid, onSurface = air.text, onBackground = air.text, surfaceVariant = Color(0xFF1C2140), onSurfaceVariant = air.muted, error = Rose)
+        darkColorScheme(
+            primary = air.accent, secondary = air.accent, tertiary = air.accent, background = air.bg, surface = air.card,
+            onSurface = air.text, onBackground = air.text, surfaceVariant = air.elevated, onSurfaceVariant = air.muted, error = air.danger,
+            surfaceContainerHigh = air.elevated, outline = air.separator,
+        )
     } else {
-        lightColorScheme(primary = Violet, secondary = Pink, tertiary = Cyan, background = air.bg, surface = air.solid, onSurface = air.text, onBackground = air.text, surfaceVariant = Color(0xFFE6E8F6), onSurfaceVariant = air.muted, error = Rose)
+        lightColorScheme(
+            primary = air.accent, secondary = air.accent, tertiary = air.accent, background = air.bg, surface = air.card,
+            onSurface = air.text, onBackground = air.text, surfaceVariant = air.elevated, onSurfaceVariant = air.muted, error = air.danger,
+            surfaceContainerHigh = air.elevated, outline = air.separator,
+        )
     }
     CompositionLocalProvider(LocalAir provides air) {
         MaterialTheme(colorScheme = scheme, content = content)

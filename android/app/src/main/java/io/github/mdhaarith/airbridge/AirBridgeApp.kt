@@ -4,16 +4,22 @@ import android.app.Application
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.ImageDecoder
+import android.net.Uri
 import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.provider.Settings
+import android.util.Size
 import io.github.mdhaarith.airbridge.core.AndroidFileStore
 import io.github.mdhaarith.airbridge.core.Engine
 import io.github.mdhaarith.airbridge.core.FileStore
 import io.github.mdhaarith.airbridge.core.Platform
+import io.github.mdhaarith.airbridge.core.Previews
 import io.github.mdhaarith.airbridge.service.Notifications
+import java.io.ByteArrayOutputStream
 import java.io.File
 
 class AirBridgeApp : Application() {
@@ -52,6 +58,24 @@ private class AndroidPlatform(private val context: Context) : Platform {
         main.post {
             val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
             clipboard.setPrimaryClip(ClipData.newPlainText("AirBridge", text))
+        }
+    }
+
+    override fun thumbnail(uri: String, mime: String): ByteArray? {
+        val source = Uri.parse(uri)
+        val size = Previews.SIZE
+        // The system's thumbnail when the provider has one, else a downscaled decode.
+        val bitmap = runCatching { context.contentResolver.loadThumbnail(source, Size(size, size), null) }.getOrNull()
+            ?: ImageDecoder.decodeBitmap(ImageDecoder.createSource(context.contentResolver, source)) { decoder, info, _ ->
+                val scale = size.toFloat() / maxOf(info.size.width, info.size.height)
+                if (scale < 1f) decoder.setTargetSize((info.size.width * scale).toInt().coerceAtLeast(1), (info.size.height * scale).toInt().coerceAtLeast(1))
+                decoder.allocator = ImageDecoder.ALLOCATOR_SOFTWARE
+            }
+        val scale = size.toFloat() / maxOf(bitmap.width, bitmap.height)
+        val fitted = if (scale < 1f) Bitmap.createScaledBitmap(bitmap, (bitmap.width * scale).toInt(), (bitmap.height * scale).toInt(), true) else bitmap
+        return ByteArrayOutputStream().use { out ->
+            fitted.compress(Bitmap.CompressFormat.JPEG, 72, out)
+            out.toByteArray()
         }
     }
 

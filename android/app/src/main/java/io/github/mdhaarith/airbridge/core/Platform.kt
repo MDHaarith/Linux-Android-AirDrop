@@ -17,6 +17,8 @@ interface Platform {
     val deviceModel: String
     val files: FileStore
     fun copyToClipboard(text: String)
+    /** A small upright JPEG of the photo at [uri] (longest side about [Previews.SIZE]), or null. */
+    fun thumbnail(uri: String, mime: String): ByteArray? = null
     /** Lets multicast packets in (Android filters them otherwise); returns the release action. */
     fun acquireMulticastLock(): () -> Unit = {}
 }
