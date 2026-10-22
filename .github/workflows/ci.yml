@@ -84,3 +84,50 @@ jobs:
           path: |
             android/app/build/reports
             android/app/build/linux-interop.log
+
+  release:
+    name: Publish main release build
+    needs: [linux, android]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      # Reuse the release binaries from this run, after all tests have passed.
+      - uses: actions/download-artifact@v8
+        with:
+          name: airbridge-linux-x86_64
+          path: release
+      - uses: actions/download-artifact@v8
+        with:
+          name: airbridge-android-apk
+          path: release
+      - name: Package release assets
+        run: |
+          test -s release/airbridge
+          test -s release/app-release.apk
+          # Artifact downloads do not preserve the Linux executable bit.
+          chmod +x release/airbridge
+          tar -C release -czf airbridge-linux-x86_64.tar.gz airbridge
+          cp release/app-release.apk airbridge-android.apk
+      - uses: softprops/action-gh-release@v3
+        with:
+          tag_name: main-${{ github.run_number }}
+          name: "Main build #${{ github.run_number }}"
+          target_commitish: ${{ github.sha }}
+          prerelease: true
+          make_latest: false
+          fail_on_unmatched_files: true
+          body: |
+            Automatic prerelease from a successful main-branch CI run.
+            Commit: `${{ github.sha }}`
+
+            **Downloads**
+            - `airbridge-android.apk`: Android 10 or newer.
+            - `airbridge-linux-x86_64.tar.gz`: unpack and run `./airbridge`.
+
+            The APK uses a debug signing key; Android may require uninstalling the previous build before installation.
+          files: |
+            airbridge-linux-x86_64.tar.gz
+            airbridge-android.apk
