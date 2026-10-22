@@ -1,5 +1,11 @@
 package io.github.mdhaarith.airbridge.ui
 
+import androidx.compose.material3.Typography
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.Font
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
+import io.github.mdhaarith.airbridge.R
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
@@ -93,6 +99,28 @@ fun AirBridgeTheme(dark: Boolean = isSystemInDarkTheme(), content: @Composable (
         )
     }
     CompositionLocalProvider(LocalAir provides air) {
-        MaterialTheme(colorScheme = scheme, content = content)
+        MaterialTheme(colorScheme = scheme, typography = AirTypography, content = content)
     }
+}
+
+/**
+ * Inter, the open typeface closest to Apple's SF, for every text in the app
+ * (Latin only; other scripts fall back to the system font).
+ */
+val Inter = FontFamily(
+    Font(R.font.inter_regular, FontWeight.Normal),
+    Font(R.font.inter_medium, FontWeight.Medium),
+    Font(R.font.inter_semibold, FontWeight.SemiBold),
+    Font(R.font.inter_bold, FontWeight.Bold),
+)
+
+private val AirTypography = Typography().run {
+    fun TextStyle.inter() = copy(fontFamily = Inter)
+    copy(
+        displayLarge = displayLarge.inter(), displayMedium = displayMedium.inter(), displaySmall = displaySmall.inter(),
+        headlineLarge = headlineLarge.inter(), headlineMedium = headlineMedium.inter(), headlineSmall = headlineSmall.inter(),
+        titleLarge = titleLarge.inter(), titleMedium = titleMedium.inter(), titleSmall = titleSmall.inter(),
+        bodyLarge = bodyLarge.inter(), bodyMedium = bodyMedium.inter(), bodySmall = bodySmall.inter(),
+        labelLarge = labelLarge.inter(), labelMedium = labelMedium.inter(), labelSmall = labelSmall.inter(),
+    )
 }
