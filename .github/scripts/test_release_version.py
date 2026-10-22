@@ -1,5 +1,8 @@
+import os
 from pathlib import Path
+import subprocess
 import tempfile
+import textwrap
 import unittest
 
 from release_version import ROOT, choose_version, parse_version, stamp, version_code
@@ -42,6 +45,61 @@ class ReleaseVersionTest(unittest.TestCase):
             android = (root / names[2]).read_text()
             self.assertIn('versionName = "0.1.6"', android)
             self.assertIn('versionCode = 1006', android)
+
+    def test_workflow_rejects_stale_automatic_releases_before_version_selection(self):
+        # Execute the workflow's actual shell against a local origin, without
+        # adding a YAML dependency to the release tests.
+        workflow = (ROOT / ".github/workflows/release.yml").read_text()
+        step = workflow.split("      - name: Choose the release version\n", 1)[1]
+        script = textwrap.dedent(step.split("        run: |\n", 1)[1].split("\n\n", 1)[0])
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for name in [".github/scripts/release_version.py", "linux/Cargo.toml"]:
+                target = root / name
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text((ROOT / name).read_text())
+
+            def git(*args):
+                return subprocess.check_output(
+                    ["git", "-c", "user.name=Test", "-c", "user.email=test@example.com",
+                     "-c", "commit.gpgsign=false", *args],
+                    cwd=root, text=True, stderr=subprocess.DEVNULL,
+                ).strip()
+
+            git("init", "--initial-branch=main")
+            git("add", ".")
+            git("commit", "-m", "Old main commit")
+            stale = git("rev-parse", "HEAD")
+            git("commit", "--allow-empty", "-m", "Current main commit")
+            current = git("rev-parse", "HEAD")
+            git("remote", "add", "origin", str(root))
+            output = root / "output"
+
+            for event, sha, succeeds in [
+                ("workflow_run", current, True),
+                ("workflow_run", stale, False),
+                ("workflow_dispatch", stale, True),
+                ("push", stale, True),
+            ]:
+                with self.subTest(event=event, sha=sha):
+                    git("checkout", "--detach", sha)
+                    output.write_text("")
+                    result = subprocess.run(
+                        ["bash", "-e", "-o", "pipefail", "-c", script], cwd=root,
+                        env={**os.environ, "GITHUB_EVENT_NAME": event,
+                             "GITHUB_OUTPUT": str(output),
+                             "REQUESTED_VERSION": "" if event == "workflow_run" else "v0.1.6"},
+                        capture_output=True, text=True,
+                    )
+                    if succeeds:
+                        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                        self.assertIn(f"sha={sha}\n", output.read_text())
+                        if event != "workflow_run":
+                            self.assertIn("tag=v0.1.6\n", output.read_text())
+                    else:
+                        self.assertNotEqual(result.returncode, 0)
+                        self.assertIn("Refusing to release stale CI commit", result.stdout)
+                        self.assertEqual(output.read_text(), "")
 
 
 if __name__ == "__main__":
