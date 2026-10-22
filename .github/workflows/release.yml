@@ -3,15 +3,43 @@ name: Release
 on:
   push:
     tags: ["v*"]
+  # Or run it from the Actions tab: it builds the chosen commit and creates the tag.
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release, like v0.1.0"
+        required: true
 
 permissions:
   contents: write
 
+# Runs for one version wait for each other, so the tag check below cannot race.
+concurrency:
+  group: release-${{ inputs.version || github.ref_name }}
+  cancel-in-progress: false
+
 jobs:
   build:
     runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      VERSION: ${{ inputs.version || github.ref_name }}
     steps:
+      - name: Check the version
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          [[ "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] && git check-ref-format "refs/tags/$VERSION" ||
+            { echo "Version must look like v1.2.3 or v1.2.3-rc.1, got $VERSION"; exit 1; }
       - uses: actions/checkout@v5
+      - name: Check the tag is free or already here
+        run: |
+          # A tag that exists stays where it is, so never attach these builds to another commit's tag.
+          tagged=$(git ls-remote origin "refs/tags/$VERSION^{}" | cut -f1)
+          tagged=${tagged:-$(git ls-remote origin "refs/tags/$VERSION" | cut -f1)}
+          if [ -n "$tagged" ] && [ "$tagged" != "$GITHUB_SHA" ]; then
+            echo "$VERSION is already tagged at $tagged, not at $GITHUB_SHA. Pick a new version."
+            exit 1
+          fi
       - run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libxdo-dev libgtk-layer-shell-dev
       - uses: dtolnay/rust-toolchain@stable
       - uses: actions/setup-java@v5
@@ -31,6 +59,15 @@ jobs:
           cp app/build/outputs/apk/release/app-release.apk ../airbridge-android.apk
       - uses: softprops/action-gh-release@v3
         with:
+          tag_name: ${{ env.VERSION }}
+          target_commitish: ${{ github.sha }}
+          prerelease: ${{ contains(env.VERSION, '-') }}
+          body: |
+            **Downloads**
+            - `airbridge-android.apk`: the Android app (Android 10 or newer). Allow installs from your browser or file manager when asked.
+            - `airbridge-linux-x86_64.tar.gz`: the Linux app. Unpack it and run `./airbridge`, or install it with `packaging/install.sh` from the source.
+
+            The APK is signed with a debug key made for this build, not a private release key, so a newer release may need the old app uninstalled first. See [SECURITY.md](https://github.com/${{ github.repository }}/blob/${{ env.VERSION }}/docs/SECURITY.md).
           files: |
             airbridge-linux-x86_64.tar.gz
             airbridge-android.apk
