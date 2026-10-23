@@ -9,13 +9,16 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.BubbleChart
 import androidx.compose.material.icons.rounded.ContentCopy
 import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material.icons.rounded.OpenInNew
+import androidx.compose.material.icons.rounded.RadioButtonChecked
 import androidx.compose.material.icons.rounded.SwapHoriz
 import androidx.compose.material.icons.rounded.VerticalSplit
 import androidx.compose.material.icons.rounded.Wifi
@@ -103,6 +106,20 @@ fun SettingsScreen(vm: AppViewModel) {
                     RowSeparator(59.dp)
                     ListRow("Handle on the Left", icon = Icons.Rounded.SwapHoriz, iconColor = air.muted, chevron = false) {
                         AppleSwitch(settings.edgeSide == "left", { left -> engine.settings.update { it.copy(edgeSide = if (left) "left" else "right") } })
+                    }
+                    RowSeparator(59.dp)
+                    ListRow("Handle", icon = Icons.Rounded.RadioButtonChecked, iconColor = air.muted, chevron = false) {
+                        val handles = listOf("bubble", "bump")
+                        Segmented(listOf("Bubble", "Bump"), handles.indexOf(settings.edgeHandle).coerceAtLeast(0), { i ->
+                            engine.settings.update { it.copy(edgeHandle = handles[i]) }
+                        }, Modifier.width(150.dp))
+                    }
+                    RowSeparator(59.dp)
+                    ListRow("When Dragging", icon = Icons.Rounded.BubbleChart, iconColor = air.muted, chevron = false) {
+                        val styles = listOf("icons", "names", "row")
+                        Segmented(listOf("Icons", "Names", "Row"), styles.indexOf(settings.edgeStyle).coerceAtLeast(0), { i ->
+                            engine.settings.update { it.copy(edgeStyle = styles[i]) }
+                        }, Modifier.width(180.dp))
                     }
                 }
             }

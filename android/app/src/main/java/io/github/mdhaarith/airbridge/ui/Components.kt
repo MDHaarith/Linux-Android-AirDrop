@@ -191,6 +191,25 @@ fun ListRow(
     }
 }
 
+/** The iOS segmented control: a gray track with the chosen option raised in a white card. */
+@Composable
+fun Segmented(options: List<String>, selected: Int, onSelect: (Int) -> Unit, modifier: Modifier = Modifier) {
+    val air = LocalAir.current
+    Row(modifier.clip(RoundedCornerShape(9.dp)).background(air.fill).padding(2.dp)) {
+        options.forEachIndexed { i, label ->
+            val on = i == selected
+            Box(
+                Modifier.weight(1f).clip(RoundedCornerShape(7.dp))
+                    .background(if (on) air.elevated else Color.Transparent)
+                    .pressable({ onSelect(i) }).padding(vertical = 6.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(label, color = air.text, fontSize = 13.sp, fontWeight = if (on) FontWeight.SemiBold else FontWeight.Normal, maxLines = 1)
+            }
+        }
+    }
+}
+
 /** The iOS switch: green when on, a white knob that slides. */
 @Composable
 fun AppleSwitch(checked: Boolean, onChange: (Boolean) -> Unit, modifier: Modifier = Modifier) {

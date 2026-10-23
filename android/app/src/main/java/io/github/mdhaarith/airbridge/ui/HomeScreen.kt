@@ -46,6 +46,7 @@ import androidx.compose.material.icons.rounded.Devices
 import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.Folder
 import androidx.compose.material.icons.rounded.PhotoLibrary
+import androidx.compose.material.icons.rounded.QrCode2
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Schedule
 import androidx.compose.material.icons.rounded.Settings
@@ -150,7 +151,6 @@ fun HomeScreen(vm: AppViewModel) {
             Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState())
                 .padding(horizontal = 16.dp).navigationBarsPadding().padding(top = 8.dp, bottom = 24.dp),
         ) {
-            SecondaryButton("Share with a phone without the app") { vm.screen = Screen.COMPANION }
             // ------------------------------------------------- this phone
             val ip = remember(running, peers.size) { Discovery.localAddresses().firstOrNull()?.address?.hostAddress }
             Row(
@@ -261,6 +261,14 @@ fun HomeScreen(vm: AppViewModel) {
                     val clip = readClipboard()
                     if (clip != null) vm.stageText(clip) else vm.toast("The clipboard is empty", good = false)
                 }
+            }
+            Card(Modifier.padding(top = 10.dp).fillMaxWidth(), padding = 0.dp) {
+                ListRow(
+                    "Share to Any Phone",
+                    subtitle = "No app needed: they scan a code and open it in their browser",
+                    icon = Icons.Rounded.QrCode2,
+                    onClick = { vm.screen = Screen.COMPANION },
+                )
             }
 
             // ------------------------------------------------------- recent
