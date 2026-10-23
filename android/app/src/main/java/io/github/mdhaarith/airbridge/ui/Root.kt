@@ -94,6 +94,7 @@ fun AirBridgeRoot(vm: AppViewModel) {
                 Screen.HOME -> HomeScreen(vm)
                 Screen.ACTIVITY -> ActivityScreen(vm)
                 Screen.SETTINGS -> SettingsScreen(vm)
+                Screen.COMPANION -> CompanionScreen(vm)
             }
         }
         BackHandler(enabled = vm.screen != Screen.HOME) { vm.screen = Screen.HOME }

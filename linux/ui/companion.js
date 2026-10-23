@@ -13,7 +13,7 @@ const store = {
 const hashKey = new URLSearchParams(location.hash.slice(1)).get("k");
 if (hashKey) {
   store.set("ab_key", hashKey);
-  history.replaceState(null, "", location.pathname);
+  history.replaceState(null, "", location.pathname + location.search);
 }
 const key = hashKey || store.get("ab_key");
 let clientId = store.get("ab_id");
@@ -69,6 +69,12 @@ async function checkPairing() {
 
 let retry = 0;
 function connect() {
+  if (session.desktop?.poll) {
+    setLink(true, `Connected to ${session.desktop.alias}`);
+    $("targetName").textContent = session.desktop.alias;
+    if (session.desktop.text === false) $("btnText").hidden = true;
+    return poll();
+  }
   const ws = new WebSocket(`ws://${location.host}/ws?${query({ name: deviceName, model: deviceModel })}`);
   session.ws = ws;
   ws.onopen = () => { retry = 0; };
@@ -91,6 +97,32 @@ function connect() {
     retry = Math.min(retry + 1, 6);
     setTimeout(connect, 600 * retry);
   };
+}
+
+// Android's small HTTP server uses polling; Linux keeps its WebSocket transport.
+let lastOffer = null;
+async function poll() {
+  try {
+    const res = await fetch(`/poll?${query()}`);
+    if (res.status === 403 || res.status === 410) return showUnpaired();
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    setLink(true, `Connected to ${session.desktop.alias}`);
+    $("targetName").textContent = session.desktop.alias;
+    for (const msg of await res.json()) {
+      if (msg.type === "cancel" && session.offer?.id === msg.id) {
+        closeOffer();
+        toast("Cancelled", "The sender cancelled the transfer");
+      }
+      if (msg.type === "offer" && msg.id !== lastOffer) {
+        lastOffer = msg.id;
+        showOffer(msg);
+      }
+    }
+    setTimeout(poll, 500);
+  } catch (_) {
+    setLink(false, "Reconnecting…");
+    setTimeout(poll, 2000);
+  }
 }
 
 function showUnpaired() {
@@ -152,17 +184,20 @@ async function sendFiles(files) {
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.message || "The computer refused");
-    let sentBefore = 0;
+    const loaded = files.map(() => 0);
     const started = performance.now();
-    for (let i = 0; i < files.length; i++) {
-      const file = files[i];
-      await upload(file, data.transfer, data.files[i].id, (loaded) => {
-        const done = sentBefore + loaded;
-        const secs = (performance.now() - started) / 1000;
-        setTarget("busy", total ? done / total : 1, `Sending… ${bytes(done / Math.max(secs, 0.1))}/s`);
-      });
-      sentBefore += file.size;
-    }
+    let next = 0;
+    await Promise.all(Array.from({ length: Math.min(3, files.length) }, async () => {
+      while (next < files.length) {
+        const i = next++;
+        await upload(files[i], data.transfer, data.files[i].id, (n) => {
+          loaded[i] = n;
+          const done = loaded.reduce((sum, value) => sum + value, 0);
+          const secs = (performance.now() - started) / 1000;
+          setTarget("busy", total ? done / total : 1, `Sending… ${bytes(done / Math.max(secs, 0.1))}/s`);
+        });
+      }
+    }));
     setTarget("success", 1, "Sent");
     if (navigator.vibrate) navigator.vibrate(18);
     addRecent({

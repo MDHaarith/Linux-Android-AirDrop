@@ -48,7 +48,11 @@ class HttpRequest(
     fun onDisconnect(onGone: () -> Unit) = watcher(onGone)
 }
 
-class HttpResponse(val status: Int, val body: ByteArray = ByteArray(0), val contentType: String = "application/json") {
+class HttpResponse(val status: Int, val body: ByteArray = ByteArray(0), val contentType: String = "application/json",
+    val headers: Map<String, String> = emptyMap(),
+    val length: Long = body.size.toLong(),
+    val stream: ((java.io.OutputStream) -> Unit)? = null,
+) {
     companion object {
         fun json(status: Int, json: String) = HttpResponse(status, json.toByteArray())
         fun error(status: Int, message: String) =
@@ -70,7 +74,9 @@ class HttpServer(
     var port = 0
         private set
 
-    fun start(preferredPort: Int): Int {
+    @Synchronized
+    fun start(preferredPort: Int, bindAddress: String? = null): Int {
+        check(scope.isActive) { "Server stopped" }
         var lastError: IOException? = null
         for (candidate in preferredPort until preferredPort + 10) {
             try {
@@ -80,11 +86,13 @@ class HttpServer(
                     ServerSocket()
                 }
                 socket.reuseAddress = true
-                socket.bind(InetSocketAddress(candidate))
+                socket.receiveBufferSize = 1024 * 1024
+                socket.bind(if (bindAddress == null) InetSocketAddress(candidate) else InetSocketAddress(bindAddress, candidate))
+                val actualPort = socket.localPort
                 server = socket
-                port = candidate
+                port = actualPort
                 scope.launch { acceptLoop(socket) }
-                return candidate
+                return actualPort
             } catch (e: IOException) {
                 lastError = e
             }
@@ -92,12 +100,15 @@ class HttpServer(
         throw lastError ?: IOException("no free port")
     }
 
+    @Synchronized
     fun stop() {
         runCatching { server?.close() }
         scope.cancel()
+        clients.forEach { runCatching { it.close() } }
     }
 
     /** Open connections per address: enough for real devices, not for a flood. */
+    private val clients = java.util.concurrent.ConcurrentHashMap.newKeySet<Socket>()
     private val open = mutableMapOf<String, Int>()
 
     private suspend fun acceptLoop(socket: ServerSocket) {
@@ -122,10 +133,13 @@ class HttpServer(
                 runCatching { client.close() }
                 continue
             }
+            clients.add(client)
+            if (!scope.isActive) { clients.remove(client); client.close(); continue }
             scope.launch {
                 try {
                     serve(client)
                 } finally {
+                    clients.remove(client)
                     synchronized(open) {
                         val left = (open[ip] ?: 1) - 1
                         if (left <= 0) open.remove(ip) else open[ip] = left
@@ -137,14 +151,16 @@ class HttpServer(
 
     private suspend fun serve(socket: Socket) {
         try {
+            socket.receiveBufferSize = 1024 * 1024
+            socket.sendBufferSize = 1024 * 1024
             socket.soTimeout = HEAD_TIMEOUT_MS
             var fingerprint: String? = null
             if (socket is SSLSocket) {
                 socket.startHandshake()
                 fingerprint = runCatching { (socket.session.peerCertificates.first() as X509Certificate).let(Identity::fingerprintOf) }.getOrNull()
             }
-            val input = BufferedInputStream(socket.getInputStream(), 64 * 1024)
-            val output = BufferedOutputStream(socket.getOutputStream(), 64 * 1024)
+            val input = BufferedInputStream(socket.getInputStream(), 256 * 1024)
+            val output = BufferedOutputStream(socket.getOutputStream(), 256 * 1024)
             val remoteIp = socket.inetAddress.hostAddress?.removePrefix("::ffff:") ?: ""
             while (true) {
                 // The request line and headers must arrive promptly, and be small.
@@ -200,6 +216,7 @@ class HttpServer(
                     Log.w(TAG, "handler failed", e)
                     HttpResponse.error(500, "Internal error")
                 }
+                if (response.status >= 400) closeAfter = true
                 // Leftover body we did not read (e.g. a rejected upload): close instead of draining gigabytes.
                 if (body is BoundedInputStream && body.remaining > 1_000_000) closeAfter = true
                 if (!closeAfter) runCatching { while (body.read(ByteArray(8192)) >= 0) Unit }
@@ -220,13 +237,17 @@ class HttpServer(
     private fun write(out: BufferedOutputStream, response: HttpResponse, close: Boolean) {
         val head = buildString {
             append("HTTP/1.1 ${response.status} ${reason(response.status)}\r\n")
-            if (response.body.isNotEmpty()) append("Content-Type: ${response.contentType}\r\n")
-            append("Content-Length: ${response.body.size}\r\n")
+            if (response.length > 0) append("Content-Type: ${response.contentType}\r\n")
+            append("Content-Length: ${response.length}\r\n")
+            response.headers.forEach { (name, value) ->
+                require(name.none { it == '\r' || it == '\n' } && value.none { it == '\r' || it == '\n' })
+                append("$name: $value\r\n")
+            }
             append(if (close) "Connection: close\r\n" else "Connection: keep-alive\r\n")
             append("\r\n")
         }
         out.write(head.toByteArray(Charsets.ISO_8859_1))
-        out.write(response.body)
+        if (response.stream != null) response.stream.invoke(out) else out.write(response.body)
         out.flush()
     }
 
