@@ -16,3 +16,8 @@ __pycache__/
 .DS_Store
 *.swp
 .vscode/
+
+# Release signing key: keep it out of git
+*.p12
+*.jks
+*.keystore

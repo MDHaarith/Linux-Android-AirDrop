@@ -117,7 +117,14 @@ jobs:
       - uses: gradle/actions/setup-gradle@v5
       - name: Android APK
         working-directory: android
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          AIRBRIDGE_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
         run: |
+          # Never publish an APK signed with the runner's throwaway debug key.
+          test -n "$KEYSTORE_BASE64" && test -n "$AIRBRIDGE_KEYSTORE_PASSWORD"
+          export AIRBRIDGE_KEYSTORE="$RUNNER_TEMP/airbridge.p12"
+          base64 -d <<< "$KEYSTORE_BASE64" > "$AIRBRIDGE_KEYSTORE"
           ./gradlew --no-daemon assembleRelease
           cp app/build/outputs/apk/release/app-release.apk ../airbridge-android.apk
       - uses: actions/upload-artifact@v6

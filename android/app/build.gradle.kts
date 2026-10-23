@@ -19,14 +19,24 @@ android {
         versionName = "0.1.5"
     }
 
+    // A stable release key keeps updates installable and lets Play Protect recognise the app.
+    // Locally, without AIRBRIDGE_KEYSTORE set, release builds fall back to the debug key.
+    val keystore = System.getenv("AIRBRIDGE_KEYSTORE")?.let { file(it) }
+    signingConfigs {
+        if (keystore != null) create("release") {
+            storeFile = keystore
+            storePassword = System.getenv("AIRBRIDGE_KEYSTORE_PASSWORD")
+            keyAlias = "airbridge"
+            keyPassword = System.getenv("AIRBRIDGE_KEYSTORE_PASSWORD")
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
-            // Signed with the debug key so `assembleRelease` produces an installable APK.
-            // Use your own keystore for anything you distribute.
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.getByName(if (keystore != null) "release" else "debug")
         }
     }
 
