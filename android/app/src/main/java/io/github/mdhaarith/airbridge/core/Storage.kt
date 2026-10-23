@@ -30,7 +30,8 @@ class AndroidFileStore(private val context: Context) : FileStore {
         }
         val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
             ?: throw IOException("Cannot create ${segments.last()} in Downloads")
-        val output = resolver.openOutputStream(uri) ?: throw IOException("Cannot write ${segments.last()}")
+        // TLS hands over ~16 KB at a time; batch writes so shared storage sees few large ones.
+        val output = resolver.openOutputStream(uri)?.buffered(1024 * 1024) ?: throw IOException("Cannot write ${segments.last()}")
         return FileStore.Pending(uri.toString(), output)
     }
 

@@ -5,6 +5,11 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -641,29 +646,39 @@ class Engine(private val platform: Platform) {
                 files = t.files.map { if (it.id in accepted.files) it else it.copy(status = FileStatus.SKIPPED) },
             )
         }
-        for (file in transfer.files) {
-            val token = accepted.files[file.id] ?: continue
-            updateFile(id, file.id) { it.copy(status = FileStatus.TRANSFERRING) }
-            val message = transfer.message
-            val upload = StreamingBody(
-                length = file.size,
-                mime = file.mime,
-                open = { if (message != null) message.toByteArray().inputStream() else storage.open(file.uri ?: throw IOException("no data")) },
-                onProgress = { progress(id, file.id, it) },
-            )
-            val response = client.post(
-                peer.ip, peer.port, peer.https, peer.id, "${Protocol.API}/upload",
-                query = mapOf("sessionId" to accepted.sessionId, "fileId" to file.id, "token" to token),
-                body = upload,
-                readTimeoutMs = 120_000,
-            )
-            if (response.status != 200 && response.status != 204) {
-                updateFile(id, file.id) { it.copy(status = FileStatus.FAILED) }
-                return finish(id, Status.FAILED, if (response.status == 403 || response.status == 409) "The receiver cancelled" else "Upload refused (HTTP ${response.status})")
+        // A few files at once hides the per-file handshake and save cost; receivers allow 8+ connections per IP.
+        val parallel = Semaphore(PARALLEL_UPLOADS)
+        try {
+            coroutineScope {
+                transfer.files.filter { it.id in accepted.files }.map { file -> async { parallel.withPermit { upload(peer, id, accepted.sessionId, accepted.files.getValue(file.id), file, transfer.message) } } }.awaitAll()
             }
-            updateFile(id, file.id) { it.copy(status = FileStatus.DONE, done = it.size) }
+        } catch (e: UploadRefused) {
+            return finish(id, Status.FAILED, e.message)
         }
         finish(id, Status.DONE)
+    }
+
+    private class UploadRefused(message: String) : Exception(message)
+
+    private suspend fun upload(peer: Peer, id: String, sessionId: String, token: String, file: TFile, message: String?) {
+        updateFile(id, file.id) { it.copy(status = FileStatus.TRANSFERRING) }
+        val upload = StreamingBody(
+            length = file.size,
+            mime = file.mime,
+            open = { if (message != null) message.toByteArray().inputStream() else storage.open(file.uri ?: throw IOException("no data")) },
+            onProgress = { progress(id, file.id, it) },
+        )
+        val response = client.post(
+            peer.ip, peer.port, peer.https, peer.id, "${Protocol.API}/upload",
+            query = mapOf("sessionId" to sessionId, "fileId" to file.id, "token" to token),
+            body = upload,
+            readTimeoutMs = 120_000,
+        )
+        if (response.status != 200 && response.status != 204) {
+            updateFile(id, file.id) { it.copy(status = FileStatus.FAILED) }
+            throw UploadRefused(if (response.status == 403 || response.status == 409) "The receiver cancelled" else "Upload refused (HTTP ${response.status})")
+        }
+        updateFile(id, file.id) { it.copy(status = FileStatus.DONE, done = it.size) }
     }
 
     // ---------------------------------------------------------------- history
@@ -693,6 +708,7 @@ class Engine(private val platform: Platform) {
 
     companion object {
         private const val TAG = "Engine"
+        private const val PARALLEL_UPLOADS = 4
         /** Most devices kept at once; a flood of fake ones evicts the oldest untrusted. */
         private const val MAX_PEERS = 64
     }
