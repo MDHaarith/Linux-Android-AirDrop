@@ -377,3 +377,28 @@ docs/       RESEARCH.md, screenshots
 MIT. See [LICENSE](LICENSE). AirBridge is not affiliated with Apple, Google or the LocalSend
 project. The Android app uses the [Inter](https://rsms.me/inter/) typeface, under the SIL Open
 Font License ([android/third_party/inter/OFL.txt](android/third_party/inter/OFL.txt)).
+
+### Share with a phone without the app (Wi-Fi Direct)
+
+On Android, choose **Share with a phone without the app**. Grant Nearby Wi-Fi
+permission (Location on Android 12 and older; Location services may also need to
+be enabled). AirBridge creates a Wi-Fi Direct network and tries 5 GHz first,
+falling back to the device's automatic band selection.
+
+On the other Android phone or iPhone, scan the first QR to join Wi-Fi, or enter
+the displayed network name and password. Stay connected when warned that the
+network has no internet. Then show and scan the second QR to open the browser
+companion. Choose files in the browser to send to AirBridge and accept the
+request on the app phone; received files go to Downloads/AirBridge. Use **Offer
+files to the other phone** on the app phone to send in the other direction.
+
+No router, internet connection, shared home Wi-Fi password, or second app is
+needed. Keep the sharing screen open; leaving it, stopping the service, losing
+the group, or reaching the 30-minute session limit removes the network. The
+session link grants access: share it only with the intended recipient. Data uses
+plain HTTP inside the password-protected Wi-Fi Direct network. Browser downloads
+support byte ranges for resuming; uploads stream to storage with three files in
+parallel. The 2 GB in 30–60 seconds target needs real-device verification and is
+not guaranteed: storage speed, Wi-Fi hardware, vendor 5 GHz support, and iPhone
+joining behavior all affect it. Android versions below the app's minimum API 29
+are not supported.

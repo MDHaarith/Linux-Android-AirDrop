@@ -7,9 +7,14 @@ import android.content.ContentUris
 import android.content.Context
 import android.content.Intent
 import android.graphics.Canvas
+import android.graphics.LinearGradient
 import android.graphics.Paint
+import android.graphics.Path
 import android.graphics.PixelFormat
+import android.graphics.Point
+import android.graphics.RadialGradient
 import android.graphics.RectF
+import android.graphics.Shader
 import android.net.Uri
 import android.os.Build
 import android.provider.MediaStore
@@ -57,6 +62,8 @@ import io.github.mdhaarith.airbridge.ui.AirBridgeTheme
 import io.github.mdhaarith.airbridge.ui.DropTab
 import io.github.mdhaarith.airbridge.ui.DropTabLayout
 import io.github.mdhaarith.airbridge.ui.DropTabUi
+import io.github.mdhaarith.airbridge.R
+import io.github.mdhaarith.airbridge.ui.DropStyle
 import io.github.mdhaarith.airbridge.ui.DropTarget
 import io.github.mdhaarith.airbridge.ui.EdgeAction
 import io.github.mdhaarith.airbridge.ui.EdgePanelContent
@@ -102,6 +109,7 @@ class EdgePanel(private val context: Context) {
     private var tabTargets by mutableStateOf<List<DropTarget>>(emptyList())
     private var tabHovered by mutableStateOf<String?>(null)
     private var tabOver by mutableStateOf(false)
+    private var tabStyle by mutableStateOf(DropStyle.LABELS)
     private val panelTargets = mutableMapOf<String, Rect>()
 
     // What keeps a drop's files readable (Android grants it with the drop and
@@ -120,19 +128,22 @@ class EdgePanel(private val context: Context) {
     fun show() {
         if (handle != null || !Settings.canDrawOverlays(context)) return
         val rightSide = engine.settings.value.edgeSide != "left"
-        val view = runCatching { HandleRoot(context, rightSide) }.getOrElse {
+        val bubble = engine.settings.value.edgeHandle != "bump"
+        val view = runCatching { HandleRoot(context, rightSide, bubble) }.getOrElse {
             Log.w(TAG, "could not build the edge handle", it)
             return
         }
         val metrics = context.resources.displayMetrics
         val params = WindowManager.LayoutParams(
-            dp(HANDLE_WIDTH), dp(HANDLE_HEIGHT),
+            dp(restWidth(bubble)), dp(restHeight(bubble)),
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
             PixelFormat.TRANSLUCENT,
         ).apply {
             gravity = Gravity.TOP or if (rightSide) Gravity.END else Gravity.START
             y = (metrics.heightPixels * engine.settings.value.edgeY).toInt()
+            // Reach into the notch's strip so the handle can wrap around it.
+            layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
         }
         runCatching { windows.addView(view, params) }
             .onSuccess { handle = view }
@@ -466,23 +477,27 @@ class EdgePanel(private val context: Context) {
     }
 
     private fun dp(value: Int) = (value * context.resources.displayMetrics.density).toInt()
+    private fun dp(value: Float) = (value * context.resources.displayMetrics.density).toInt()
+
+    private fun restWidth(bubble: Boolean) = if (bubble) BUBBLE_SIZE else HANDLE_WIDTH
+    private fun restHeight(bubble: Boolean) = if (bubble) BUBBLE_SIZE + 16 else HANDLE_HEIGHT
 
     /**
      * The handle's window: a quiet pill you can drag along the edge
      * ([HandleView]). While something is dragged anywhere on screen it grows
-     * into a card listing nearby devices ([DropTab]); dropping on a row sends
-     * there.
+     * into a hub with the nearby devices around it ([DropTab]); dropping on one
+     * sends there.
      */
     @SuppressLint("ViewConstructor")
-    private inner class HandleRoot(context: Context, private val rightSide: Boolean) : DropLayout(context) {
-        private val pill = HandleView(context, rightSide, this)
+    private inner class HandleRoot(context: Context, private val rightSide: Boolean, private val bubble: Boolean) : DropLayout(context) {
+        private val pill = HandleView(context, rightSide, bubble, this)
         private val owner = OverlayOwner()
         private val tab = ComposeView(context).apply {
             visibility = GONE
             setContent {
                 AirBridgeTheme {
                     val settings by engine.settings.state.collectAsState()
-                    DropTab(DropTabUi(rightSide, tabTargets, tabHovered, tabOver, settings.edgeRecipient))
+                    DropTab(DropTabUi(rightSide, tabTargets, tabHovered, tabOver, settings.edgeRecipient, tabStyle))
                 }
             }
         }
@@ -509,7 +524,7 @@ class EdgePanel(private val context: Context) {
                 when (event.action) {
                     DragEvent.ACTION_DRAG_STARTED -> if (busy()) false else { startDrag(); true }
                     DragEvent.ACTION_DRAG_ENTERED, DragEvent.ACTION_DRAG_LOCATION -> {
-                        val target = targetAt(event.y)
+                        val target = targetAt(event.x, event.y)
                         // A light tick each time the finger reaches a new device, like moving between AirDrop bubbles.
                         if (target != null && target != tabHovered) performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
                         tabOver = true
@@ -519,7 +534,7 @@ class EdgePanel(private val context: Context) {
                     DragEvent.ACTION_DRAG_EXITED -> { tabOver = false; tabHovered = null; true }
                     DragEvent.ACTION_DRAG_ENDED -> { tabOver = false; tabHovered = null; expand(false); true }
                     DragEvent.ACTION_DROP -> {
-                        receivingTarget = targetAt(event.y)
+                        receivingTarget = targetAt(event.x, event.y)
                         tabOver = false
                         tabHovered = null
                         // Android 12+ passes the drop, readable, to the content listener above.
@@ -533,32 +548,47 @@ class EdgePanel(private val context: Context) {
 
         /** Lists the devices to drop on: your default first, then by name; everyone when there are several. */
         private fun startDrag() {
-            val metrics = context.resources.displayMetrics
-            val rows = ((metrics.heightPixels / metrics.density - DropTabLayout.HEADER - DropTabLayout.FOOTER - 40) / DropTabLayout.ROW).toInt().coerceAtLeast(1)
             val settings = engine.settings.value
+            tabStyle = when (settings.edgeStyle) {
+                "icons" -> DropStyle.ICONS
+                "row" -> DropStyle.ROW
+                else -> DropStyle.LABELS
+            }
             val devices = engine.peers.value.distinctBy { it.id }
                 .sortedWith(compareByDescending<Peer> { it.id == settings.edgeRecipient }.thenByDescending { it.id in settings.trusted }.thenBy { it.alias.lowercase() })
             val everyone = if (devices.size > 1) listOf(DropTarget(DropTargets.ALL, "Send to all", "${devices.size} devices nearby", everyone = true)) else emptyList()
             tabTargets = (everyone + devices.map { peer ->
                 DropTarget(peer.id, peer.alias, if (peer.id in settings.trusted) "My device" else peer.deviceModel, peer.deviceType, peer.deviceModel)
-            }).take(rows)
+            }).take(DropTabLayout.capacity(tabStyle))
             engine.refresh()
             expand(true)
         }
 
-        private fun targetAt(y: Float): String? =
-            DropTabLayout.rowAt(y / context.resources.displayMetrics.density, tabTargets.size)?.let { tabTargets[it].id }
+        private fun targetAt(x: Float, y: Float): String? {
+            val density = context.resources.displayMetrics.density
+            val spots = DropTabLayout.arrange(tabTargets, engine.settings.value.edgeRecipient)
+            return DropTabLayout.hit(tabStyle, spots.size, rightSide, x / density, y / density)?.let { spots[it].id }
+        }
 
         /** A sliver at rest; a card that is easy to hit while something is being dragged. */
         private fun expand(on: Boolean) {
             if (expanded == on) return
             val params = layoutParams as? WindowManager.LayoutParams ?: return
             if (on) restY = params.y
-            val count = tabTargets.size
-            params.width = dp(if (on) DropTabLayout.width(count) else HANDLE_WIDTH)
-            params.height = dp(if (on) DropTabLayout.height(count) else HANDLE_HEIGHT)
+            val spots = DropTabLayout.spots(tabStyle, DropTabLayout.arrange(tabTargets, engine.settings.value.edgeRecipient).size.coerceAtLeast(1), rightSide)
             val screen = context.resources.displayMetrics.heightPixels
-            params.y = if (on) (restY - (params.height - dp(HANDLE_HEIGHT)) / 2).coerceIn(0, (screen - params.height).coerceAtLeast(0)) else restY
+            params.width = if (on) dp(spots.width) else dp(restWidth(bubble))
+            params.height = if (on) dp(spots.height).coerceAtMost(screen) else dp(restHeight(bubble))
+            // The hub opens where the handle rests.
+            params.y = if (on) (restY - (params.height - dp(restHeight(bubble))) / 2).coerceIn(0, (screen - params.height).coerceAtLeast(0)) else restY
+            if (Build.VERSION.SDK_INT >= 31) {
+                // Frost and dim the app behind, like Control Center, while the devices are open.
+                val blur = WindowManager.LayoutParams.FLAG_BLUR_BEHIND or WindowManager.LayoutParams.FLAG_DIM_BEHIND
+                params.flags = if (on) params.flags or blur else params.flags and blur.inv()
+                params.blurBehindRadius = if (on) dp(28) else 0
+                // Darker when the system has blur switched off (battery saver), so the glass still reads.
+                params.dimAmount = if (!on) 0f else if (windows.isCrossWindowBlurEnabled) 0.3f else 0.55f
+            }
             expanded = on
             pill.visibility = if (on) GONE else VISIBLE
             tab.visibility = if (on) VISIBLE else GONE
@@ -568,35 +598,170 @@ class EdgePanel(private val context: Context) {
         fun destroy() = owner.destroy()
     }
 
-    /** The resting handle: a quiet gray pill, like the home indicator. Tap or swipe it in to open the panel; drag it along the edge to move it. */
+    /**
+     * The resting handle: a glass bump on the screen edge. It swells and follows
+     * the finger while held, wraps around a notch or punch-hole when it sits
+     * beside one, fades once left alone and all but disappears over fullscreen
+     * apps. Tap or swipe it in to open the panel; drag it along the edge to move it.
+     */
     @SuppressLint("ViewConstructor", "ClickableViewAccessibility")
-    private inner class HandleView(context: Context, private val rightSide: Boolean, private val window: View) : View(context) {
-        private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = HANDLE_IDLE }
+    private inner class HandleView(context: Context, private val rightSide: Boolean, private val bubble: Boolean, private val window: View) : View(context) {
+        private val logo = context.getDrawable(R.drawable.ic_notification)
+        private val solid = Paint(Paint.ANTI_ALIAS_FLAG)
+        private val glass = Paint(Paint.ANTI_ALIAS_FLAG)
+        private val rim = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = dp(1).toFloat() }
+        // A dark hairline under the bright rim keeps the glass readable on light screens too.
+        private val shade = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = dp(2).toFloat(); color = HANDLE_SHADE }
+        private val path = Path()
+        private val screen = Point()
+        private val location = IntArray(2)
         private val slop = ViewConfiguration.get(context).scaledTouchSlop
         private var downX = 0f
         private var downY = 0f
         private var startY = 0
         private var dragging = false
+        private var pressed = false
+        private var fingerY = 0f
+        private var pull = 0f
+        private var fullscreen = false
+        private val rest = Runnable { animate().alpha(if (fullscreen) FULLSCREEN_ALPHA else IDLE_ALPHA).setDuration(700).start() }
+
+        // The bump as drawn, easing toward where it should be each frame.
+        private var depth = 0f
+        private var center = -1f
+        private var half = 0f
+
+        init {
+            setOnApplyWindowInsetsListener { _, insets ->
+                // Another app hid the status bar: it's showing something fullscreen, so stay out of the way.
+                val hidden = Build.VERSION.SDK_INT >= 30 && !insets.isVisible(android.view.WindowInsets.Type.statusBars())
+                if (hidden != fullscreen) { fullscreen = hidden; settle() }
+                invalidate()
+                insets
+            }
+        }
+
+        override fun onAttachedToWindow() {
+            super.onAttachedToWindow()
+            wake()
+        }
+
+        override fun onDetachedFromWindow() {
+            removeCallbacks(rest)
+            super.onDetachedFromWindow()
+        }
+
+        /** Full strength for a moment, then [rest]. */
+        private fun wake() {
+            animate().cancel()
+            alpha = 1f
+            settle(IDLE_DELAY)
+        }
+
+        private fun settle(delay: Long = 0) {
+            removeCallbacks(rest)
+            if (!pressed) postDelayed(rest, delay)
+        }
+
+        /** The notch or punch-hole on our edge that overlaps this window, in view coordinates. */
+        @Suppress("DEPRECATION")
+        private fun notch(): RectF? {
+            val cutouts = windows.defaultDisplay.cutout?.boundingRects ?: return null
+            windows.defaultDisplay.getRealSize(screen)
+            getLocationOnScreen(location)
+            val near = cutouts.firstOrNull { r ->
+                (if (rightSide) r.right >= screen.x - 1 else r.left <= 0) &&
+                    r.bottom > location[1] && r.top < location[1] + height
+            } ?: return null
+            return RectF(near).apply { offset(-location[0].toFloat(), -location[1].toFloat()) }
+        }
+
+        /** A blue glass circle with the app's mark, tucked a little past the edge. */
+        private fun drawBubble(canvas: Canvas) {
+            val r = dp(17) * (if (pressed) 1.12f else 1f)
+            val cx = if (rightSide) width - dp(15f).toFloat() else dp(15f).toFloat()
+            val cy = height / 2f
+            solid.shader = RadialGradient(cx, cy, r * 1.35f, HANDLE_GLOW, 0, Shader.TileMode.CLAMP)
+            canvas.drawCircle(cx, cy, r * 1.35f, solid)
+            solid.shader = LinearGradient(0f, cy - r, 0f, cy + r, HANDLE_ACCENT_LIGHT, HANDLE_ACCENT, Shader.TileMode.CLAMP)
+            canvas.drawCircle(cx, cy, r, solid)
+            rim.color = HANDLE_RIM
+            canvas.drawCircle(cx, cy, r, rim)
+            val icon = (r * 0.62f).toInt()
+            logo?.setBounds((cx - icon).toInt(), (cy - icon).toInt(), (cx + icon).toInt(), (cy + icon).toInt())
+            logo?.draw(canvas)
+        }
 
         override fun onDraw(canvas: Canvas) {
-            val pillWidth = dp(5).toFloat()
-            val left = if (rightSide) width - pillWidth - dp(2) else dp(2).toFloat()
-            canvas.drawRoundRect(RectF(left, height * 0.08f, left + pillWidth, height * 0.92f), pillWidth / 2, pillWidth / 2, paint)
+            if (bubble) return drawBubble(canvas)
+            val notch = notch()
+            // How far the notch reaches in from our edge.
+            val reach = notch?.let { if (rightSide) width - it.left else it.right } ?: 0f
+            val fits = if (notch != null) (reach + dp(16)).toInt().coerceAtLeast(dp(HANDLE_WIDTH)) else dp(HANDLE_WIDTH)
+            if (width != fits && visibility == VISIBLE) post { resize(fits) }
+
+            val targetDepth = when {
+                notch != null -> reach + dp(if (pressed) 12 else 8)
+                pressed -> dp(12) + pull * 0.4f
+                else -> dp(6).toFloat()
+            }.coerceAtMost((width - dp(2)).toFloat())
+            val targetCenter = notch?.centerY() ?: if (pressed) fingerY else height / 2f
+            val targetHalf = notch?.let { it.height() / 2 + dp(24) } ?: (height * if (pressed) 0.4f else 0.3f)
+            if (center < 0) { depth = targetDepth; center = targetCenter; half = targetHalf }
+            depth += (targetDepth - depth) * EASE
+            center += (targetCenter - center) * EASE
+            half += (targetHalf - half) * EASE
+            val settling = abs(targetDepth - depth) + abs(targetCenter - center) + abs(targetHalf - half) > 0.5f
+            // While held the window moves under the finger, so keep looking for the notch.
+            if (settling || pressed) postInvalidateOnAnimation()
+
+            val edge = if (rightSide) width.toFloat() else 0f
+            val tip = if (rightSide) edge - depth else edge + depth
+            val top = center - half
+            val bottom = center + half
+            val ease = half * 0.45f
+            path.rewind()
+            path.moveTo(edge, top)
+            path.cubicTo(edge, top + ease, tip, center - ease, tip, center)
+            path.cubicTo(tip, center + ease, edge, bottom - ease, edge, bottom)
+            path.close()
+
+            val (inner, outer) = if (pressed) GLASS_PRESSED else GLASS
+            glass.shader = LinearGradient(edge, 0f, tip, 0f, inner, outer, Shader.TileMode.CLAMP)
+            rim.color = if (pressed) HANDLE_ACCENT else HANDLE_RIM
+            canvas.drawPath(path, shade)
+            canvas.drawPath(path, glass)
+            canvas.drawPath(path, rim)
+        }
+
+        private fun resize(to: Int) {
+            val params = window.layoutParams as? WindowManager.LayoutParams ?: return
+            if (params.width == to || visibility != VISIBLE) return
+            params.width = to
+            runCatching { windows.updateViewLayout(window, params) }
         }
 
         override fun onTouchEvent(event: MotionEvent): Boolean {
             val params = window.layoutParams as? WindowManager.LayoutParams ?: return false
+            fingerY = event.y
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
                     downX = event.rawX
                     downY = event.rawY
                     startY = params.y
                     dragging = false
+                    pressed = true
+                    pull = 0f
+                    performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                    wake()
+                    invalidate()
                 }
+                MotionEvent.ACTION_CANCEL -> { pressed = false; invalidate(); settle(IDLE_DELAY) }
                 MotionEvent.ACTION_MOVE -> {
                     val dx = event.rawX - downX
                     val dy = event.rawY - downY
                     val inward = if (rightSide) -dx else dx
+                    pull = inward.coerceAtLeast(0f)
                     if (!dragging && inward > slop * 2 && abs(dy) < inward) {
                         dragging = true
                         open()
@@ -607,6 +772,9 @@ class EdgePanel(private val context: Context) {
                     }
                 }
                 MotionEvent.ACTION_UP -> {
+                    pressed = false
+                    invalidate()
+                    settle(IDLE_DELAY)
                     if (!dragging) {
                         performClick()
                     } else if (params.y != startY) {
@@ -643,9 +811,21 @@ class EdgePanel(private val context: Context) {
 
     companion object {
         private const val TAG = "EdgePanel"
-        private const val HANDLE_IDLE = 0x998E8E93.toInt()
+        private const val HANDLE_RIM = 0xB3FFFFFF.toInt()
+        private const val HANDLE_SHADE = 0x2E000000
+        private const val HANDLE_ACCENT = 0xFF0A84FF.toInt()
+        // Glass: (at the edge, at the tip). Brighter toward the tip, like light catching a lens.
+        private val GLASS = 0x40FFFFFF to 0x8CFFFFFF.toInt()
+        private val GLASS_PRESSED = 0x4D0A84FF to 0xA6FFFFFF.toInt()
+        private const val EASE = 0.22f
+        private const val IDLE_ALPHA = 0.45f
+        private const val FULLSCREEN_ALPHA = 0.12f
+        private const val IDLE_DELAY = 2500L
         private const val HANDLE_WIDTH = 26
         private const val HANDLE_HEIGHT = 120
+        private const val BUBBLE_SIZE = 44
+        private const val HANDLE_ACCENT_LIGHT = 0xFF4DA3FF.toInt()
+        private const val HANDLE_GLOW = 0x660A84FF
         private val DROP_TYPES = arrayOf("image/*", "video/*", "audio/*", "text/*", "application/*", "font/*", "model/*")
         private const val CLIPBOARD = "clipboard"
         private const val PHOTO = "photo"

@@ -24,6 +24,10 @@ data class AppSettings(
     val edgeSide: String = "right",
     /** Vertical position of the handle, as a fraction of the screen height. */
     val edgeY: Float = 0.38f,
+    /** The resting handle: "bubble" (a glowing circle) or "bump" (a glass bump that wraps a notch). */
+    val edgeHandle: String = "bubble",
+    /** How devices open around the handle while dragging: "icons", "names" or "row". */
+    val edgeStyle: String = "names",
     /** Device id, or DropTargets.ALL for an explicit broadcast. */
     val edgeRecipient: String? = null,
 )
