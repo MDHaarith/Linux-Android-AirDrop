@@ -316,9 +316,12 @@ async fn run(app: &Arc<App>, id: &str, peer: &Peer, pin: Option<String>) -> Outc
             .unwrap_or_default()
     };
     // A few files at once hides the per-file handshake and save cost; receivers allow 8+ connections per IP.
-    let uploads = order
-        .into_iter()
-        .filter_map(|file_id| accepted.files.get(&file_id).map(|token| Ok((file_id, token))));
+    let uploads = order.into_iter().filter_map(|file_id| {
+        accepted
+            .files
+            .get(&file_id)
+            .map(|token| Ok((file_id, token)))
+    });
     let session = &accepted.session_id;
     match futures_util::stream::iter(uploads)
         .try_for_each_concurrent(PARALLEL_UPLOADS, |(file_id, token)| async move {
