@@ -84,7 +84,7 @@ class AirBridgeService : LifecycleService() {
                 .collect { (peers, trusted) -> DirectShare.sync(this@AirBridgeService, peers, trusted) }
         }
         lifecycleScope.launch {
-            engine.settings.state.map { it.edgePanel to it.edgeSide }.distinctUntilChanged().collect { updateEdgePanel(restart = true) }
+            engine.settings.state.map { Triple(it.edgePanel, it.edgeSide, it.edgeHandle) }.distinctUntilChanged().collect { updateEdgePanel(restart = true) }
         }
         lifecycleScope.launch {
             engine.settings.state.map { it.alias }.distinctUntilChanged().collect { alias ->

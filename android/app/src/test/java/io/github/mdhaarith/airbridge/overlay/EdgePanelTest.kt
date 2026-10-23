@@ -36,9 +36,9 @@ class EdgePanelTest {
             val panel = EdgePanel(paparazzi.context)
             try {
                 val handle = Class.forName("${EdgePanel::class.java.name}\$HandleRoot")
-                    .getDeclaredConstructor(EdgePanel::class.java, Context::class.java, Boolean::class.javaPrimitiveType)
+                    .getDeclaredConstructor(EdgePanel::class.java, Context::class.java, Boolean::class.javaPrimitiveType, Boolean::class.javaPrimitiveType)
                     .apply { isAccessible = true }
-                    .newInstance(panel, paparazzi.context, true) as View
+                    .newInstance(panel, paparazzi.context, true, true) as View
                 // Owners on the nested ComposeView cannot be found from the root.
                 assertNotNull(handle.findViewTreeLifecycleOwner())
                 assertNotNull(handle.findViewTreeSavedStateRegistryOwner())

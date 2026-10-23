@@ -17,6 +17,7 @@ import androidx.compose.material.icons.rounded.Image
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.blur
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
@@ -76,11 +77,13 @@ class ShareScreenshotTest {
         }
     }
 
-    private fun shoot(content: @Composable () -> Unit) = paparazzi.snapshot {
+    private fun shoot(frosted: Boolean = false, content: @Composable () -> Unit) = paparazzi.snapshot {
         CompositionLocalProvider(LocalInspectionMode provides true) {
             AirBridgeTheme(dark = false) {
                 Box(Modifier.fillMaxSize()) {
-                    FakeApp()
+                    // The edge panel frosts and dims the app behind it (EdgePanel's blur-behind).
+                    Box(if (frosted) Modifier.blur(28.dp) else Modifier) { FakeApp() }
+                    if (frosted) Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.3f)))
                     content()
                 }
             }
@@ -116,11 +119,14 @@ class ShareScreenshotTest {
     )
 
     /** The handle while something is dragged: the tab at its real window size, against the edge. */
-    private fun dropTab(ui: DropTabUi) = shoot {
+    private fun dropTab(ui: DropTabUi) = shoot(frosted = true) {
         Box(Modifier.fillMaxSize()) {
             Box(
                 Modifier.align(if (ui.rightSide) Alignment.CenterEnd else Alignment.CenterStart)
-                    .size(DropTabLayout.width(ui.targets.size).dp, DropTabLayout.height(ui.targets.size).dp),
+                    .let { m ->
+                        val spots = DropTabLayout.spots(ui.style, DropTabLayout.arrange(ui.targets, ui.defaultId).size.coerceAtLeast(1), ui.rightSide)
+                        m.size(spots.width.dp, spots.height.dp)
+                    },
             ) { DropTab(ui) }
         }
     }
@@ -133,6 +139,12 @@ class ShareScreenshotTest {
 
     @Test
     fun dropTabLeft() = dropTab(DropTabUi(false, dropTargets, defaultId = laptop.id))
+
+    @Test
+    fun dropTabIcons() = dropTab(DropTabUi(true, dropTargets, hovered = laptop.id, over = true, defaultId = imac.id, style = DropStyle.ICONS))
+
+    @Test
+    fun dropTabRow() = dropTab(DropTabUi(true, dropTargets, hovered = laptop.id, over = true, defaultId = imac.id, style = DropStyle.ROW))
 
     @Test
     fun dropTabNoDevices() = dropTab(DropTabUi(true, emptyList(), over = true))
