@@ -23,7 +23,6 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Groups
@@ -211,8 +210,10 @@ private fun ActionRow(action: EdgeAction, selected: Boolean, enabled: Boolean, o
             Text(action.title, color = air.text, fontSize = 15.sp)
             Text(action.subtitle, color = air.muted, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
-        // The chosen item gets a check mark, like an iOS selection list.
-        if (selected) Icon(Icons.Rounded.Check, contentDescription = "Selected", tint = air.accent, modifier = Modifier.size(20.dp))
+        // Same radio circle as the device rows; the whole row is the tap target.
+        Spacer(Modifier.width(12.dp))
+        Icon(if (selected) Icons.Rounded.CheckCircle else Icons.Rounded.RadioButtonUnchecked, contentDescription = if (selected) "Selected" else null,
+            tint = if (selected) air.accent else air.muted.copy(alpha = 0.5f), modifier = Modifier.padding(end = 10.dp).size(24.dp))
     }
 }
 
