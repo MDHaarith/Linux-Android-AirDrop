@@ -120,7 +120,10 @@ class EdgePanel(private val context: Context) {
     fun show() {
         if (handle != null || !Settings.canDrawOverlays(context)) return
         val rightSide = engine.settings.value.edgeSide != "left"
-        val view = HandleRoot(context, rightSide)
+        val view = runCatching { HandleRoot(context, rightSide) }.getOrElse {
+            Log.w(TAG, "could not build the edge handle", it)
+            return
+        }
         val metrics = context.resources.displayMetrics
         val params = WindowManager.LayoutParams(
             dp(HANDLE_WIDTH), dp(HANDLE_HEIGHT),
@@ -159,8 +162,6 @@ class EdgePanel(private val context: Context) {
         loadPhoto()
         val owner = OverlayOwner().also { this.owner = it }
         val compose = ComposeView(context).apply {
-            setViewTreeLifecycleOwner(owner)
-            setViewTreeSavedStateRegistryOwner(owner)
             setContent {
                 AirBridgeTheme {
                     val peers by engine.peers.collectAsState()
@@ -188,6 +189,9 @@ class EdgePanel(private val context: Context) {
                 if (hasWindowFocus) readClipboard()
             }
         }
+        // Compose resolves its window recomposer from the overlay root.
+        root.setViewTreeLifecycleOwner(owner)
+        root.setViewTreeSavedStateRegistryOwner(owner)
         root.addView(compose)
         var receivingTarget: String? = null
         if (Build.VERSION.SDK_INT >= 31) {
@@ -474,8 +478,6 @@ class EdgePanel(private val context: Context) {
         private val pill = HandleView(context, rightSide, this)
         private val owner = OverlayOwner()
         private val tab = ComposeView(context).apply {
-            setViewTreeLifecycleOwner(owner)
-            setViewTreeSavedStateRegistryOwner(owner)
             visibility = GONE
             setContent {
                 AirBridgeTheme {
@@ -489,6 +491,8 @@ class EdgePanel(private val context: Context) {
         private var receivingTarget: String? = null
 
         init {
+            setViewTreeLifecycleOwner(owner)
+            setViewTreeSavedStateRegistryOwner(owner)
             contentDescription = "AirBridge edge panel"
             addView(pill, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
             addView(tab, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
