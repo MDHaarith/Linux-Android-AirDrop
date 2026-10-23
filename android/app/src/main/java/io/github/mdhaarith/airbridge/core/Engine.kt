@@ -120,6 +120,7 @@ class Engine(private val platform: Platform) {
     private val storage = platform.files
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var server: HttpServer? = null
+    var stopCompanion: (() -> Unit)? = null
     var discovery: Discovery? = null
         private set
 
@@ -168,6 +169,7 @@ class Engine(private val platform: Platform) {
 
     @Synchronized
     fun stop() {
+        stopCompanion?.invoke()
         if (!_running.value) return
         discovery?.stop()
         discovery = null
@@ -246,7 +248,7 @@ class Engine(private val platform: Platform) {
         change(id) { t -> t.copy(files = t.files.map { if (it.id == fileId) block(it) else it }) }
 
     /** Progress updates are throttled so the UI recomposes ~10×/s, not per chunk. */
-    private fun progress(id: String, fileId: String, bytes: Long) {
+    internal fun progress(id: String, fileId: String, bytes: Long) {
         val session = sessions[id] ?: return
         val now = System.currentTimeMillis()
         if (now - session.lastEmit < 100) return
@@ -365,9 +367,9 @@ class Engine(private val platform: Platform) {
         return null
     }
 
-    private suspend fun prepareUpload(req: HttpRequest): HttpResponse {
-        checkPin(req)?.let { return it }
-        val body = runCatching {
+    internal suspend fun prepareUpload(req: HttpRequest, browser: PrepareUploadRequest? = null): HttpResponse {
+        if (browser == null) checkPin(req)?.let { return it }
+        val body = browser ?: runCatching {
             Protocol.json.decodeFromString(PrepareUploadRequest.serializer(), String(req.readBody()))
         }.getOrNull() ?: return HttpResponse.error(400, "Invalid body")
         val (info, verified) = verifiedInfo(req, body.info) ?: return HttpResponse.error(400, "Invalid sender")
@@ -379,7 +381,7 @@ class Engine(private val platform: Platform) {
             ?: return HttpResponse.error(400, "Invalid file sizes")
         // Every request reaches the user (a prompt or a message): not too many.
         if (!requests.hit(req.remoteIp)) return HttpResponse.error(429, "Too many requests")
-        upsertPeer(info, req.remoteIp, verified)
+        if (browser == null) upsertPeer(info, req.remoteIp, verified)
         // Only your own devices, proven by their certificate, skip the question.
         val autoAccept = settings.value.autoAcceptTrusted && verified && isTrusted(info.fingerprint)
 
@@ -415,12 +417,16 @@ class Engine(private val platform: Platform) {
             add(base)
         }
 
-        val accepted = if (decision == null) {
+        val accepted = try { if (decision == null) {
             true
         } else {
             req.onDisconnect { if (decision.isActive) finish(base.id, Status.CANCELLED, "The sender cancelled") }
             _events.tryEmit(EngineEvent.Incoming(base.id))
             withTimeoutOrNull(5 * 60_000) { runCatching { decision.await() }.getOrDefault(false) } ?: false
+        }
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            finish(base.id, Status.CANCELLED, "Session ended")
+            throw e
         }
         session.decision = null
         if (transfer(base.id)?.status?.isFinal != false) return HttpResponse.error(403, "Cancelled")
@@ -438,7 +444,7 @@ class Engine(private val platform: Platform) {
         return HttpResponse.json(200, Protocol.json.encodeToString(PrepareUploadResponse.serializer(), response))
     }
 
-    private suspend fun upload(req: HttpRequest): HttpResponse {
+    internal suspend fun upload(req: HttpRequest): HttpResponse {
         val sessionId = req.query["sessionId"]
         val fileId = req.query["fileId"]
         val token = req.query["token"]
@@ -450,11 +456,13 @@ class Engine(private val platform: Platform) {
         if (expected == null || !MessageDigest.isEqual(expected.toByteArray(), token.toByteArray())) return HttpResponse.error(403, "Invalid token")
         val transfer = transfer(id) ?: return HttpResponse.error(403, "Invalid session")
         val file = transfer.files.firstOrNull { it.id == fileId } ?: return HttpResponse.error(403, "Invalid file")
-        if (file.status == FileStatus.DONE) return HttpResponse.error(409, "Already received")
-        if (file.status == FileStatus.TRANSFERRING) return HttpResponse.error(409, "Already receiving")
         val declared = req.headers["content-length"]?.toLongOrNull()
         if (declared != null && declared > file.size) return HttpResponse.error(413, "More data than announced")
-
+        synchronized(session) {
+            val current = transfer(id)?.files?.firstOrNull { it.id == fileId }
+            if (current == null || current.status != FileStatus.QUEUED || transfer(id)?.status != Status.TRANSFERRING) return HttpResponse.error(409, "Already receiving or session over")
+            updateFile(id, fileId) { it.copy(status = FileStatus.TRANSFERRING) }
+        }
         return withContext(Dispatchers.IO) {
             var pending: FileStore.Pending? = null
             try {
@@ -523,6 +531,29 @@ class Engine(private val platform: Platform) {
     fun copyToClipboard(text: String) = platform.copyToClipboard(text)
 
     // ---------------------------------------------------------------- sending
+
+    internal fun browserOffer(uris: List<String>): String? {
+        val picked = describe(uris)
+        if (picked.isEmpty() || picked.size > Protocol.MAX_FILES) return null
+        val t = Transfer(UUID.randomUUID().toString(), Direction.OUT, "browser", "Phone (browser)", "web",
+            files = picked.map { TFile(UUID.randomUUID().toString(), it.name, it.size, it.mime, uri = it.uri) })
+        sessions[t.id] = Session(peerIp = "browser")
+        add(t)
+        return t.id
+    }
+
+    internal fun browserAnswer(id: String, accept: Boolean) {
+        if (transfer(id)?.peerId != "browser") return
+        if (!accept) finish(id, Status.DECLINED)
+        else change(id) { if (it.status == Status.WAITING) it.copy(status = Status.TRANSFERRING, started = System.currentTimeMillis()) else it }
+    }
+
+    internal fun browserDownloaded(id: String, file: String) {
+        updateFile(id, file) { it.copy(status = FileStatus.DONE, done = it.size) }
+        finishIfComplete(id)
+    }
+
+    internal fun browserOpen(uri: String) = storage.open(uri)
 
     fun describe(uris: List<String>): List<FileStore.Picked> = uris.mapNotNull(storage::describe)
 

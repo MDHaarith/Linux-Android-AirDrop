@@ -18,7 +18,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-enum class Screen { HOME, ACTIVITY, SETTINGS }
+enum class Screen { HOME, ACTIVITY, SETTINGS, COMPANION }
 
 /** Files or text waiting for the user to pick a device (AirDrop-style). */
 data class PendingShare(val items: List<FileStore.Picked> = emptyList(), val text: String? = null) {

@@ -7,9 +7,13 @@ import android.content.ContentUris
 import android.content.Context
 import android.content.Intent
 import android.graphics.Canvas
+import android.graphics.LinearGradient
 import android.graphics.Paint
+import android.graphics.Path
 import android.graphics.PixelFormat
+import android.graphics.Point
 import android.graphics.RectF
+import android.graphics.Shader
 import android.net.Uri
 import android.os.Build
 import android.provider.MediaStore
@@ -133,6 +137,8 @@ class EdgePanel(private val context: Context) {
         ).apply {
             gravity = Gravity.TOP or if (rightSide) Gravity.END else Gravity.START
             y = (metrics.heightPixels * engine.settings.value.edgeY).toInt()
+            // Reach into the notch's strip so the handle can wrap around it.
+            layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
         }
         runCatching { windows.addView(view, params) }
             .onSuccess { handle = view }
@@ -568,35 +574,151 @@ class EdgePanel(private val context: Context) {
         fun destroy() = owner.destroy()
     }
 
-    /** The resting handle: a quiet gray pill, like the home indicator. Tap or swipe it in to open the panel; drag it along the edge to move it. */
+    /**
+     * The resting handle: a glass bump on the screen edge. It swells and follows
+     * the finger while held, wraps around a notch or punch-hole when it sits
+     * beside one, fades once left alone and all but disappears over fullscreen
+     * apps. Tap or swipe it in to open the panel; drag it along the edge to move it.
+     */
     @SuppressLint("ViewConstructor", "ClickableViewAccessibility")
     private inner class HandleView(context: Context, private val rightSide: Boolean, private val window: View) : View(context) {
-        private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = HANDLE_IDLE }
+        private val glass = Paint(Paint.ANTI_ALIAS_FLAG)
+        private val rim = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = dp(1).toFloat() }
+        // A dark hairline under the bright rim keeps the glass readable on light screens too.
+        private val shade = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = dp(2).toFloat(); color = HANDLE_SHADE }
+        private val path = Path()
+        private val screen = Point()
+        private val location = IntArray(2)
         private val slop = ViewConfiguration.get(context).scaledTouchSlop
         private var downX = 0f
         private var downY = 0f
         private var startY = 0
         private var dragging = false
+        private var pressed = false
+        private var fingerY = 0f
+        private var pull = 0f
+        private var fullscreen = false
+        private val rest = Runnable { animate().alpha(if (fullscreen) FULLSCREEN_ALPHA else IDLE_ALPHA).setDuration(700).start() }
+
+        // The bump as drawn, easing toward where it should be each frame.
+        private var depth = 0f
+        private var center = -1f
+        private var half = 0f
+
+        init {
+            setOnApplyWindowInsetsListener { _, insets ->
+                // Another app hid the status bar: it's showing something fullscreen, so stay out of the way.
+                val hidden = Build.VERSION.SDK_INT >= 30 && !insets.isVisible(android.view.WindowInsets.Type.statusBars())
+                if (hidden != fullscreen) { fullscreen = hidden; settle() }
+                invalidate()
+                insets
+            }
+        }
+
+        override fun onAttachedToWindow() {
+            super.onAttachedToWindow()
+            wake()
+        }
+
+        override fun onDetachedFromWindow() {
+            removeCallbacks(rest)
+            super.onDetachedFromWindow()
+        }
+
+        /** Full strength for a moment, then [rest]. */
+        private fun wake() {
+            animate().cancel()
+            alpha = 1f
+            settle(IDLE_DELAY)
+        }
+
+        private fun settle(delay: Long = 0) {
+            removeCallbacks(rest)
+            if (!pressed) postDelayed(rest, delay)
+        }
+
+        /** The notch or punch-hole on our edge that overlaps this window, in view coordinates. */
+        @Suppress("DEPRECATION")
+        private fun notch(): RectF? {
+            val cutouts = windows.defaultDisplay.cutout?.boundingRects ?: return null
+            windows.defaultDisplay.getRealSize(screen)
+            getLocationOnScreen(location)
+            val near = cutouts.firstOrNull { r ->
+                (if (rightSide) r.right >= screen.x - 1 else r.left <= 0) &&
+                    r.bottom > location[1] && r.top < location[1] + height
+            } ?: return null
+            return RectF(near).apply { offset(-location[0].toFloat(), -location[1].toFloat()) }
+        }
 
         override fun onDraw(canvas: Canvas) {
-            val pillWidth = dp(5).toFloat()
-            val left = if (rightSide) width - pillWidth - dp(2) else dp(2).toFloat()
-            canvas.drawRoundRect(RectF(left, height * 0.08f, left + pillWidth, height * 0.92f), pillWidth / 2, pillWidth / 2, paint)
+            val notch = notch()
+            // How far the notch reaches in from our edge.
+            val reach = notch?.let { if (rightSide) width - it.left else it.right } ?: 0f
+            val fits = if (notch != null) (reach + dp(16)).toInt().coerceAtLeast(dp(HANDLE_WIDTH)) else dp(HANDLE_WIDTH)
+            if (width != fits && visibility == VISIBLE) post { resize(fits) }
+
+            val targetDepth = when {
+                notch != null -> reach + dp(if (pressed) 12 else 8)
+                pressed -> dp(12) + pull * 0.4f
+                else -> dp(6).toFloat()
+            }.coerceAtMost((width - dp(2)).toFloat())
+            val targetCenter = notch?.centerY() ?: if (pressed) fingerY else height / 2f
+            val targetHalf = notch?.let { it.height() / 2 + dp(24) } ?: (height * if (pressed) 0.4f else 0.3f)
+            if (center < 0) { depth = targetDepth; center = targetCenter; half = targetHalf }
+            depth += (targetDepth - depth) * EASE
+            center += (targetCenter - center) * EASE
+            half += (targetHalf - half) * EASE
+            val settling = abs(targetDepth - depth) + abs(targetCenter - center) + abs(targetHalf - half) > 0.5f
+            // While held the window moves under the finger, so keep looking for the notch.
+            if (settling || pressed) postInvalidateOnAnimation()
+
+            val edge = if (rightSide) width.toFloat() else 0f
+            val tip = if (rightSide) edge - depth else edge + depth
+            val top = center - half
+            val bottom = center + half
+            val ease = half * 0.45f
+            path.rewind()
+            path.moveTo(edge, top)
+            path.cubicTo(edge, top + ease, tip, center - ease, tip, center)
+            path.cubicTo(tip, center + ease, edge, bottom - ease, edge, bottom)
+            path.close()
+
+            val (inner, outer) = if (pressed) GLASS_PRESSED else GLASS
+            glass.shader = LinearGradient(edge, 0f, tip, 0f, inner, outer, Shader.TileMode.CLAMP)
+            rim.color = if (pressed) HANDLE_ACCENT else HANDLE_RIM
+            canvas.drawPath(path, shade)
+            canvas.drawPath(path, glass)
+            canvas.drawPath(path, rim)
+        }
+
+        private fun resize(to: Int) {
+            val params = window.layoutParams as? WindowManager.LayoutParams ?: return
+            if (params.width == to || visibility != VISIBLE) return
+            params.width = to
+            runCatching { windows.updateViewLayout(window, params) }
         }
 
         override fun onTouchEvent(event: MotionEvent): Boolean {
             val params = window.layoutParams as? WindowManager.LayoutParams ?: return false
+            fingerY = event.y
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
                     downX = event.rawX
                     downY = event.rawY
                     startY = params.y
                     dragging = false
+                    pressed = true
+                    pull = 0f
+                    performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                    wake()
+                    invalidate()
                 }
+                MotionEvent.ACTION_CANCEL -> { pressed = false; invalidate(); settle(IDLE_DELAY) }
                 MotionEvent.ACTION_MOVE -> {
                     val dx = event.rawX - downX
                     val dy = event.rawY - downY
                     val inward = if (rightSide) -dx else dx
+                    pull = inward.coerceAtLeast(0f)
                     if (!dragging && inward > slop * 2 && abs(dy) < inward) {
                         dragging = true
                         open()
@@ -607,6 +729,9 @@ class EdgePanel(private val context: Context) {
                     }
                 }
                 MotionEvent.ACTION_UP -> {
+                    pressed = false
+                    invalidate()
+                    settle(IDLE_DELAY)
                     if (!dragging) {
                         performClick()
                     } else if (params.y != startY) {
@@ -643,7 +768,16 @@ class EdgePanel(private val context: Context) {
 
     companion object {
         private const val TAG = "EdgePanel"
-        private const val HANDLE_IDLE = 0x998E8E93.toInt()
+        private const val HANDLE_RIM = 0xB3FFFFFF.toInt()
+        private const val HANDLE_SHADE = 0x2E000000
+        private const val HANDLE_ACCENT = 0xFF0A84FF.toInt()
+        // Glass: (at the edge, at the tip). Brighter toward the tip, like light catching a lens.
+        private val GLASS = 0x40FFFFFF to 0x8CFFFFFF.toInt()
+        private val GLASS_PRESSED = 0x4D0A84FF to 0xA6FFFFFF.toInt()
+        private const val EASE = 0.22f
+        private const val IDLE_ALPHA = 0.45f
+        private const val FULLSCREEN_ALPHA = 0.12f
+        private const val IDLE_DELAY = 2500L
         private const val HANDLE_WIDTH = 26
         private const val HANDLE_HEIGHT = 120
         private val DROP_TYPES = arrayOf("image/*", "video/*", "audio/*", "text/*", "application/*", "font/*", "model/*")

@@ -19,6 +19,8 @@ android {
         versionName = "0.1.5"
     }
 
+    sourceSets["main"].assets.srcDir("../../linux/ui")
+
     buildTypes {
         release {
             isMinifyEnabled = true
@@ -54,6 +56,7 @@ android {
 }
 
 dependencies {
+    implementation("com.google.zxing:core:3.5.3")
     val composeBom = platform("androidx.compose:compose-bom:2024.12.01")
     implementation(composeBom)
     implementation("androidx.compose.ui:ui")

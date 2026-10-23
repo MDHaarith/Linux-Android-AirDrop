@@ -150,6 +150,7 @@ fun HomeScreen(vm: AppViewModel) {
             Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState())
                 .padding(horizontal = 16.dp).navigationBarsPadding().padding(top = 8.dp, bottom = 24.dp),
         ) {
+            SecondaryButton("Share with a phone without the app") { vm.screen = Screen.COMPANION }
             // ------------------------------------------------- this phone
             val ip = remember(running, peers.size) { Discovery.localAddresses().firstOrNull()?.address?.hostAddress }
             Row(
