@@ -5,6 +5,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
+use futures_util::TryStreamExt;
 use hyper::Method;
 use serde_json::json;
 use tokio_util::io::ReaderStream;
@@ -18,6 +19,7 @@ use crate::thumbnail;
 use crate::transfers::{now, Direction, FileState, FileStatus, Status, Transfer};
 
 const CHUNK: usize = 256 * 1024;
+const PARALLEL_UPLOADS: usize = 4;
 
 #[derive(Debug, Clone)]
 pub struct SendItem {
@@ -313,15 +315,20 @@ async fn run(app: &Arc<App>, id: &str, peer: &Peer, pin: Option<String>) -> Outc
             .map(|t| t.files.iter().map(|f| f.id.clone()).collect())
             .unwrap_or_default()
     };
-    for file_id in order {
-        let Some(token) = accepted.files.get(&file_id) else {
-            continue;
-        };
-        if let Err(outcome) = upload(app, id, peer, &accepted.session_id, &file_id, token).await {
-            return outcome;
-        }
+    // A few files at once hides the per-file handshake and save cost; receivers allow 8+ connections per IP.
+    let uploads = order
+        .into_iter()
+        .filter_map(|file_id| accepted.files.get(&file_id).map(|token| Ok((file_id, token))));
+    let session = &accepted.session_id;
+    match futures_util::stream::iter(uploads)
+        .try_for_each_concurrent(PARALLEL_UPLOADS, |(file_id, token)| async move {
+            upload(app, id, peer, session, &file_id, token).await
+        })
+        .await
+    {
+        Ok(()) => Outcome::Done,
+        Err(outcome) => outcome,
     }
-    Outcome::Done
 }
 
 async fn upload(
