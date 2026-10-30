@@ -140,6 +140,10 @@ fun SettingsScreen(vm: AppViewModel) {
                 val addresses = remember(running) { Discovery.localAddresses().joinToString { it.address.hostAddress ?: "" } }
                 ListRow("Version", chevron = false) { Text(BuildConfig.VERSION_NAME, color = air.muted, fontSize = 17.sp) }
                 RowSeparator()
+                ListRow("Update", subtitle = "Install the newest release from GitHub", onClick = { vm.updateApp(context) }, chevron = false) {
+                    Text(vm.updateStatus ?: "Check", color = if (vm.updateStatus == null) air.accent else air.muted, fontSize = 17.sp)
+                }
+                RowSeparator()
                 ListRow("Address", chevron = false) { Text("${addresses.ifEmpty { "offline" }} · ${engine.port}", color = air.muted, fontSize = 15.sp) }
                 RowSeparator()
                 Column(Modifier.padding(horizontal = 16.dp, vertical = 11.dp)) {

@@ -41,6 +41,7 @@ import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.platform.ComposeView
 import androidx.compose.runtime.collectAsState
 import androidx.lifecycle.Lifecycle
@@ -67,6 +68,8 @@ import io.github.mdhaarith.airbridge.ui.DropStyle
 import io.github.mdhaarith.airbridge.ui.DropTarget
 import io.github.mdhaarith.airbridge.ui.EdgeAction
 import io.github.mdhaarith.airbridge.ui.EdgePanelContent
+import io.github.mdhaarith.airbridge.ui.LocalWindowBlur
+import io.github.mdhaarith.airbridge.ui.WINDOW_BLUR_DP
 import io.github.mdhaarith.airbridge.ui.EdgePanelUi
 import io.github.mdhaarith.airbridge.ui.SharePhase
 import io.github.mdhaarith.airbridge.ui.timeAgo
@@ -172,16 +175,19 @@ class EdgePanel(private val context: Context) {
         }
         loadPhoto()
         val owner = OverlayOwner().also { this.owner = it }
+        val blurBehind = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && windows.isCrossWindowBlurEnabled
         val compose = ComposeView(context).apply {
             setContent {
                 AirBridgeTheme {
-                    val peers by engine.peers.collectAsState()
-                    val transfers by engine.transfers.collectAsState()
-                    val settings by engine.settings.state.collectAsState()
-                    val ui = uiState(peers, settings.trusted, transfers)
-                    EdgePanelContent(ui, onSelect = ::select, onPick = ::send, onClose = ::close,
-                        onDefault = ::setDefault, onSendAll = ::sendAll,
-                        onDropBounds = { id, bounds -> panelTargets[id] = bounds })
+                    CompositionLocalProvider(LocalWindowBlur provides blurBehind) {
+                        val peers by engine.peers.collectAsState()
+                        val transfers by engine.transfers.collectAsState()
+                        val settings by engine.settings.state.collectAsState()
+                        val ui = uiState(peers, settings.trusted, transfers)
+                        EdgePanelContent(ui, onSelect = ::select, onPick = ::send, onClose = ::close,
+                            onDefault = ::setDefault, onSendAll = ::sendAll,
+                            onDropBounds = { id, bounds -> panelTargets[id] = bounds })
+                    }
                 }
             }
         }
@@ -234,6 +240,11 @@ class EdgePanel(private val context: Context) {
             WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
             PixelFormat.TRANSLUCENT,
         )
+        if (blurBehind) {
+            // The panel is glass over the other app: the compositor blurs the screen behind it.
+            params.flags = params.flags or WindowManager.LayoutParams.FLAG_BLUR_BEHIND
+            params.blurBehindRadius = (WINDOW_BLUR_DP * context.resources.displayMetrics.density).toInt()
+        }
         runCatching { windows.addView(root, params) }
             .onSuccess { panel = root }
             .onFailure { Log.w(TAG, "could not open the edge panel", it); owner.destroy() }

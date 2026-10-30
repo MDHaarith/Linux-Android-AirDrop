@@ -1,6 +1,9 @@
 package io.github.mdhaarith.airbridge.ui
 
+import android.content.Context
+import android.content.Intent
 import android.net.Uri
+import android.provider.Settings
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
@@ -8,6 +11,9 @@ import androidx.compose.runtime.setValue
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import io.github.mdhaarith.airbridge.AirBridgeApp
+import io.github.mdhaarith.airbridge.BuildConfig
+import io.github.mdhaarith.airbridge.service.Updater
+import kotlinx.coroutines.CancellationException
 import io.github.mdhaarith.airbridge.core.Direction
 import io.github.mdhaarith.airbridge.core.Engine
 import io.github.mdhaarith.airbridge.core.EngineEvent
@@ -84,6 +90,34 @@ class AppViewModel(val engine: Engine = AirBridgeApp.engine) : ViewModel() {
             toast("Transfer from ${t.peerAlias} failed", t.error ?: "", good = false)
         }
         incoming.remove(t.id)
+    }
+
+    /** What the Update row is doing ("Checking…", "Downloading 40%"), null when idle. */
+    var updateStatus by mutableStateOf<String?>(null)
+
+    /** Checks GitHub for a newer release and installs it. */
+    fun updateApp(context: Context) {
+        if (updateStatus != null) return
+        updateStatus = "Checking…"
+        viewModelScope.launch {
+            try {
+                val update = Updater.check()
+                when {
+                    update == null -> toast("AirBridge is up to date", "Version ${BuildConfig.VERSION_NAME}")
+                    !context.packageManager.canRequestPackageInstalls() -> {
+                        toast("Allow AirBridge to install apps", "Then tap Update again for ${update.tag}")
+                        context.startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:${context.packageName}")))
+                    }
+                    else -> Updater.install(context.applicationContext, update) { updateStatus = "Downloading ${(it * 100).toInt()}%" }
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                toast("Couldn't update", e.message ?: "Check your connection", good = false)
+            } finally {
+                updateStatus = null
+            }
+        }
     }
 
     fun toast(title: String, text: String = "", good: Boolean = true, copyText: String? = null) {
