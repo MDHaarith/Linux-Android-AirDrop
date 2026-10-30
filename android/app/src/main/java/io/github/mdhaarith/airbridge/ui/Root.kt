@@ -39,6 +39,7 @@ import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
@@ -69,6 +70,8 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.kyant.backdrop.backdrops.layerBackdrop
+import com.kyant.backdrop.backdrops.rememberLayerBackdrop
 import io.github.mdhaarith.airbridge.PreviewImages
 import io.github.mdhaarith.airbridge.core.Direction
 import io.github.mdhaarith.airbridge.core.Previews
@@ -79,9 +82,12 @@ import io.github.mdhaarith.airbridge.core.sharePhrase
 @Composable
 fun AirBridgeRoot(vm: AppViewModel) {
     val air = LocalAir.current
-    Box(Modifier.fillMaxSize().background(air.bg)) {
+    val backdrop = rememberLayerBackdrop()
+    Box(Modifier.fillMaxSize()) {
         AnimatedContent(
             targetState = vm.screen,
+            // Recorded (with its background) for the glass banners floating above.
+            modifier = Modifier.fillMaxSize().layerBackdrop(backdrop).background(air.bg),
             transitionSpec = {
                 // A navigation push: the new screen slides in from the right.
                 val forward = targetState.ordinal > initialState.ordinal
@@ -98,7 +104,9 @@ fun AirBridgeRoot(vm: AppViewModel) {
             }
         }
         BackHandler(enabled = vm.screen != Screen.HOME) { vm.screen = Screen.HOME }
-        Banners(vm, Modifier.align(Alignment.TopCenter).statusBarsPadding().padding(top = 6.dp))
+        CompositionLocalProvider(LocalBackdrop provides backdrop) {
+            Banners(vm, Modifier.align(Alignment.TopCenter).statusBarsPadding().padding(top = 6.dp))
+        }
         IncomingAlert(vm)
         PinDialog(vm)
     }
@@ -117,9 +125,7 @@ private fun Banners(vm: AppViewModel, modifier: Modifier) {
                     Row(
                         Modifier
                             .fillMaxWidth()
-                            .shadow(16.dp, RoundedCornerShape(20.dp))
-                            .clip(RoundedCornerShape(20.dp))
-                            .background(air.elevated)
+                            .liquidGlass(RoundedCornerShape(20.dp))
                             .padding(13.dp),
                         verticalAlignment = Alignment.Top,
                     ) {

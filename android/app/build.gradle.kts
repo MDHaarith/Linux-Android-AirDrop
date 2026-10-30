@@ -67,7 +67,9 @@ android {
 
 dependencies {
     implementation("com.google.zxing:core:3.5.3")
-    val composeBom = platform("androidx.compose:compose-bom:2024.12.01")
+    // Liquid glass (backdrop blur + lens refraction) for floating surfaces.
+    implementation("io.github.kyant0:backdrop:1.0.0")
+    val composeBom = platform("androidx.compose:compose-bom:2025.10.01")
     implementation(composeBom)
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.ui:ui-graphics")

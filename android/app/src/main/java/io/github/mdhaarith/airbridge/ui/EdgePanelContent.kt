@@ -119,9 +119,7 @@ fun EdgePanelContent(
                 .width(296.dp)
                 .heightIn(max = 720.dp)
                 .graphicsLayer { translationX = sign * (1f - shown.value) * (size.width + 60f) }
-                .shadow(28.dp, RoundedCornerShape(22.dp))
-                .clip(RoundedCornerShape(22.dp))
-                .background(air.bg)
+                .liquidGlass(RoundedCornerShape(22.dp), fallback = air.bg, elevation = 28.dp)
                 .clickable(remember { MutableInteractionSource() }, indication = null) {}
                 .verticalScroll(rememberScrollState())
                 .padding(14.dp),

@@ -32,6 +32,7 @@ import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowRight
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
@@ -294,23 +295,26 @@ data class AlertAction(val label: String, val bold: Boolean = false, val destruc
 @Composable
 fun AlertCard(actions: List<AlertAction>, modifier: Modifier = Modifier, width: Dp = 290.dp, content: @Composable ColumnScope.() -> Unit) {
     val air = LocalAir.current
-    Column(modifier.width(width).shadow(24.dp, RoundedCornerShape(14.dp)).clip(RoundedCornerShape(14.dp)).background(air.elevated)) {
-        Column(
-            Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 18.dp, bottom = 16.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            content = content,
-        )
-        Box(Modifier.fillMaxWidth().height(0.5.dp).background(air.separator))
-        Row(Modifier.fillMaxWidth().height(46.dp)) {
-            actions.forEachIndexed { i, action ->
-                if (i > 0) Box(Modifier.width(0.5.dp).height(46.dp).background(air.separator))
-                Box(Modifier.weight(1f).height(46.dp).pressable(action.onClick), contentAlignment = Alignment.Center) {
-                    Text(
-                        action.label,
-                        color = if (action.destructive) air.danger else air.accent,
-                        fontSize = 17.sp,
-                        fontWeight = if (action.bold) FontWeight.SemiBold else FontWeight.Normal,
-                    )
+    val blurred = dialogWindowBlur(14.dp)
+    CompositionLocalProvider(LocalWindowBlur provides blurred) {
+        Column(modifier.width(width).liquidGlass(RoundedCornerShape(14.dp), elevation = 24.dp)) {
+            Column(
+                Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 18.dp, bottom = 16.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                content = content,
+            )
+            Box(Modifier.fillMaxWidth().height(0.5.dp).background(air.separator))
+            Row(Modifier.fillMaxWidth().height(46.dp)) {
+                actions.forEachIndexed { i, action ->
+                    if (i > 0) Box(Modifier.width(0.5.dp).height(46.dp).background(air.separator))
+                    Box(Modifier.weight(1f).height(46.dp).pressable(action.onClick), contentAlignment = Alignment.Center) {
+                        Text(
+                            action.label,
+                            color = if (action.destructive) air.danger else air.accent,
+                            fontSize = 17.sp,
+                            fontWeight = if (action.bold) FontWeight.SemiBold else FontWeight.Normal,
+                        )
+                    }
                 }
             }
         }
