@@ -4,6 +4,10 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.serialization.json.int
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import org.junit.After
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
@@ -83,6 +87,76 @@ class LinuxInteropTest {
             .start()
         val output = process.inputStream.bufferedReader().readText()
         return process.waitFor() to output
+    }
+
+    /** The desktop window's own API, authorized the way the CLI is. */
+    private fun ui(path: String, post: String? = null): Pair<Int, String> {
+        val instance = linuxHome.walkTopDown().first { it.name == "instance.json" }.readText()
+        val info = Protocol.json.parseToJsonElement(instance).jsonObject
+        val connection = java.net.URL("http://127.0.0.1:${info.getValue("port").jsonPrimitive.int}$path").openConnection() as java.net.HttpURLConnection
+        connection.setRequestProperty("x-airbridge-token", info.getValue("token").jsonPrimitive.content)
+        if (post != null) {
+            connection.doOutput = true
+            connection.setRequestProperty("content-type", "application/json")
+            connection.outputStream.use { it.write(post.toByteArray()) }
+        }
+        val body = (if (connection.responseCode < 400) connection.inputStream else connection.errorStream)?.bufferedReader()?.readText().orEmpty()
+        return connection.responseCode to body
+    }
+
+    /** Reads the QR drawn in the window's SVG, as the phone's camera would. */
+    private fun readQr(svg: String): String {
+        val size = Regex("""viewBox="0 0 (\d+) (\d+)"""").find(svg)!!.groupValues[1].toInt()
+        val margin = 40 // The window puts a white card around the code.
+        val stride = size + 2 * margin
+        val frame = ByteArray(stride * stride) { -1 }
+        Regex("""M(\d+) (\d+)h(\d+)v(\d+)H\d+V\d+""").findAll(svg).forEach { rect ->
+            val (x, y, w, h) = rect.destructured
+            for (row in y.toInt() until y.toInt() + h.toInt()) for (col in x.toInt() until x.toInt() + w.toInt()) {
+                frame[(row + margin) * stride + col + margin] = 0
+            }
+        }
+        return decodeQr(frame, stride, stride, stride) ?: error("no QR code in the SVG")
+    }
+
+    private fun linuxTrusted(): List<String> =
+        Protocol.json.parseToJsonElement(ui("/api/state").second).jsonObject.getValue("settings").jsonObject.getValue("trusted").jsonArray.map { it.jsonPrimitive.content }
+
+    @Test
+    fun scanningTheWindowsQrPairsBothDevices() = runBlocking {
+        val linuxId = linuxFingerprint()
+        engine.start()
+        val phoneId = engine.identity.fingerprint
+        assertEquals(204, ui("/api/peers/$phoneId/trust", """{"trusted":false}""").first)
+        assertFalse(phoneId in linuxTrusted())
+
+        val (status, svg) = ui("/api/pair-qr.svg")
+        assertEquals(svg, 200, status)
+        val scanned = PairCode.parse(readQr(svg))
+        assertNotNull("the window's QR is a valid pairing code", scanned)
+        assertEquals(linuxId, scanned!!.fingerprint)
+        assertEquals(null, scanned.ssid)
+
+        val code = scanned.copy(ip = "127.0.0.1") // This machine's own address may not be routable in CI.
+        assertNotNull(engine.discovery!!.registerWith(code.ip, code.port, true, code.fingerprint, 4_000))
+        assertTrue(engine.redeemPair(code))
+        assertTrue(phoneId in linuxTrusted())
+        assertTrue(engine.isTrusted(linuxId))
+        val knownPhone = Protocol.json.parseToJsonElement(ui("/api/state").second).jsonObject.getValue("settings").jsonObject
+            .getValue("known").jsonArray.first { it.jsonObject.getValue("fingerprint").jsonPrimitive.content == phoneId }.jsonObject
+        assertEquals(engine.settings.value.alias, knownPhone.getValue("alias").jsonPrimitive.content)
+        assertEquals(engine.port, knownPhone.getValue("port").jsonPrimitive.int)
+        val remembered = knownPhone.getValue("addresses").jsonArray.map { it.jsonPrimitive.content }
+        assertTrue(remembered.containsAll(ownAddresses()))
+
+        // A QR photographed by someone else: the key is spent, and a new QR replaces an old key.
+        assertFalse(engine.redeemPair(code))
+        assertEquals(200, ui("/api/pair-qr.svg").first)
+        assertFalse(engine.redeemPair(code))
+
+        // A device claiming a different certificate never gets the key.
+        val fresh = PairCode.parse(readQr(ui("/api/pair-qr.svg").second))!!.copy(ip = "127.0.0.1", fingerprint = "0".repeat(64))
+        assertTrue(runCatching { engine.redeemPair(fresh) }.exceptionOrNull() is PinMismatchException)
     }
 
     /** Width and height from a JPEG's start-of-frame marker. */

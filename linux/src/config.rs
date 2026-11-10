@@ -1,5 +1,6 @@
 //! Settings and filesystem locations.
 
+use std::net::Ipv4Addr;
 use std::path::{Path, PathBuf};
 
 use rand::seq::SliceRandom;
@@ -47,12 +48,18 @@ pub fn random_alias() -> String {
     )
 }
 
+#[cfg(target_os = "linux")]
 fn hostname() -> String {
     std::fs::read_to_string("/proc/sys/kernel/hostname")
         .or_else(|_| std::fs::read_to_string("/etc/hostname"))
         .unwrap_or_default()
         .trim()
         .to_string()
+}
+
+#[cfg(windows)]
+fn hostname() -> String {
+    std::env::var("COMPUTERNAME").unwrap_or_default()
 }
 
 pub fn default_alias() -> String {
@@ -75,6 +82,7 @@ pub fn default_alias() -> String {
         .join(" ")
 }
 
+#[cfg(target_os = "linux")]
 pub fn default_device_model() -> String {
     std::fs::read_to_string("/etc/os-release")
         .ok()
@@ -86,6 +94,11 @@ pub fn default_device_model() -> String {
         })
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "Linux".into())
+}
+
+#[cfg(windows)]
+pub fn default_device_model() -> String {
+    "Windows".into()
 }
 
 fn base_override() -> Option<PathBuf> {
@@ -122,19 +135,27 @@ pub fn runtime_dir() -> PathBuf {
     if let Some(base) = base_override() {
         return base.join("run");
     }
+    #[cfg(windows)]
+    return data_dir().join("run");
+    #[cfg(target_os = "linux")]
     match dirs::runtime_dir() {
         Some(dir) => dir.join(APP_ID),
         None => PathBuf::from(format!("/tmp/{APP_ID}-{}", current_uid())),
     }
 }
 
+#[cfg(target_os = "linux")]
 fn current_uid() -> u32 {
     // SAFETY: getuid() has no preconditions and cannot fail.
     unsafe { nix::libc::getuid() }
 }
 
 fn home() -> PathBuf {
-    dirs::home_dir().unwrap_or_else(|| PathBuf::from("/tmp"))
+    #[cfg(target_os = "linux")]
+    let fallback = || PathBuf::from("/tmp");
+    #[cfg(windows)]
+    let fallback = std::env::temp_dir;
+    dirs::home_dir().unwrap_or_else(fallback)
 }
 
 pub fn default_download_dir() -> PathBuf {
@@ -152,7 +173,16 @@ fn random_key() -> String {
         .collect()
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KnownDevice {
+    pub fingerprint: String,
+    pub alias: String,
+    pub port: u16,
+    pub addresses: Vec<Ipv4Addr>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct Settings {
     pub alias: String,
@@ -164,6 +194,8 @@ pub struct Settings {
     pub download_dir: PathBuf,
     /// Fingerprints of devices the user trusts.
     pub trusted: Vec<String>,
+    /// Reachable addresses only; `trusted` still decides who is trusted.
+    pub known: Vec<KnownDevice>,
     /// Accept transfers from trusted devices without asking.
     pub auto_accept_trusted: bool,
     /// Optional PIN senders must provide (LocalSend `?pin=`).
@@ -203,6 +235,7 @@ impl Default for Settings {
             https: true,
             download_dir: default_download_dir(),
             trusted: Vec::new(),
+            known: Vec::new(),
             auto_accept_trusted: true,
             pin: String::new(),
             copy_received_text: true,
@@ -214,7 +247,7 @@ impl Default for Settings {
             notifications: true,
             theme: "auto".into(),
             quick_share: true,
-            edge_drop: true,
+            edge_drop: cfg!(target_os = "linux"),
             edge_side: "right".into(),
             drop_recipient: None,
             open_received: true,
@@ -223,6 +256,59 @@ impl Default for Settings {
 }
 
 impl Settings {
+    pub fn set_trusted(&mut self, id: &str, trusted: bool) {
+        if trusted {
+            if !self.trusted.iter().any(|t| t == id) {
+                self.trusted.push(id.to_string());
+            }
+        } else {
+            self.trusted.retain(|t| t != id);
+            self.known.retain(|device| device.fingerprint != id);
+        }
+    }
+
+    pub fn remember_device(
+        &mut self,
+        fingerprint: &str,
+        alias: &str,
+        port: u16,
+        addresses: impl IntoIterator<Item = Ipv4Addr>,
+    ) {
+        if port < 1024 || !self.trusted.iter().any(|id| id == fingerprint) {
+            return;
+        }
+        let old = self
+            .known
+            .iter()
+            .position(|device| device.fingerprint == fingerprint);
+        let previous = old
+            .map(|i| self.known[i].addresses.clone())
+            .unwrap_or_default();
+        let mut merged = Vec::new();
+        for ip in addresses.into_iter().chain(previous) {
+            if crate::net::is_pair_address(ip) && !merged.contains(&ip) {
+                merged.push(ip);
+                if merged.len() == 6 {
+                    break;
+                }
+            }
+        }
+        if merged.is_empty() {
+            return;
+        }
+        let device = KnownDevice {
+            fingerprint: fingerprint.to_string(),
+            alias: alias.to_string(),
+            port,
+            addresses: merged,
+        };
+        if let Some(i) = old {
+            self.known[i] = device;
+        } else {
+            self.known.push(device);
+        }
+    }
+
     pub fn path() -> PathBuf {
         config_dir().join("settings.json")
     }
@@ -384,6 +470,35 @@ fn check_download_dir(dir: &Path) -> Result<(), String> {
     if !dir.is_absolute() {
         return Err("Choose a full folder path".into());
     }
+    #[cfg(windows)]
+    {
+        let components: Vec<_> = dir.components().collect();
+        let path = dir
+            .to_string_lossy()
+            .replace('/', "\\")
+            .to_ascii_lowercase();
+        let protected = [
+            "WINDIR",
+            "ProgramFiles",
+            "ProgramFiles(x86)",
+            "ProgramData",
+            "APPDATA",
+            "LOCALAPPDATA",
+        ]
+        .into_iter()
+        .filter_map(|name| std::env::var(name).ok())
+        .any(|root| {
+            let root = root.replace('/', "\\").to_ascii_lowercase();
+            path == root || path.starts_with(&format!("{root}\\"))
+        });
+        if protected
+            || components
+                .iter()
+                .any(|c| matches!(c, std::path::Component::ParentDir))
+        {
+            return Err("Choose a regular folder, not a hidden or system one".into());
+        }
+    }
     let home = home();
     let inside_home = dir.strip_prefix(&home).ok();
     let hidden = inside_home.is_some_and(|rest| {
@@ -402,6 +517,7 @@ fn check_download_dir(dir: &Path) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(target_os = "linux")]
 pub fn write_private(path: &Path, contents: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
     use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
@@ -441,9 +557,28 @@ pub fn write_private(path: &Path, contents: &[u8]) -> std::io::Result<()> {
     })
 }
 
+#[cfg(windows)]
+pub fn write_private(path: &Path, contents: &[u8]) -> std::io::Result<()> {
+    let parent = path.parent().unwrap_or(Path::new("."));
+    std::fs::create_dir_all(parent)?;
+    // shortcut: inherit the private user profile ACL; set explicit ACLs if shared storage is supported.
+    std::fs::write(path, contents)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_downloads_cannot_land_in_startup_or_system_folders() {
+        for name in ["WINDIR", "ProgramFiles", "APPDATA", "LOCALAPPDATA"] {
+            if let Some(root) = std::env::var_os(name) {
+                assert!(check_download_dir(&PathBuf::from(root).join("AirBridge")).is_err());
+            }
+        }
+        assert!(check_download_dir(Path::new(r"C:\Users\me\Downloads\..\AppData")).is_err());
+    }
 
     #[test]
     fn drop_recipient_round_trips_and_can_be_cleared() {
@@ -458,5 +593,49 @@ mod tests {
         assert!(settings.drop_recipient.is_none());
         settings.apply(&serde_json::json!({"dropRecipient": 42}));
         assert!(settings.drop_recipient.is_none());
+    }
+
+    #[test]
+    fn known_devices_are_trusted_bounded_and_removed_on_untrust() {
+        let mut settings = Settings::default();
+        let ips = [
+            "100.64.1.2",
+            "192.168.1.2",
+            "10.0.0.2",
+            "172.16.0.2",
+            "10.1.0.2",
+            "10.2.0.2",
+            "10.3.0.2",
+        ]
+        .map(|ip| ip.parse().unwrap());
+        settings.remember_device("paired", "Phone", 53317, ips);
+        assert!(settings.known.is_empty());
+        settings.set_trusted("paired", true);
+        settings.remember_device("paired", "Phone", 53317, ips);
+        assert_eq!(settings.known[0].addresses, ips[..6]);
+        settings.remember_device(
+            "paired",
+            "Renamed",
+            53318,
+            [ips[2], Ipv4Addr::LOCALHOST, ips[0]],
+        );
+        assert_eq!(
+            settings.known[0].addresses,
+            [ips[2], ips[0], ips[1], ips[3], ips[4], ips[5]]
+        );
+        assert_eq!(settings.known[0].alias, "Renamed");
+        assert_eq!(settings.known[0].port, 53318);
+        let unchanged = settings.clone();
+        settings.set_trusted("paired", true);
+        settings.remember_device("paired", "Renamed", 53318, [ips[2]]);
+        assert_eq!(settings, unchanged);
+        settings.remember_device("paired", "Invalid", 22, [ips[0]]);
+        assert_eq!(settings, unchanged);
+        let restored: Settings =
+            serde_json::from_str(&serde_json::to_string(&settings).unwrap()).unwrap();
+        assert_eq!(restored, settings);
+        settings.set_trusted("paired", false);
+        assert!(settings.known.is_empty());
+        assert!(settings.trusted.is_empty());
     }
 }

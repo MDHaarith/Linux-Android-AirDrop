@@ -1,6 +1,7 @@
 //! Writing received files to the download folder.
 
 use std::collections::HashSet;
+#[cfg(target_os = "linux")]
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -83,14 +84,14 @@ fn create_folders(root: &Path, relative: &Path) -> Result<PathBuf, SaveError> {
         };
         dir.push(name);
         match std::fs::symlink_metadata(&dir) {
-            Ok(meta) if meta.is_dir() => {}
+            Ok(meta) if real_directory(&meta) => {}
             Ok(_) => return Err(SaveError::Io("invalid file name".into())),
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
                 match std::fs::create_dir(&dir) {
                     Ok(()) => {}
                     // Created by a parallel upload of the same folder.
                     Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
-                        if !std::fs::symlink_metadata(&dir)?.is_dir() {
+                        if !real_directory(&std::fs::symlink_metadata(&dir)?) {
                             return Err(SaveError::Io("invalid file name".into()));
                         }
                     }
@@ -103,8 +104,21 @@ fn create_folders(root: &Path, relative: &Path) -> Result<PathBuf, SaveError> {
     Ok(dir)
 }
 
+fn real_directory(meta: &std::fs::Metadata) -> bool {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        // Junctions and other reparse points can redirect writes just like symlinks.
+        if meta.file_attributes() & 0x400 != 0 {
+            return false;
+        }
+    }
+    meta.is_dir() && !meta.file_type().is_symlink()
+}
+
 /// Opens the partial file without following symlinks and without reusing an
 /// existing file (a leftover from a crash is replaced, not appended to).
+#[cfg(target_os = "linux")]
 fn create_part(path: &Path) -> std::io::Result<std::fs::File> {
     let open = || {
         std::fs::OpenOptions::new()
@@ -120,6 +134,15 @@ fn create_part(path: &Path) -> std::io::Result<std::fs::File> {
         }
         other => other,
     }
+}
+
+#[cfg(windows)]
+fn create_part(path: &Path) -> std::io::Result<std::fs::File> {
+    // create_new rejects existing files, symlinks and reparse points atomically.
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
 }
 
 /// Moves the finished file into place without replacing anything that
@@ -139,7 +162,35 @@ fn commit(app: &App, part: &Path, target: PathBuf) -> std::io::Result<PathBuf> {
             }
             // File systems without hard links (FAT on a USB stick).
             Err(_) => {
+                #[cfg(target_os = "linux")]
                 std::fs::rename(part, &target)?;
+                #[cfg(windows)]
+                {
+                    // FAT has no hard links; create_new still prevents replacing another file.
+                    let mut output = match std::fs::OpenOptions::new()
+                        .write(true)
+                        .create_new(true)
+                        .open(&target)
+                    {
+                        Ok(output) => output,
+                        Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+                            let next = app.reservations.claim(&target);
+                            app.reservations.release(&target);
+                            target = next;
+                            continue;
+                        }
+                        Err(err) => return Err(err),
+                    };
+                    let copied = std::fs::File::open(part)
+                        .and_then(|mut input| std::io::copy(&mut input, &mut output))
+                        .and_then(|_| output.sync_all());
+                    drop(output);
+                    if let Err(err) = copied {
+                        let _ = std::fs::remove_file(&target);
+                        return Err(err);
+                    }
+                    std::fs::remove_file(part)?;
+                }
                 return Ok(target);
             }
         }
@@ -148,9 +199,16 @@ fn commit(app: &App, part: &Path, target: PathBuf) -> std::io::Result<PathBuf> {
 }
 
 /// Free bytes on the filesystem holding `path`.
+#[cfg(target_os = "linux")]
 pub fn free_space(path: &Path) -> Option<u64> {
     let stat = nix::sys::statvfs::statvfs(path).ok()?;
     Some(stat.blocks_available() as u64 * stat.fragment_size() as u64)
+}
+
+#[cfg(windows)]
+pub fn free_space(_path: &Path) -> Option<u64> {
+    // shortcut: no std disk-space API; add a native query when preflight space checks are needed.
+    None
 }
 
 /// Cleans up after an upload that did not complete (also on client disconnect).
@@ -161,6 +219,8 @@ struct UploadGuard {
     part: PathBuf,
     target: PathBuf,
     committed: bool,
+    #[cfg(windows)]
+    part_created: bool,
 }
 
 impl Drop for UploadGuard {
@@ -169,7 +229,13 @@ impl Drop for UploadGuard {
         if self.committed {
             return;
         }
-        let _ = std::fs::remove_file(&self.part);
+        #[cfg(windows)]
+        let remove_part = self.part_created;
+        #[cfg(target_os = "linux")]
+        let remove_part = true;
+        if remove_part {
+            let _ = std::fs::remove_file(&self.part);
+        }
         {
             let mut transfers = self.app.transfers.lock().unwrap();
             if let Some(f) = transfers
@@ -236,6 +302,9 @@ where
         ".{}.airbridge-part",
         target.file_name().unwrap_or_default().to_string_lossy()
     ));
+    // A stale Windows partial must not block the next transfer of the same name.
+    #[cfg(windows)]
+    let part = part.with_extension(format!("{}.airbridge-part", uuid::Uuid::new_v4().simple()));
     let mut guard = UploadGuard {
         app: app.clone(),
         transfer_id: transfer_id.to_string(),
@@ -243,9 +312,15 @@ where
         part: part.clone(),
         target: target.clone(),
         committed: false,
+        #[cfg(windows)]
+        part_created: false,
     };
 
     let mut file = tokio::fs::File::from_std(create_part(&part)?);
+    #[cfg(windows)]
+    {
+        guard.part_created = true;
+    }
     let mut hasher = dto.sha256.as_ref().map(|_| Sha256::new());
     let mut received = 0u64;
     loop {
@@ -363,5 +438,51 @@ pub fn finish_if_complete(app: &Arc<App>, transfer_id: &str) {
     };
     if finished && status == Status::Done {
         app.on_files_received(transfer_id);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn folders_stay_inside_root_and_existing_parts_are_not_followed() {
+        let root = tempfile::tempdir().unwrap();
+        assert!(create_folders(root.path(), Path::new("../outside")).is_err());
+        assert!(create_folders(root.path(), Path::new("nested/folder")).is_ok());
+        let part = root.path().join("part");
+        std::fs::write(&part, b"keep").unwrap();
+        #[cfg(windows)]
+        {
+            assert!(create_part(&part).is_err());
+            assert_eq!(std::fs::read(&part).unwrap(), b"keep");
+        }
+        #[cfg(target_os = "linux")]
+        {
+            let outside = tempfile::tempdir().unwrap();
+            std::os::unix::fs::symlink(outside.path(), root.path().join("link")).unwrap();
+            assert!(create_folders(root.path(), Path::new("link/escape")).is_err());
+            std::os::unix::fs::symlink(&part, root.path().join("part-link")).unwrap();
+            create_part(&root.path().join("part-link")).unwrap();
+            assert_eq!(std::fs::read(&part).unwrap(), b"keep");
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn junctions_are_not_receive_folders() {
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        // Fixed test command; no sender-controlled path ever reaches a shell.
+        let status = std::process::Command::new("cmd.exe")
+            .args(["/c", "mklink", "/J"])
+            .arg(root.path().join("junction"))
+            .arg(outside.path())
+            .status()
+            .unwrap();
+        assert!(status.success());
+        assert!(create_part(&root.path().join("junction")).is_err());
+        assert!(create_folders(root.path(), Path::new("junction/escape")).is_err());
+        assert!(!outside.path().join("escape").exists());
     }
 }

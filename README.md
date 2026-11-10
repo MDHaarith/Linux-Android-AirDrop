@@ -1,6 +1,6 @@
 # AirBridge
 
-**AirDrop-style sharing between your Linux computer and your Android phone.**
+**AirDrop-style sharing between your Linux or Windows computer and your Android phone.**
 Drop a file on your phone and it arrives. Send links, notes and the clipboard in one tap.
 There is no cloud, no cable and no account. It looks and behaves like AirDrop between a Mac and
 an iPhone: clean frosted cards, gray device avatars, one blue accent and calm animations, in
@@ -8,7 +8,7 @@ light and dark.
 
 <p align="center">
   <img src="docs/screenshots/desktop-incoming.png" width="62%" alt="Desktop: “Studio PC” would like to share a photo, with a preview of the photo, Decline and Accept">
-  <img src="docs/screenshots/android-incomingRequest.png" width="27%" alt="Android: the same request as an iOS-style alert with the photo">
+  <img src="docs/screenshots/android-incomingRequest.png" width="27%" alt="Android: Material receive dialog with a photo preview">
 </p>
 
 AirBridge speaks the open **[LocalSend](https://github.com/localsend/localsend) v2 protocol**, so it
@@ -21,8 +21,9 @@ your computer from its own share sheet, just like an iPhone with a Mac. Backgrou
 | Part | Tech | Highlights |
 |---|---|---|
 | **Linux app** (`linux/`) | Rust (tokio, axum, rustls) + an embedded web UI | AirDrop-style window and requests, drag & drop, **Quick Share for stock Android**, **screen-edge drop zone** (KDE Plasma, wlroots, X11), tray icon, notifications with Accept/Decline, CLI, file-manager "Send with AirBridge" |
+| **Windows app** (same `linux/` crate) | Rust + the same embedded web UI | LocalSend HTTPS, QR pairing, remembered addresses / Tailscale, Edge app window, native file dialogs and clipboard |
 | **Android app** (`android/`) | Kotlin + Jetpack Compose | iOS-style app and requests, **your devices in the system share sheet (Direct Share)**, a one-tap share sheet, **edge panel over any app**, photo previews in notifications, Quick Settings tile, background receiving |
-| **Phone browser companion** | Served by the Linux app | A phone with *no app at all* scans a QR code and shares through its browser |
+| **Phone browser companion** | Served by the desktop app | A phone with *no app at all* scans a QR code and shares through its browser |
 
 ### Like AirDrop on a Mac
 
@@ -110,8 +111,8 @@ Received photos show up as a preview in the notification.
 </table>
 
 <p align="center">
-  <img src="docs/screenshots/android-home.png" width="19%" alt="Android: nearby devices">
-  <img src="docs/screenshots/android-home-dark.png" width="19%" alt="Android: dark">
+  <img src="docs/screenshots/android-home.png" width="19%" alt="Android: Material 3 nearby devices">
+  <img src="docs/screenshots/android-home-dark.png" width="19%" alt="Android: Material 3 dark theme">
   <img src="docs/screenshots/android-settings.png" width="19%" alt="Android: settings">
   <img src="docs/screenshots/android-activity.png" width="19%" alt="Android: activity">
   <img src="docs/screenshots/android-pickADevice.png" width="19%" alt="Android: pick a device">
@@ -175,6 +176,24 @@ sudo ufw allow 53319/tcp && sudo ufw allow 5353/udp    # Quick Share
 Optional tools: `wl-clipboard` (Wayland) or `xclip`/`xsel` (X11) for clipboard sharing, and
 `xdg-desktop-portal` or `zenity` for the file picker.
 
+### Windows
+
+Download `airbridge.exe` from the newest
+[release](https://github.com/MDHaarith/Linux-Android-AirDrop/releases) and run it.
+Allow AirBridge through Windows Firewall on **private networks**. The UI opens in
+an Edge app window (or your default browser); pair the Android app by QR. Remembered
+addresses and Tailscale reconnect work the same way as on Linux.
+
+For a source build, install Rust with the MSVC toolchain and Visual Studio C++
+build tools, then run `cargo build --release --locked` in `linux/`. The executable
+is `linux/target/release/airbridge.exe`.
+
+Windows currently has no tray icon, native notifications, screen-edge drop zone,
+autostart or self-update. Requests needing attention open the UI; keep the app
+running while sharing. Quick Share works over Wi-Fi, but has no Bluetooth wake-up:
+open **Quick Share → Receive** on the phone when sending from Windows. Free disk
+space is not checked before receiving.
+
 ### Android (10 or newer)
 
 Download the APK from a [release](../../releases) or from the latest CI run (artifact
@@ -188,9 +207,27 @@ cd android
 Install it, open it once and allow notifications. AirBridge keeps a small "Visible as …"
 notification while it can receive. Turn it off from the notification or the Quick Settings tile.
 
+### Pair with a QR code
+
+<img src="docs/screenshots/android-pair.png" width="24%" alt="Android: confirm pairing with the scanned computer by name">
+
+With AirBridge on your Android phone, tap **Pair with QR Code** and scan the code from the **QR**
+button in the desktop app, or from **Share to Any Phone → Other phone has AirBridge**
+on another Android phone (no router needed). The code holds the device's certificate fingerprint
+and a one-time key. For a phone's code it also holds the Wi‑Fi Direct details, so the scanner joins
+that network by itself and nobody sees or types a password. Confirm on the scanning phone, and both
+devices trust each other from then on. The computer's code lasts 5 minutes, and each code works once.
+
+### Find paired devices over Tailscale
+
+After pairing once, your devices find each other over Tailscale, or any VPN/private network
+both are on, even when they are on different Wi‑Fi networks. No extra AirBridge setup is needed.
+The first QR pairing can also happen over Tailscale; you do not need to share Wi‑Fi first.
+
 ### No app on the phone?
 
-Click the **QR** button in the desktop app and scan it with the phone's camera. A page opens that
+Click the **QR** button in the desktop app, choose **Phone Without the App** and scan the code with
+the phone's camera. A page opens that
 can send files, photos and messages to the computer, and receive from it. The QR code carries a
 secret key, so only someone who can see your screen can connect.
 
@@ -328,7 +365,7 @@ Release runs queue so they cannot choose the same version. Retries reuse the tag
 already attached to that commit. Both app versions are stamped in the build checkout;
 the workflow does not create version-bump commits.
 
-The release contains the Android APK, the Linux AppImage and its Ed25519 signature.
+The release contains the Android APK, Windows executable, Linux AppImage and its Ed25519 signature.
 The repository's `UPDATE_SIGNING_KEY` secret must be configured. To choose a version
 manually, run **Release** from the Actions tab with e.g. `v0.2.0`, or push that tag.
 Leaving the manual version empty chooses the next patch automatically.
@@ -385,7 +422,10 @@ permission (Location on Android 12 and older; Location services may also need to
 be enabled). AirBridge creates a Wi-Fi Direct network and tries 5 GHz first,
 falling back to the device's automatic band selection.
 
-On the other Android phone or iPhone, scan the first QR to join Wi-Fi, or enter
+If the other phone has AirBridge, choose **Other phone has AirBridge** and see
+[Pair with a QR code](#pair-with-a-qr-code): no password is involved. A phone
+without the app can only join with the network's WPA2 password, so for those,
+on the other Android phone or iPhone, scan the first QR to join Wi-Fi, or enter
 the displayed network name and password. Stay connected when warned that the
 network has no internet. Then show and scan the second QR to open the browser
 companion. Choose files in the browser to send to AirBridge and accept the

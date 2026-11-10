@@ -4,17 +4,15 @@ import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.Canvas
-import android.graphics.LinearGradient
 import android.graphics.Paint
 import android.graphics.RectF
-import android.graphics.Shader
 import androidx.compose.ui.graphics.toArgb
 import androidx.core.content.pm.ShortcutInfoCompat
 import androidx.core.content.pm.ShortcutManagerCompat
 import androidx.core.graphics.drawable.IconCompat
 import io.github.mdhaarith.airbridge.core.Log
 import io.github.mdhaarith.airbridge.core.Peer
-import io.github.mdhaarith.airbridge.ui.LightAir
+import io.github.mdhaarith.airbridge.ui.airBridgeColorScheme
 
 /**
  * Nearby devices as Direct Share targets: they show up in the first row of
@@ -67,13 +65,13 @@ object DirectShare {
         val size = (108 * density).toInt().coerceAtLeast(108)
         val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
         val canvas = Canvas(bitmap)
-        // The same gray as device avatars in the app.
+        val colors = airBridgeColorScheme(context)
         canvas.drawRect(
             0f, 0f, size.toFloat(), size.toFloat(),
-            Paint().apply { shader = LinearGradient(0f, 0f, 0f, size.toFloat(), LightAir.avatarTop.toArgb(), LightAir.avatarBottom.toArgb(), Shader.TileMode.CLAMP) },
+            Paint().apply { color = colors.secondaryContainer.toArgb() },
         )
         val stroke = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = android.graphics.Color.WHITE
+            color = colors.onSecondaryContainer.toArgb()
             style = Paint.Style.STROKE
             strokeWidth = size * 0.035f
             strokeCap = Paint.Cap.ROUND

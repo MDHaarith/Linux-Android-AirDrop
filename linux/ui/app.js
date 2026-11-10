@@ -124,6 +124,9 @@ function handle({ event, data }) {
     case "message": return showMessage(data);
     case "settings": state.settings = data; dropTarget = data.dropRecipient || null; renderDropTarget(); applyTheme(data.theme); return renderMe();
     case "companion": state.companion = data; return;
+    case "paired":
+      if ($("pairQr")) closeModal();
+      return toast(`${data.alias || "Your phone"} is paired`, "It can now share with this computer without asking", "ok");
     case "staged": return addStagedPaths(data.files || []);
     case "scan": return setScanning(data.running, data.found);
     case "focus": return flashMe();
@@ -864,6 +867,21 @@ function askPin(peer) {
 }
 
 function openPairing() {
+  openModal(`
+    <h2>Pair a phone</h2>
+    <p class="muted">In AirBridge on your Android phone, tap <b>Pair with QR Code</b> and scan this. Both devices then trust each other's certificate. The code works once, for 5 minutes.</p>
+    <div class="qr-wrap" id="pairQr"><img alt="AirBridge pairing QR code" src="/api/pair-qr.svg?t=${Date.now()}"></div>
+    <ol class="steps"><li>Phone and computer on the same Wi‑Fi, or both on Tailscale</li><li>Scan the code and confirm on the phone</li><li>From then on they find each other on either</li></ol>
+    <div class="actions"><button class="btn ghost" id="noApp">Phone Without the App</button><button class="btn" data-close>Done</button></div>`, (card) => {
+    card.querySelector("[data-close]").addEventListener("click", closeModal);
+    card.querySelector("#noApp").addEventListener("click", openBrowserPairing);
+    card.querySelector("#pairQr img").addEventListener("error", () => {
+      card.querySelector("#pairQr").textContent = "Pairing needs HTTPS and a network connection. Check both, then try again.";
+    });
+  });
+}
+
+function openBrowserPairing() {
   const url = state.companion?.url;
   if (!url) {
     openModal(`<h2>Pair a phone's browser?</h2><p class="muted">Phones without an app can share through their browser after scanning a QR code. The page talks plain HTTP on your Wi‑Fi, so it is off until you need it, and everything it sends asks you first.</p>
@@ -874,7 +892,7 @@ function openPairing() {
           state.settings = await api("/settings", { body: { webCompanion: true } });
           const res = await api("/state");
           state.companion = res.companion || {};
-          openPairing();
+          openBrowserPairing();
         } catch (err) {
           toast("Couldn't turn it on", err.message, "bad");
         }
@@ -895,7 +913,7 @@ function openPairing() {
       const res = await api("/reset-pairing", { body: {} });
       state.companion.url = res.url;
       toast("Pairing reset", "Old phone links stop working", "ok");
-      openPairing();
+      openBrowserPairing();
     });
   });
 }
@@ -1014,7 +1032,7 @@ function init() {
   $("btnPair").innerHTML = icons.qr;
   $("btnActivity").insertAdjacentHTML("afterbegin", icons.activity);
   $("btnSettings").innerHTML = icons.settings;
-  $("emptyPair").innerHTML = `${icons.qr} Pair phone browser`;
+  $("emptyPair").innerHTML = `${icons.qr} Pair a phone`;
   $("emptyScan").innerHTML = `${icons.refresh} Look again`;
   $("trayClear").innerHTML = icons.close;
   $("clearHistory").innerHTML = icons.trash;

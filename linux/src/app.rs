@@ -1,6 +1,7 @@
 //! Application state shared by all servers, discovery and the UI.
 
 use std::collections::HashMap;
+use std::net::IpAddr;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU16, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, RwLock, RwLockReadGuard};
@@ -19,7 +20,7 @@ use crate::events::EventBus;
 use crate::identity::Identity;
 use crate::limits::RateLimit;
 use crate::net;
-use crate::peers::{PeerKind, Registry};
+use crate::peers::{Peer, PeerKind, Registry};
 use crate::protocol::{DeviceInfo, PROTOCOL_VERSION};
 use crate::quickshare;
 use crate::sender::{self, SendItem};
@@ -29,6 +30,7 @@ use crate::transfers::{Direction, Status, Transfers};
 const DECISION_TIMEOUT: Duration = Duration::from_secs(300);
 /// How long a window launch code stays valid (it also works only once).
 const LAUNCH_CODE_TTL: Duration = Duration::from_secs(60);
+const PAIR_TOKEN_TTL: Duration = Duration::from_secs(300);
 
 pub struct UiInfo {
     pub port: u16,
@@ -54,6 +56,8 @@ pub struct App {
     decisions: Mutex<HashMap<String, oneshot::Sender<bool>>>,
     /// One-time codes in window URLs, traded for the session cookie.
     launch_codes: Mutex<Vec<(String, std::time::Instant)>>,
+    /// The one-time key in the pairing QR shown right now.
+    pair_token: Mutex<Option<(String, std::time::Instant)>>,
     cancels: Mutex<HashMap<String, CancellationToken>>,
     /// Port of the LocalSend HTTPS server actually bound.
     pub port: AtomicU16,
@@ -90,6 +94,7 @@ impl App {
             requests: RateLimit::new(20, 120, Duration::from_secs(60)),
             decisions: Mutex::new(HashMap::new()),
             launch_codes: Mutex::new(Vec::new()),
+            pair_token: Mutex::new(None),
             cancels: Mutex::new(HashMap::new()),
             port: AtomicU16::new(port),
             web_port: AtomicU16::new(0),
@@ -107,7 +112,11 @@ impl App {
 
     pub fn update_settings<R>(&self, change: impl FnOnce(&mut Settings) -> R) -> R {
         let mut settings = self.settings.write().unwrap();
+        let before = settings.clone();
         let result = change(&mut settings);
+        if *settings == before {
+            return result;
+        }
         if let Err(err) = settings.save() {
             tracing::warn!("Could not save settings: {err}");
         }
@@ -168,6 +177,48 @@ impl App {
         }
         let ip = net::primary_ipv4()?;
         Some(format!("http://{ip}:{port}/#k={}", settings.web_key))
+    }
+
+    /// What the pairing QR carries, with a new one-time key: the certificate
+    /// to expect, where to reach us, and the key that makes the scanner trusted.
+    pub fn pair_url(&self) -> Option<String> {
+        if !self.settings().https {
+            return None; // Without TLS there is no certificate to pin.
+        }
+        let addresses = net::pair_addresses();
+        let ip = addresses.first()?;
+        let extra = addresses
+            .iter()
+            .skip(1)
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
+        let extra = if extra.is_empty() {
+            String::new()
+        } else {
+            format!("&a={extra}")
+        };
+        use rand::distributions::{Alphanumeric, DistString};
+        let token = Alphanumeric.sample_string(&mut rand::thread_rng(), 32);
+        let url = format!(
+            "airbridge://pair?f={}&i={ip}&p={}&t={token}{extra}",
+            self.me().fingerprint,
+            self.port.load(Ordering::Relaxed),
+        );
+        *self.pair_token.lock().unwrap() = Some((token, std::time::Instant::now()));
+        Some(url)
+    }
+
+    /// Uses up the pairing key; true if it was valid.
+    pub fn redeem_pair_token(&self, token: &str) -> bool {
+        let mut current = self.pair_token.lock().unwrap();
+        let valid = current.as_ref().is_some_and(|(t, at)| {
+            at.elapsed() < PAIR_TOKEN_TTL && crate::receiver::same_secret(t, token)
+        });
+        if valid {
+            *current = None;
+        }
+        valid
     }
 
     pub fn state_json(&self) -> Value {
@@ -295,7 +346,7 @@ impl App {
         } else {
             None
         };
-        if question.is_none() && self.ui_clients.load(Ordering::Relaxed) == 0 {
+        if question.is_none() && (cfg!(windows) || self.ui_clients.load(Ordering::Relaxed) == 0) {
             self.open_window();
         }
 
@@ -414,12 +465,30 @@ impl App {
             return;
         }
         self.registry.set_trusted(peer_id, trusted);
+        let peer = self.registry.get(peer_id);
         self.update_settings(|s| {
-            s.trusted.retain(|t| t != peer_id);
-            if trusted {
-                s.trusted.push(peer_id.to_string());
+            s.set_trusted(peer_id, trusted);
+            if let Some(peer) = peer.filter(|p| trusted && p.kind == PeerKind::LocalSend) {
+                if let IpAddr::V4(ip) = net::canonical(peer.ip) {
+                    s.remember_device(peer_id, &peer.info.alias, peer.info.port, [ip]);
+                }
             }
         });
+    }
+
+    /// TLS-confirmed LocalSend addresses can follow a trusted device between networks.
+    pub fn upsert_peer(&self, info: DeviceInfo, ip: IpAddr, verified: bool) -> Peer {
+        let peer = self
+            .registry
+            .upsert(info, ip, PeerKind::LocalSend, verified);
+        if verified && self.registry.is_trusted(peer.id()) {
+            if let IpAddr::V4(ip) = net::canonical(peer.ip) {
+                self.update_settings(|s| {
+                    s.remember_device(peer.id(), &peer.info.alias, peer.info.port, [ip]);
+                });
+            }
+        }
+        peer
     }
 
     // -------------------------------------------------------- after receive
@@ -464,6 +533,8 @@ impl App {
         if !self.settings().notifications {
             return;
         }
+        #[cfg(windows)]
+        self.open_window();
         let (count, names) = describe_files(
             &files
                 .iter()
@@ -556,6 +627,8 @@ impl App {
             if !notify {
                 return;
             }
+            #[cfg(windows)]
+            app.open_window();
             let preview: String = text.chars().take(240).collect();
             let link = text.trim();
             let link = ((link.starts_with("http://") || link.starts_with("https://"))

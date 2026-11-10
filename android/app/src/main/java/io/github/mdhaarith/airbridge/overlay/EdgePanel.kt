@@ -7,14 +7,11 @@ import android.content.ContentUris
 import android.content.Context
 import android.content.Intent
 import android.graphics.Canvas
-import android.graphics.LinearGradient
 import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.PixelFormat
 import android.graphics.Point
-import android.graphics.RadialGradient
 import android.graphics.RectF
-import android.graphics.Shader
 import android.net.Uri
 import android.os.Build
 import android.provider.MediaStore
@@ -34,16 +31,16 @@ import androidx.compose.material.icons.rounded.ContentPaste
 import androidx.compose.material.icons.rounded.FileOpen
 import androidx.compose.material.icons.rounded.Image
 import androidx.compose.material.icons.rounded.Inbox
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.graphics.ImageBitmap
-import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
-import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.ComposeView
-import androidx.compose.runtime.collectAsState
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleRegistry
 import androidx.lifecycle.setViewTreeLifecycleOwner
@@ -52,27 +49,27 @@ import androidx.savedstate.SavedStateRegistryOwner
 import androidx.savedstate.setViewTreeSavedStateRegistryOwner
 import io.github.mdhaarith.airbridge.AirBridgeApp
 import io.github.mdhaarith.airbridge.MainActivity
+import io.github.mdhaarith.airbridge.R
 import io.github.mdhaarith.airbridge.canReadPhotos
 import io.github.mdhaarith.airbridge.core.Log
 import io.github.mdhaarith.airbridge.core.Peer
 import io.github.mdhaarith.airbridge.core.Status
 import io.github.mdhaarith.airbridge.core.Transfer
-import io.github.mdhaarith.airbridge.share.ShareSheetActivity
 import io.github.mdhaarith.airbridge.share.ShareRequest
+import io.github.mdhaarith.airbridge.share.ShareSheetActivity
 import io.github.mdhaarith.airbridge.ui.AirBridgeTheme
+import io.github.mdhaarith.airbridge.ui.DropStyle
 import io.github.mdhaarith.airbridge.ui.DropTab
 import io.github.mdhaarith.airbridge.ui.DropTabLayout
 import io.github.mdhaarith.airbridge.ui.DropTabUi
-import io.github.mdhaarith.airbridge.R
-import io.github.mdhaarith.airbridge.ui.DropStyle
 import io.github.mdhaarith.airbridge.ui.DropTarget
 import io.github.mdhaarith.airbridge.ui.EdgeAction
 import io.github.mdhaarith.airbridge.ui.EdgePanelContent
-import io.github.mdhaarith.airbridge.ui.LocalWindowBlur
-import io.github.mdhaarith.airbridge.ui.WINDOW_BLUR_DP
 import io.github.mdhaarith.airbridge.ui.EdgePanelUi
 import io.github.mdhaarith.airbridge.ui.SharePhase
+import io.github.mdhaarith.airbridge.ui.airBridgeColorScheme
 import io.github.mdhaarith.airbridge.ui.timeAgo
+import kotlin.math.abs
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -81,7 +78,6 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import kotlin.math.abs
 
 /**
  * A slim handle on the screen edge, over every app. Tap or swipe it to open
@@ -175,19 +171,16 @@ class EdgePanel(private val context: Context) {
         }
         loadPhoto()
         val owner = OverlayOwner().also { this.owner = it }
-        val blurBehind = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && windows.isCrossWindowBlurEnabled
         val compose = ComposeView(context).apply {
             setContent {
                 AirBridgeTheme {
-                    CompositionLocalProvider(LocalWindowBlur provides blurBehind) {
-                        val peers by engine.peers.collectAsState()
-                        val transfers by engine.transfers.collectAsState()
-                        val settings by engine.settings.state.collectAsState()
-                        val ui = uiState(peers, settings.trusted, transfers)
-                        EdgePanelContent(ui, onSelect = ::select, onPick = ::send, onClose = ::close,
-                            onDefault = ::setDefault, onSendAll = ::sendAll,
-                            onDropBounds = { id, bounds -> panelTargets[id] = bounds })
-                    }
+                    val peers by engine.peers.collectAsState()
+                    val transfers by engine.transfers.collectAsState()
+                    val settings by engine.settings.state.collectAsState()
+                    val ui = uiState(peers, settings.trusted, transfers)
+                    EdgePanelContent(ui, onSelect = ::select, onPick = ::send, onClose = ::close,
+                        onDefault = ::setDefault, onSendAll = ::sendAll,
+                        onDropBounds = { id, bounds -> panelTargets[id] = bounds })
                 }
             }
         }
@@ -240,11 +233,6 @@ class EdgePanel(private val context: Context) {
             WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
             PixelFormat.TRANSLUCENT,
         )
-        if (blurBehind) {
-            // The panel is glass over the other app: the compositor blurs the screen behind it.
-            params.flags = params.flags or WindowManager.LayoutParams.FLAG_BLUR_BEHIND
-            params.blurBehindRadius = (WINDOW_BLUR_DP * context.resources.displayMetrics.density).toInt()
-        }
         runCatching { windows.addView(root, params) }
             .onSuccess { panel = root }
             .onFailure { Log.w(TAG, "could not open the edge panel", it); owner.destroy() }
@@ -490,7 +478,7 @@ class EdgePanel(private val context: Context) {
     private fun dp(value: Int) = (value * context.resources.displayMetrics.density).toInt()
     private fun dp(value: Float) = (value * context.resources.displayMetrics.density).toInt()
 
-    private fun restWidth(bubble: Boolean) = if (bubble) BUBBLE_SIZE else HANDLE_WIDTH
+    private fun restWidth(bubble: Boolean) = maxOf(48, if (bubble) BUBBLE_SIZE else HANDLE_WIDTH)
     private fun restHeight(bubble: Boolean) = if (bubble) BUBBLE_SIZE + 16 else HANDLE_HEIGHT
 
     /**
@@ -592,14 +580,9 @@ class EdgePanel(private val context: Context) {
             params.height = if (on) dp(spots.height).coerceAtMost(screen) else dp(restHeight(bubble))
             // The hub opens where the handle rests.
             params.y = if (on) (restY - (params.height - dp(restHeight(bubble))) / 2).coerceIn(0, (screen - params.height).coerceAtLeast(0)) else restY
-            if (Build.VERSION.SDK_INT >= 31) {
-                // Frost and dim the app behind, like Control Center, while the devices are open.
-                val blur = WindowManager.LayoutParams.FLAG_BLUR_BEHIND or WindowManager.LayoutParams.FLAG_DIM_BEHIND
-                params.flags = if (on) params.flags or blur else params.flags and blur.inv()
-                params.blurBehindRadius = if (on) dp(28) else 0
-                // Darker when the system has blur switched off (battery saver), so the glass still reads.
-                params.dimAmount = if (!on) 0f else if (windows.isCrossWindowBlurEnabled) 0.3f else 0.55f
-            }
+            val dim = WindowManager.LayoutParams.FLAG_DIM_BEHIND
+            params.flags = if (on) params.flags or dim else params.flags and dim.inv()
+            params.dimAmount = if (on) 0.32f else 0f
             expanded = on
             pill.visibility = if (on) GONE else VISIBLE
             tab.visibility = if (on) VISIBLE else GONE
@@ -610,7 +593,7 @@ class EdgePanel(private val context: Context) {
     }
 
     /**
-     * The resting handle: a glass bump on the screen edge. It swells and follows
+     * The resting handle: a tonal bump on the screen edge. It swells and follows
      * the finger while held, wraps around a notch or punch-hole when it sits
      * beside one, fades once left alone and all but disappears over fullscreen
      * apps. Tap or swipe it in to open the panel; drag it along the edge to move it.
@@ -619,10 +602,8 @@ class EdgePanel(private val context: Context) {
     private inner class HandleView(context: Context, private val rightSide: Boolean, private val bubble: Boolean, private val window: View) : View(context) {
         private val logo = context.getDrawable(R.drawable.ic_notification)
         private val solid = Paint(Paint.ANTI_ALIAS_FLAG)
-        private val glass = Paint(Paint.ANTI_ALIAS_FLAG)
+        private val tonal = Paint(Paint.ANTI_ALIAS_FLAG)
         private val rim = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = dp(1).toFloat() }
-        // A dark hairline under the bright rim keeps the glass readable on light screens too.
-        private val shade = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = dp(2).toFloat(); color = HANDLE_SHADE }
         private val path = Path()
         private val screen = Point()
         private val location = IntArray(2)
@@ -643,6 +624,8 @@ class EdgePanel(private val context: Context) {
         private var half = 0f
 
         init {
+            contentDescription = "Open AirBridge edge panel"
+            isClickable = true
             setOnApplyWindowInsetsListener { _, insets ->
                 // Another app hid the status bar: it's showing something fullscreen, so stay out of the way.
                 val hidden = Build.VERSION.SDK_INT >= 30 && !insets.isVisible(android.view.WindowInsets.Type.statusBars())
@@ -687,17 +670,17 @@ class EdgePanel(private val context: Context) {
             return RectF(near).apply { offset(-location[0].toFloat(), -location[1].toFloat()) }
         }
 
-        /** A blue glass circle with the app's mark, tucked a little past the edge. */
+        /** A tonal circle with the app's mark, tucked a little past the edge. */
         private fun drawBubble(canvas: Canvas) {
             val r = dp(17) * (if (pressed) 1.12f else 1f)
             val cx = if (rightSide) width - dp(15f).toFloat() else dp(15f).toFloat()
             val cy = height / 2f
-            solid.shader = RadialGradient(cx, cy, r * 1.35f, HANDLE_GLOW, 0, Shader.TileMode.CLAMP)
-            canvas.drawCircle(cx, cy, r * 1.35f, solid)
-            solid.shader = LinearGradient(0f, cy - r, 0f, cy + r, HANDLE_ACCENT_LIGHT, HANDLE_ACCENT, Shader.TileMode.CLAMP)
+            val colors = airBridgeColorScheme(context)
+            solid.color = colors.primaryContainer.toArgb()
             canvas.drawCircle(cx, cy, r, solid)
-            rim.color = HANDLE_RIM
+            rim.color = colors.outline.toArgb()
             canvas.drawCircle(cx, cy, r, rim)
+            logo?.setTint(colors.onPrimaryContainer.toArgb())
             val icon = (r * 0.62f).toInt()
             logo?.setBounds((cx - icon).toInt(), (cy - icon).toInt(), (cx + icon).toInt(), (cy + icon).toInt())
             logo?.draw(canvas)
@@ -708,7 +691,7 @@ class EdgePanel(private val context: Context) {
             val notch = notch()
             // How far the notch reaches in from our edge.
             val reach = notch?.let { if (rightSide) width - it.left else it.right } ?: 0f
-            val fits = if (notch != null) (reach + dp(16)).toInt().coerceAtLeast(dp(HANDLE_WIDTH)) else dp(HANDLE_WIDTH)
+            val fits = if (notch != null) (reach + dp(16)).toInt().coerceAtLeast(dp(48)) else dp(48)
             if (width != fits && visibility == VISIBLE) post { resize(fits) }
 
             val targetDepth = when {
@@ -737,11 +720,10 @@ class EdgePanel(private val context: Context) {
             path.cubicTo(tip, center + ease, edge, bottom - ease, edge, bottom)
             path.close()
 
-            val (inner, outer) = if (pressed) GLASS_PRESSED else GLASS
-            glass.shader = LinearGradient(edge, 0f, tip, 0f, inner, outer, Shader.TileMode.CLAMP)
-            rim.color = if (pressed) HANDLE_ACCENT else HANDLE_RIM
-            canvas.drawPath(path, shade)
-            canvas.drawPath(path, glass)
+            val colors = airBridgeColorScheme(context)
+            tonal.color = (if (pressed) colors.primaryContainer else colors.surfaceContainerHigh).toArgb()
+            rim.color = colors.outline.toArgb()
+            canvas.drawPath(path, tonal)
             canvas.drawPath(path, rim)
         }
 
@@ -822,12 +804,6 @@ class EdgePanel(private val context: Context) {
 
     companion object {
         private const val TAG = "EdgePanel"
-        private const val HANDLE_RIM = 0xB3FFFFFF.toInt()
-        private const val HANDLE_SHADE = 0x2E000000
-        private const val HANDLE_ACCENT = 0xFF0A84FF.toInt()
-        // Glass: (at the edge, at the tip). Brighter toward the tip, like light catching a lens.
-        private val GLASS = 0x40FFFFFF to 0x8CFFFFFF.toInt()
-        private val GLASS_PRESSED = 0x4D0A84FF to 0xA6FFFFFF.toInt()
         private const val EASE = 0.22f
         private const val IDLE_ALPHA = 0.45f
         private const val FULLSCREEN_ALPHA = 0.12f
@@ -835,8 +811,6 @@ class EdgePanel(private val context: Context) {
         private const val HANDLE_WIDTH = 26
         private const val HANDLE_HEIGHT = 120
         private const val BUBBLE_SIZE = 44
-        private const val HANDLE_ACCENT_LIGHT = 0xFF4DA3FF.toInt()
-        private const val HANDLE_GLOW = 0x660A84FF
         private val DROP_TYPES = arrayOf("image/*", "video/*", "audio/*", "text/*", "application/*", "font/*", "model/*")
         private const val CLIPBOARD = "clipboard"
         private const val PHOTO = "photo"

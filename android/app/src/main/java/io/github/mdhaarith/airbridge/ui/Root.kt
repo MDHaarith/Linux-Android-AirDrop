@@ -1,14 +1,15 @@
+@file:OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
+
 package io.github.mdhaarith.airbridge.ui
 
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
-import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
-import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideInVertically
-import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -28,24 +29,22 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
-import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.ChatBubble
+import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material3.*
 import androidx.compose.material3.Icon
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -55,23 +54,16 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
-import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalHapticFeedback
-import androidx.compose.ui.text.TextStyle
-import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
-import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.kyant.backdrop.backdrops.layerBackdrop
-import com.kyant.backdrop.backdrops.rememberLayerBackdrop
 import io.github.mdhaarith.airbridge.PreviewImages
 import io.github.mdhaarith.airbridge.core.Direction
 import io.github.mdhaarith.airbridge.core.Previews
@@ -81,18 +73,15 @@ import io.github.mdhaarith.airbridge.core.sharePhrase
 
 @Composable
 fun AirBridgeRoot(vm: AppViewModel) {
-    val air = LocalAir.current
-    val backdrop = rememberLayerBackdrop()
+    val colors = MaterialTheme.colorScheme
     Box(Modifier.fillMaxSize()) {
         AnimatedContent(
             targetState = vm.screen,
-            // Recorded (with its background) for the glass banners floating above.
-            modifier = Modifier.fillMaxSize().layerBackdrop(backdrop).background(air.bg),
+            modifier = Modifier.fillMaxSize().background(colors.surface),
             transitionSpec = {
-                // A navigation push: the new screen slides in from the right.
-                val forward = targetState.ordinal > initialState.ordinal
-                (slideInHorizontally(tween(320)) { if (forward) it else -it / 3 } + fadeIn(tween(120)))
-                    .togetherWith(slideOutHorizontally(tween(320)) { if (forward) -it / 3 else it } + fadeOut(tween(320)))
+                (fadeIn(tween(220)) + slideInVertically(tween(220)) { it / 16 }).togetherWith(
+                    fadeOut(tween(90))
+                )
             },
             label = "screen",
         ) { screen ->
@@ -101,57 +90,59 @@ fun AirBridgeRoot(vm: AppViewModel) {
                 Screen.ACTIVITY -> ActivityScreen(vm)
                 Screen.SETTINGS -> SettingsScreen(vm)
                 Screen.COMPANION -> CompanionScreen(vm)
+                Screen.SCAN -> ScanScreen(vm)
             }
         }
         BackHandler(enabled = vm.screen != Screen.HOME) { vm.screen = Screen.HOME }
-        CompositionLocalProvider(LocalBackdrop provides backdrop) {
-            Banners(vm, Modifier.align(Alignment.TopCenter).statusBarsPadding().padding(top = 6.dp))
-        }
+        Banners(vm, Modifier.align(Alignment.TopCenter).statusBarsPadding().padding(top = 8.dp))
         IncomingAlert(vm)
         PinDialog(vm)
     }
 }
 
-/** Notification banners, like iOS: a rounded card with a small colored glyph. */
+/** Material banners retain the existing stacked toast and clipboard actions. */
 @Composable
 private fun Banners(vm: AppViewModel, modifier: Modifier) {
-    val air = LocalAir.current
-    Column(modifier.fillMaxWidth().padding(horizontal = 10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+    Column(
+        modifier.fillMaxWidth().padding(horizontal = 16.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
         for (toast in vm.toasts.take(3)) {
             key(toast.id) {
-                var shown by remember { mutableStateOf(false) }
-                LaunchedEffect(Unit) { shown = true }
-                AnimatedVisibility(shown, enter = slideInVertically(tween(350)) { -it } + fadeIn(tween(200))) {
-                    Row(
-                        Modifier
-                            .fillMaxWidth()
-                            .liquidGlass(RoundedCornerShape(20.dp))
-                            .padding(13.dp),
-                        verticalAlignment = Alignment.Top,
-                    ) {
-                        val (icon, tint) = when {
-                            toast.copyText != null -> Icons.Rounded.ChatBubble to air.accent
-                            toast.good -> Icons.Rounded.Check to air.success
-                            else -> Icons.Rounded.Close to air.danger
-                        }
-                        Box(Modifier.size(30.dp).clip(RoundedCornerShape(8.dp)).background(tint), contentAlignment = Alignment.Center) {
-                            Icon(icon, null, tint = Color.White, modifier = Modifier.size(18.dp))
-                        }
-                        Spacer(Modifier.width(11.dp))
-                        Column(Modifier.weight(1f)) {
-                            Text(toast.title, color = air.text, fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
-                            if (toast.text.isNotEmpty()) Text(toast.text, color = air.muted, fontSize = 14.sp, maxLines = 6, overflow = TextOverflow.Ellipsis)
-                            if (toast.copyText != null) {
-                                Spacer(Modifier.height(8.dp))
-                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                    var copied by remember { mutableStateOf(false) }
-                                    SecondaryButton(if (copied) "Copied" else "Copy", height = 34.dp) {
-                                        vm.engine.copyToClipboard(toast.copyText)
-                                        copied = true
-                                    }
-                                    SecondaryButton("Dismiss", height = 34.dp) { vm.toasts.remove(toast) }
+                ElevatedCard(Modifier.fillMaxWidth()) {
+                    ListItem(
+                        headlineContent = { Text(toast.title) },
+                        supportingContent = {
+                            if (toast.text.isNotEmpty())
+                                Text(toast.text, maxLines = 6, overflow = TextOverflow.Ellipsis)
+                        },
+                        leadingContent = {
+                            Icon(
+                                when {
+                                    toast.copyText != null -> Icons.Rounded.ChatBubble
+                                    toast.good -> Icons.Rounded.Check
+                                    else -> Icons.Rounded.Close
+                                },
+                                null,
+                                tint =
+                                    if (toast.good) MaterialTheme.colorScheme.primary
+                                    else MaterialTheme.colorScheme.error,
+                            )
+                        },
+                        colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+                    )
+                    if (toast.copyText != null) {
+                        Row(Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
+                            var copied by remember { mutableStateOf(false) }
+                            TextButton(
+                                onClick = {
+                                    vm.engine.copyToClipboard(toast.copyText)
+                                    copied = true
                                 }
+                            ) {
+                                Text(if (copied) "Copied" else "Copy")
                             }
+                            TextButton(onClick = { vm.toasts.remove(toast) }) { Text("Dismiss") }
                         }
                     }
                 }
@@ -163,126 +154,169 @@ private fun Banners(vm: AppViewModel, modifier: Modifier) {
 @Composable
 private fun IncomingAlert(vm: AppViewModel) {
     val transfers by vm.engine.transfers.collectAsStateWithLifecycle()
-    val waiting = vm.incoming.firstNotNullOfOrNull { id ->
-        transfers.firstOrNull { it.id == id && it.direction == Direction.IN && it.status == Status.WAITING }
-    }
+    val waiting =
+        vm.incoming.firstNotNullOfOrNull { id ->
+            transfers.firstOrNull {
+                it.id == id && it.direction == Direction.IN && it.status == Status.WAITING
+            }
+        }
     LaunchedEffect(transfers) {
-        vm.incoming.removeAll { id -> transfers.none { it.id == id && it.status == Status.WAITING } }
+        vm.incoming.removeAll { id ->
+            transfers.none { it.id == id && it.status == Status.WAITING }
+        }
     }
     val t = waiting ?: return
     val haptics = LocalHapticFeedback.current
     LaunchedEffect(t.id) { haptics.performHapticFeedback(HapticFeedbackType.LongPress) }
     // A request needs an answer: tapping outside does nothing, Back keeps it in Activity.
-    Dialog(
-        onDismissRequest = { vm.dismissIncoming(t.id) },
-        properties = DialogProperties(dismissOnClickOutside = false, usePlatformDefaultWidth = false),
-    ) {
-        IncomingContent(
-            t,
-            onDecline = {
-                vm.engine.decide(t.id, accept = false)
-                vm.dismissIncoming(t.id)
-            },
-            onAccept = { trust ->
-                vm.engine.decide(t.id, accept = true, trust = trust)
-                vm.dismissIncoming(t.id)
-            },
-        )
-    }
+    IncomingContent(
+        t,
+        onDecline = {
+            vm.engine.decide(t.id, accept = false)
+            vm.dismissIncoming(t.id)
+        },
+        onAccept = { trust ->
+            vm.engine.decide(t.id, accept = true, trust = trust)
+            vm.dismissIncoming(t.id)
+        },
+        onDismiss = { vm.dismissIncoming(t.id) },
+    )
 }
 
-/** An incoming request, like AirDrop's alert: what is coming, who sends it, Decline / Accept. */
+/** A receive request with a local photo preview and explicit trust control. */
 @Composable
-fun IncomingContent(t: Transfer, onDecline: () -> Unit, onAccept: (trust: Boolean) -> Unit) {
-    val air = LocalAir.current
+fun IncomingContent(
+    t: Transfer,
+    onDecline: () -> Unit,
+    onAccept: (trust: Boolean) -> Unit,
+    onDismiss: () -> Unit = {},
+) {
     var trust by remember(t.id) { mutableStateOf(false) }
-    val photos = remember(t.id) {
-        t.files.asSequence().mapNotNull { PreviewImages.decode(it.preview) }.take(Previews.MAX_PREVIEWS)
-            .map { it.asImageBitmap() }.toList()
-    }
-    AlertCard(
-        listOf(
-            AlertAction("Decline") { onDecline() },
-            AlertAction("Accept", bold = true) { onAccept(trust) },
-        ),
-    ) {
-        IncomingPreview(t, photos)
-        Spacer(Modifier.height(14.dp))
-        Text("AirBridge", color = air.text, fontSize = 17.sp, fontWeight = FontWeight.SemiBold)
-        Spacer(Modifier.height(2.dp))
-        Text(
-            "“${t.peerAlias}” would like to share ${sharePhrase(t.files)}.",
-            color = air.text, fontSize = 13.sp, lineHeight = 17.sp, textAlign = TextAlign.Center,
-        )
-        val names = if (t.files.size > 1) t.files.take(2).joinToString(", ") { it.name.substringAfterLast('/') } + if (t.files.size > 2) " and ${t.files.size - 2} more" else "" else null
-        Text(
-            listOfNotNull(names, formatBytes(t.total)).joinToString(" · "),
-            color = air.muted, fontSize = 12.sp, textAlign = TextAlign.Center, maxLines = 2, overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.padding(top = 3.dp),
-        )
-        // Quick Share-style senders have no lasting identity to trust.
-        if (t.peerModel != "Quick Share") {
-            Spacer(Modifier.height(12.dp))
-            Row(Modifier.pressable({ trust = !trust }).padding(4.dp), verticalAlignment = Alignment.CenterVertically) {
-                Box(
-                    Modifier.size(18.dp).clip(CircleShape)
-                        .background(if (trust) air.accent else Color.Transparent)
-                        .border(1.5.dp, if (trust) air.accent else air.faint, CircleShape),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    if (trust) Icon(Icons.Rounded.Check, null, tint = Color.White, modifier = Modifier.size(13.dp))
-                }
-                Spacer(Modifier.width(7.dp))
-                Text("Always accept from this device", color = air.muted, fontSize = 13.sp)
-            }
+    val photos =
+        remember(t.id) {
+            t.files
+                .asSequence()
+                .mapNotNull { PreviewImages.decode(it.preview) }
+                .take(Previews.MAX_PREVIEWS)
+                .map { it.asImageBitmap() }
+                .toList()
         }
-    }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(dismissOnClickOutside = false),
+        title = { Text("Receive from ${t.peerAlias}?") },
+        text = {
+            Column(
+                Modifier.verticalScroll(rememberScrollState()),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                IncomingPreview(t, photos)
+                Spacer(Modifier.height(16.dp))
+                Text(
+                    "“${t.peerAlias}” would like to share ${sharePhrase(t.files)}.",
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                val names =
+                    if (t.files.size > 1)
+                        t.files.take(2).joinToString(", ") { it.name.substringAfterLast('/') } +
+                            if (t.files.size > 2) " and ${t.files.size - 2} more" else ""
+                    else null
+                Text(
+                    listOfNotNull(names, formatBytes(t.total)).joinToString(" · "),
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                )
+                if (t.peerModel != "Quick Share") {
+                    Row(
+                        Modifier.fillMaxWidth()
+                            .toggleable(
+                                value = trust,
+                                role = Role.Checkbox,
+                                onValueChange = { trust = it },
+                            )
+                            .padding(top = 8.dp)
+                            .heightIn(min = 48.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Checkbox(checked = trust, onCheckedChange = null)
+                        Spacer(Modifier.width(12.dp))
+                        Text(
+                            "Always accept from this device",
+                            style = MaterialTheme.typography.bodyMedium,
+                        )
+                    }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = { onAccept(trust) }) { Text("Accept") } },
+        dismissButton = { TextButton(onClick = onDecline) { Text("Decline") } },
+    )
 }
 
 @Composable
 private fun IncomingPreview(t: Transfer, photos: List<ImageBitmap>) {
-    val air = LocalAir.current
+    val colors = MaterialTheme.colorScheme
     when {
         photos.size == 1 && t.files.size == 1 -> {
             val photo = photos.first()
             Image(
-                photo, contentDescription = t.files.first().name, contentScale = ContentScale.Crop,
-                modifier = Modifier
-                    .widthIn(max = 258.dp)
-                    .heightIn(max = 210.dp)
-                    .aspectRatio(photo.width.toFloat() / photo.height, matchHeightConstraintsFirst = photo.height > photo.width)
-                    .clip(RoundedCornerShape(10.dp)),
+                photo,
+                contentDescription = t.files.first().name,
+                contentScale = ContentScale.Crop,
+                modifier =
+                    Modifier.widthIn(max = 258.dp)
+                        .heightIn(max = 210.dp)
+                        .aspectRatio(
+                            photo.width.toFloat() / photo.height,
+                            matchHeightConstraintsFirst = photo.height > photo.width,
+                        )
+                        .clip(RoundedCornerShape(10.dp)),
             )
         }
-        photos.isNotEmpty() -> Box(Modifier.size(170.dp), contentAlignment = Alignment.Center) {
-            // A small stack, the first photo on top.
-            val angles = listOf(0f, 5f, -7f)
-            photos.withIndex().reversed().forEach { (i, photo) ->
-                Image(
-                    photo, contentDescription = null, contentScale = ContentScale.Crop,
-                    modifier = Modifier
-                        .size(146.dp)
-                        .rotate(angles[i])
-                        .shadow(6.dp, RoundedCornerShape(10.dp))
-                        .clip(RoundedCornerShape(10.dp))
-                        .border(3.dp, Color.White, RoundedCornerShape(10.dp)),
-                )
+        photos.isNotEmpty() ->
+            Box(Modifier.size(170.dp), contentAlignment = Alignment.Center) {
+                // A small stack, the first photo on top.
+                val angles = listOf(0f, 5f, -7f)
+                photos.withIndex().reversed().forEach { (i, photo) ->
+                    Image(
+                        photo,
+                        contentDescription = null,
+                        contentScale = ContentScale.Crop,
+                        modifier =
+                            Modifier.size(146.dp)
+                                .rotate(angles[i])
+                                .shadow(6.dp, RoundedCornerShape(10.dp))
+                                .clip(RoundedCornerShape(10.dp))
+                                .border(
+                                    3.dp,
+                                    colors.surfaceContainerHigh,
+                                    RoundedCornerShape(10.dp),
+                                ),
+                    )
+                }
             }
-        }
         else -> {
             val first = t.files.firstOrNull()
             val mixed = t.files.map { it.mime }.distinct().size > 1
-            Box(Modifier.size(68.dp).clip(RoundedCornerShape(15.dp)).background(air.fill), contentAlignment = Alignment.Center) {
+            Box(
+                Modifier.size(68.dp)
+                    .clip(RoundedCornerShape(15.dp))
+                    .background(colors.surfaceContainerHighest),
+                contentAlignment = Alignment.Center,
+            ) {
                 Icon(
-                    if (first == null || mixed) fileIcon("", "") else fileIcon(first.mime, first.name),
-                    null, tint = air.accent, modifier = Modifier.size(32.dp),
+                    if (first == null || mixed) fileIcon("", "")
+                    else fileIcon(first.mime, first.name),
+                    null,
+                    tint = colors.primary,
+                    modifier = Modifier.size(32.dp),
                 )
             }
         }
     }
 }
 
-/** An alert with a text field, like iOS prompts (rename, PIN, a quick message). */
+/** A Material input dialog shared by rename, PIN, and message actions. */
 @Composable
 fun TextAlert(
     title: String,
@@ -298,43 +332,36 @@ fun TextAlert(
     filter: (String) -> String = { it },
     extra: @Composable (set: (String) -> Unit) -> Unit = {},
 ) {
-    val air = LocalAir.current
     var value by remember { mutableStateOf(initial) }
     val focus = remember { FocusRequester() }
-    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
-        AlertCard(
-            listOf(
-                AlertAction("Cancel") { onDismiss() },
-                AlertAction(confirm, bold = true) { if (value.isNotBlank() || allowEmpty) onConfirm(value) },
-            ),
-        ) {
-            Text(title, color = air.text, fontSize = 17.sp, fontWeight = FontWeight.SemiBold, textAlign = TextAlign.Center)
-            if (message != null) Text(message, color = air.text, fontSize = 13.sp, textAlign = TextAlign.Center, modifier = Modifier.padding(top = 2.dp))
-            Spacer(Modifier.height(12.dp))
-            BasicTextField(
-                value, { value = filter(it) },
-                singleLine = singleLine,
-                textStyle = TextStyle(color = air.text, fontSize = 15.sp),
-                cursorBrush = SolidColor(air.accent),
-                keyboardOptions = KeyboardOptions(keyboardType = keyboardType),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .heightIn(min = if (singleLine) 34.dp else 110.dp)
-                    .clip(RoundedCornerShape(8.dp))
-                    .background(air.card)
-                    .border(0.5.dp, air.separator, RoundedCornerShape(8.dp))
-                    .padding(horizontal = 9.dp, vertical = 8.dp)
-                    .focusRequester(focus),
-                decorationBox = { field ->
-                    Box {
-                        if (value.isEmpty()) Text(placeholder, color = air.faint, fontSize = 15.sp)
-                        field()
-                    }
-                },
-            )
-            extra { value = filter(it) }
-        }
-    }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(title) },
+        text = {
+            Column(Modifier.verticalScroll(rememberScrollState())) {
+                if (message != null) Text(message)
+                Spacer(Modifier.height(16.dp))
+                OutlinedTextField(
+                    value = value,
+                    onValueChange = { value = filter(it) },
+                    singleLine = singleLine,
+                    placeholder = { Text(placeholder) },
+                    keyboardOptions = KeyboardOptions(keyboardType = keyboardType),
+                    modifier =
+                        Modifier.fillMaxWidth()
+                            .heightIn(min = if (singleLine) 56.dp else 120.dp)
+                            .focusRequester(focus),
+                )
+                extra { value = filter(it) }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { onConfirm(value) }, enabled = value.isNotBlank() || allowEmpty) {
+                Text(confirm)
+            }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
     LaunchedEffect(Unit) { runCatching { focus.requestFocus() } }
 }
 

@@ -7,6 +7,9 @@ import kotlinx.serialization.Serializable
 import java.io.File
 
 @Serializable
+data class KnownDevice(val fingerprint: String, val alias: String, val port: Int, val addresses: List<String>)
+
+@Serializable
 data class AppSettings(
     val alias: String = "",
     val port: Int = Protocol.DEFAULT_PORT,
@@ -16,6 +19,7 @@ data class AppSettings(
     val openReceived: Boolean = true,
     val pin: String = "",
     val trusted: Set<String> = emptySet(),
+    val known: List<KnownDevice> = emptyList(),
     /** Run the background service so the phone is visible and can receive. */
     val receiving: Boolean = true,
     /** A handle on the screen edge that opens a send panel over any app. */
@@ -31,6 +35,16 @@ data class AppSettings(
     /** Device id, or DropTargets.ALL for an explicit broadcast. */
     val edgeRecipient: String? = null,
 )
+
+internal fun AppSettings.remember(device: KnownDevice): AppSettings {
+    if (device.fingerprint !in trusted || device.port !in 1024..65535) return this
+    val old = known.firstOrNull { it.fingerprint == device.fingerprint }
+    val addresses = (device.addresses + old?.addresses.orEmpty()).filter(::isPrivateIpv4).distinct().take(6)
+    if (addresses.isEmpty()) return this
+    val next = device.copy(alias = Protocol.stripInvisible(device.alias.trim()).take(128), addresses = addresses)
+    if (next == old) return this
+    return copy(known = if (old == null) known + next else known.map { if (it.fingerprint == next.fingerprint) next else it })
+}
 
 /** Settings persisted as JSON in the app's private storage. */
 class SettingsStore(private val dir: File, private val defaultAlias: String) {
@@ -52,6 +66,7 @@ class SettingsStore(private val dir: File, private val defaultAlias: String) {
     @Synchronized
     fun update(change: (AppSettings) -> AppSettings) {
         val next = normalize(change(_state.value))
+        if (next == _state.value) return
         dir.mkdirs()
         val tmp = File(dir, "settings.json.tmp")
         tmp.writeText(Protocol.json.encodeToString(AppSettings.serializer(), next))

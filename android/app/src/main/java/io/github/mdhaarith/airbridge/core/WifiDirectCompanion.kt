@@ -14,11 +14,12 @@ import android.os.Looper
 import android.os.PowerManager
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.first
 
 /** Owned by the QR screen; closing the screen or stopping the service removes the group. */
 @SuppressLint("MissingPermission", "WakelockTimeout")
 class WifiDirectCompanion(private val context: Context, private val engine: Engine) {
-    data class State(val message: String = "Creating Wi-Fi Direct network…", val ssid: String = "", val password: String = "", val url: String = "")
+    data class State(val message: String = "Creating Wi-Fi Direct network…", val ssid: String = "", val password: String = "", val url: String = "", val pairing: String = "")
     val state = MutableStateFlow(State())
     private val manager = context.getSystemService(Context.WIFI_P2P_SERVICE) as? WifiP2pManager
     private val handler = Handler(Looper.getMainLooper())
@@ -100,7 +101,11 @@ class WifiDirectCompanion(private val context: Context, private val engine: Engi
                                 .createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "AirBridge:companion").apply { acquire() }
                             wakeLock = (context.getSystemService(Context.POWER_SERVICE) as PowerManager)
                                 .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "AirBridge:companion").apply { acquire(30 * 60_000L) }
-                            state.value = State("Keep this screen open while sharing", ssid, password, "http://$ip:$port/#k=${web.secret}")
+                            // The service may still be starting; without it there is no certificate to pin yet.
+                            val pairing = withTimeoutOrNull(10_000) { engine.running.first { it } }
+                                ?.let { PairCode(engine.identity.fingerprint, ip, engine.port, engine.newPairToken(), ssid, password,
+                                    ownAddresses().filter { it != ip }).uri() }.orEmpty()
+                            state.value = State("Keep this screen open while sharing", ssid, password, "http://$ip:$port/#k=${web.secret}", pairing)
                         } catch (e: Exception) { stop(e.message ?: "Could not start companion") }
                     }
                 }
@@ -113,6 +118,7 @@ class WifiDirectCompanion(private val context: Context, private val engine: Engi
     fun stop(message: String = "Session stopped") {
         val wasActive = active
         active = false
+        engine.clearPairToken()
         companion?.close(); companion = null
         server?.stop(); server = null
         scope.coroutineContext.cancelChildren()

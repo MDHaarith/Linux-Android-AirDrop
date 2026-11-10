@@ -3,7 +3,7 @@ name = "airbridge"
 version = "0.1.5"
 edition = "2021"
 rust-version = "1.89"
-description = "AirDrop-style file and text sharing between Linux and Android (LocalSend protocol compatible)"
+description = "AirDrop-style file and text sharing between Linux, Windows and Android (LocalSend protocol compatible)"
 license = "MIT"
 repository = "https://github.com/MDHaarith/Linux-Android-AirDrop"
 readme = "../README.md"
@@ -41,12 +41,10 @@ if-addrs = "0.15"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif"] }
 mdns-sd = "0.21"
 mime_guess = "2"
-nix = { version = "0.30", default-features = false, features = ["fs"] }
 prost = "0.14"
 qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 rand = "0.8"
 rcgen = { version = "0.14", default-features = false, features = ["crypto", "pem", "ring"] }
-rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "tokio"] }
 ring = "0.17"
 rsa = { version = "0.9", features = ["sha2"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "tls12", "std", "logging"] }
@@ -64,6 +62,10 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1", features = ["v4"] }
 x509-parser = { version = "0.18", features = ["verify"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+nix = { version = "0.30", default-features = false, features = ["fs"] }
+rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "tokio"] }
 zbus = { version = "5", default-features = false, features = ["tokio"] }
 
 # PNG output is only used by the snapshot tests of the drop zone.
@@ -74,6 +76,9 @@ ksni = { version = "0.3", optional = true }
 pangocairo = { version = "0.18", optional = true }
 tao = { version = "0.34", optional = true }
 wry = { version = "0.53", optional = true }
+
+[target.'cfg(windows)'.dependencies]
+rfd = { version = "0.15", default-features = false }
 
 [dev-dependencies]
 tempfile = "3"

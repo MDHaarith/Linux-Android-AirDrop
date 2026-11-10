@@ -61,6 +61,7 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/reset-pairing", post(reset_pairing))
         .route("/peers/{id}/trust", post(trust))
         .route("/qr.svg", get(qr))
+        .route("/pair-qr.svg", get(pair_qr))
         .route("/copy", post(copy))
         .route("/open-downloads", post(open_downloads))
         .route("/show", post(show))
@@ -617,7 +618,15 @@ async fn reset_pairing(State(app): State<Arc<App>>) -> Json<Value> {
 }
 
 async fn qr(State(app): State<Arc<App>>) -> Response {
-    let Some(url) = app.companion_url() else {
+    qr_svg(app.companion_url())
+}
+
+async fn pair_qr(State(app): State<Arc<App>>) -> Response {
+    qr_svg(app.pair_url())
+}
+
+fn qr_svg(url: Option<String>) -> Response {
+    let Some(url) = url else {
         return StatusCode::NOT_FOUND.into_response();
     };
     match qrcode::QrCode::new(url.as_bytes()) {

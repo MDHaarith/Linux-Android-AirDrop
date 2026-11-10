@@ -9,6 +9,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import java.net.DatagramPacket
@@ -27,6 +28,7 @@ class Discovery(private val platform: Platform, private val engine: Engine) {
     private var releaseLock: (() -> Unit)? = null
     private val jobs = mutableListOf<Job>()
     private val pending = java.util.Collections.synchronizedSet(mutableSetOf<String>())
+    private val reconnecting = Mutex()
     private val group = InetAddress.getByName(Protocol.MULTICAST_GROUP)
     @Volatile var multicastOk = false
         private set
@@ -58,6 +60,12 @@ class Discovery(private val platform: Platform, private val engine: Engine) {
             }
         }
         jobs += scope.launch { livenessLoop() }
+        jobs += scope.launch {
+            while (isActive) {
+                reconnectKnown()
+                delay(30_000)
+            }
+        }
     }
 
     fun stop() {
@@ -161,6 +169,23 @@ class Discovery(private val platform: Platform, private val engine: Engine) {
         if (!Protocol.isPeerId(device.fingerprint) || device.fingerprint.equals(engine.identity.fingerprint, true)) return null
         engine.upsertPeer(device, ip, verified = result.peerFingerprint != null)
         return device
+    }
+
+    internal suspend fun reconnectKnown(): Int {
+        if (!reconnecting.tryLock()) return 0
+        try {
+            val settings = engine.settings.value
+            val present = engine.peers.value.map { it.id }.toSet()
+            return kotlinx.coroutines.coroutineScope {
+                settings.known.filter { it.fingerprint in settings.trusted && it.fingerprint !in present }.map { device ->
+                    async {
+                        device.addresses.filter(::isPrivateIpv4).distinct().take(6).map { ip ->
+                            async { registerWith(ip, device.port, true, device.fingerprint, 3_000) }
+                        }.awaitAll().any { it != null }
+                    }
+                }.awaitAll().count { it }
+            }
+        } finally { reconnecting.unlock() }
     }
 
     private suspend fun livenessLoop() {

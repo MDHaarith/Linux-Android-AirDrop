@@ -292,6 +292,32 @@ const MAX_NAME_BYTES: usize = 200;
 /// Deepest folder structure a sender may create.
 const MAX_DEPTH: usize = 16;
 
+#[cfg(windows)]
+fn windows_file_name(name: &str) -> String {
+    // Colons address NTFS streams; device names can address hardware instead of files.
+    let name: String = name
+        .chars()
+        .map(|c| if "<>:\"|?*".contains(c) { '_' } else { c })
+        .collect();
+    let name = name.trim_end_matches(['.', ' ']);
+    let stem = name
+        .split('.')
+        .next()
+        .unwrap_or_default()
+        .to_ascii_uppercase();
+    let reserved = ["CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"].contains(&stem.as_str())
+        || ["COM", "LPT"].iter().any(|prefix| {
+            stem.strip_prefix(prefix).is_some_and(|n| {
+                ["1", "2", "3", "4", "5", "6", "7", "8", "9", "¹", "²", "³"].contains(&n)
+            })
+        });
+    if reserved {
+        format!("_{name}")
+    } else {
+        name.to_string()
+    }
+}
+
 /// Turns a sender-supplied name (which may contain folders) into a safe relative path.
 pub fn safe_relative_path(file_name: &str) -> PathBuf {
     let normalized = file_name.replace('\\', "/");
@@ -306,6 +332,8 @@ pub fn safe_relative_path(file_name: &str) -> PathBuf {
                 .collect();
             let cleaned = cleaned.trim().trim_start_matches(['.', ' ']);
             let cleaned = truncate_bytes(cleaned, MAX_NAME_BYTES).trim_end();
+            #[cfg(windows)]
+            let cleaned = windows_file_name(cleaned);
             parts.push(if cleaned.is_empty() {
                 "_".to_string()
             } else {
@@ -336,6 +364,22 @@ pub fn parse_iso(value: Option<&str>) -> Option<std::time::SystemTime> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_names_cannot_address_streams_or_devices() {
+        for name in ["CON", "nul.txt", "COM1", "LPT9.log", "COM¹", "CONOUT$"] {
+            assert!(safe_relative_path(name).to_string_lossy().starts_with('_'));
+        }
+        assert_eq!(
+            safe_relative_path("photo.jpg:payload.exe"),
+            PathBuf::from("photo.jpg_payload.exe")
+        );
+        assert_eq!(
+            safe_relative_path("folder./file.txt."),
+            PathBuf::from("folder/file.txt")
+        );
+    }
 
     #[test]
     fn parses_localsend_register() {

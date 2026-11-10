@@ -5,6 +5,8 @@
 //! Only the Wi-Fi LAN medium is implemented: devices find each other with
 //! mDNS and talk over TCP, end-to-end encrypted with UKEY2 + SecureMessage.
 
+// shortcut: no Windows BLE wake-up; open Quick Share Receive until a native beacon exists.
+#[cfg(target_os = "linux")]
 mod ble;
 mod crypto;
 mod inbound;
@@ -76,6 +78,7 @@ impl Service {
             }
             Err(err) => tracing::warn!("Cannot look for Quick Share devices: {err}"),
         }
+        #[cfg(target_os = "linux")]
         tokio::spawn(beacon_loop(service.clone(), service.wake.subscribe()));
         tracing::info!("Quick Share: visible to Android phones on port {port}");
         Ok(service)
@@ -164,6 +167,7 @@ async fn accept_loop(app: Arc<App>, listener: TcpListener, stop: CancellationTok
 /// Broadcasts the Bluetooth "nearby sharing" advertisement until the wake
 /// deadline passes. Without Bluetooth, phones show up only while their
 /// Quick Share "receive" screen is open.
+#[cfg(target_os = "linux")]
 async fn beacon_loop(service: Arc<Service>, mut wake: watch::Receiver<Option<Instant>>) {
     let mut beacon: Option<ble::Beacon> = None;
     let mut retry_after: Option<Instant> = None;

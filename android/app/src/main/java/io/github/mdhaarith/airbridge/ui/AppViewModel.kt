@@ -14,17 +14,24 @@ import io.github.mdhaarith.airbridge.AirBridgeApp
 import io.github.mdhaarith.airbridge.BuildConfig
 import io.github.mdhaarith.airbridge.service.Updater
 import kotlinx.coroutines.CancellationException
+import io.github.mdhaarith.airbridge.core.DeviceInfo
 import io.github.mdhaarith.airbridge.core.Direction
+import io.github.mdhaarith.airbridge.core.PairCode
+import io.github.mdhaarith.airbridge.core.WifiDirectJoin
+import io.github.mdhaarith.airbridge.service.AirBridgeService
 import io.github.mdhaarith.airbridge.core.Engine
 import io.github.mdhaarith.airbridge.core.EngineEvent
 import io.github.mdhaarith.airbridge.core.Peer
 import io.github.mdhaarith.airbridge.core.Status
 import io.github.mdhaarith.airbridge.core.FileStore
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.withContext
 
-enum class Screen { HOME, ACTIVITY, SETTINGS, COMPANION }
+enum class Screen { HOME, ACTIVITY, SETTINGS, COMPANION, SCAN }
 
 /** Files or text waiting for the user to pick a device (AirDrop-style). */
 data class PendingShare(val items: List<FileStore.Picked> = emptyList(), val text: String? = null) {
@@ -49,6 +56,9 @@ class AppViewModel(val engine: Engine = AirBridgeApp.engine) : ViewModel() {
     var scanning by mutableStateOf(false)
         private set
     var pinFor by mutableStateOf<Peer?>(null)
+    /** The other phone's Wi-Fi Direct network this phone joined by QR, while joined. */
+    var directNetwork by mutableStateOf<WifiDirectJoin?>(null)
+        private set
 
     init {
         viewModelScope.launch {
@@ -57,6 +67,7 @@ class AppViewModel(val engine: Engine = AirBridgeApp.engine) : ViewModel() {
                     is EngineEvent.Incoming -> showIncoming(event.transferId)
                     is EngineEvent.Message -> toast(event.from, event.text, copyText = event.text.takeIf { !event.copied })
                     is EngineEvent.Finished -> onFinished(event)
+                    is EngineEvent.Paired -> toast("Paired with ${event.alias}", "You now trust each other")
                 }
             }
         }
@@ -119,6 +130,45 @@ class AppViewModel(val engine: Engine = AirBridgeApp.engine) : ViewModel() {
             }
         }
     }
+
+    /** Joins the QR's network if it has one, then reaches the device with its certificate pinned. */
+    suspend fun reachPair(context: Context, code: PairCode): Result<DeviceInfo> {
+        AirBridgeService.start(context)
+        withTimeoutOrNull(10_000) { engine.running.first { it } } ?: return Result.failure(Exception("AirBridge could not start"))
+        if (code.ssid != null && code.password != null) {
+            leaveDirectNetwork()
+            val join = WifiDirectJoin(context.applicationContext)
+            val problem = try { join.join(code.ssid, code.password) } catch (e: Throwable) { join.leave(); throw e }
+            if (problem != null) { join.leave(); return Result.failure(Exception(problem)) }
+            directNetwork = join
+            viewModelScope.launch {
+                while (directNetwork === join && join.connected()) delay(5_000)
+                if (directNetwork === join) leaveDirectNetwork()
+            }
+        }
+        // The new network's routes can take a moment to come up.
+        repeat(5) {
+            for (ip in (listOf(code.ip) + code.addresses).distinct()) {
+                engine.discovery?.registerWith(ip, code.port, true, code.fingerprint, 4_000)?.let { return Result.success(it) }
+            }
+            delay(1_500)
+        }
+        leaveDirectNetwork()
+        return Result.failure(Exception("Couldn't reach that device, or its certificate didn't match the code."))
+    }
+
+    suspend fun confirmPair(code: PairCode, device: DeviceInfo): Boolean {
+        val paired = runCatching { engine.redeemPair(code) }.getOrDefault(false)
+        if (paired) toast("Paired with ${device.alias}", "You now trust each other") else leaveDirectNetwork()
+        return paired
+    }
+
+    fun leaveDirectNetwork() {
+        directNetwork?.leave()
+        directNetwork = null
+    }
+
+    override fun onCleared() = leaveDirectNetwork()
 
     fun toast(title: String, text: String = "", good: Boolean = true, copyText: String? = null) {
         val toast = Toast(System.nanoTime(), title, text, good, copyText)

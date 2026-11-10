@@ -7,9 +7,12 @@
 //!
 //! "image" offers what Firefox offers for an image: its URL and the pixels.
 
+#[cfg(target_os = "linux")]
 use gtk::prelude::*;
+#[cfg(target_os = "linux")]
 use gtk::{gdk, glib};
 
+#[cfg(target_os = "linux")]
 fn main() {
     gtk::init().expect("GTK");
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -89,4 +92,9 @@ fn main() {
     });
     window.show_all();
     gtk::main();
+}
+
+#[cfg(not(target_os = "linux"))]
+fn main() {
+    eprintln!("The screen-edge drop zone is only available on Linux.");
 }

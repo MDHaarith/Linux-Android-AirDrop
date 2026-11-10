@@ -1,17 +1,21 @@
 //! Desktop integration: notifications, clipboard, file manager, file picker and the app window.
 
+#[cfg(target_os = "linux")]
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
 
+#[cfg(target_os = "linux")]
 use futures_util::StreamExt;
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
+#[cfg(target_os = "linux")]
 use zbus::zvariant::Value;
 
 // ------------------------------------------------------------- notifications
 
+#[cfg(target_os = "linux")]
 #[zbus::proxy(
     interface = "org.freedesktop.Notifications",
     default_service = "org.freedesktop.Notifications",
@@ -43,6 +47,7 @@ trait Notifications {
 }
 
 /// Desktop notifications over D-Bus (org.freedesktop.Notifications).
+#[cfg(target_os = "linux")]
 #[derive(Default)]
 pub struct Notifier {
     proxy: tokio::sync::OnceCell<Option<NotificationsProxy<'static>>>,
@@ -53,6 +58,7 @@ pub struct Notifier {
 /// Text from other devices (names, messages) as plain notification text:
 /// markup escaped where the server renders it, so a hostile name cannot
 /// add links or hide what is being offered, and no invisible bidi controls.
+#[cfg(target_os = "linux")]
 fn plain_text(text: &str, markup: bool) -> String {
     let mut out = String::with_capacity(text.len());
     for c in text.chars() {
@@ -71,11 +77,13 @@ fn plain_text(text: &str, markup: bool) -> String {
 }
 
 /// Closes a question notification once it is no longer relevant.
+#[cfg(target_os = "linux")]
 struct CloseOnDrop {
     proxy: NotificationsProxy<'static>,
     id: u32,
 }
 
+#[cfg(target_os = "linux")]
 impl Drop for CloseOnDrop {
     fn drop(&mut self) {
         let (proxy, id) = (self.proxy.clone(), self.id);
@@ -85,6 +93,7 @@ impl Drop for CloseOnDrop {
     }
 }
 
+#[cfg(target_os = "linux")]
 impl Notifier {
     async fn proxy(&self) -> Option<NotificationsProxy<'static>> {
         self.proxy
@@ -246,6 +255,40 @@ impl Notifier {
     }
 }
 
+// shortcut: no Windows native notifications; callers show the UI until toast support is added.
+#[cfg(windows)]
+#[derive(Default)]
+pub struct Notifier {}
+
+#[cfg(windows)]
+impl Notifier {
+    pub async fn available(&self) -> bool {
+        false
+    }
+
+    pub async fn ask(
+        &self,
+        _summary: &str,
+        _body: &str,
+        _image: Option<&Path>,
+        _actions: &[(&str, &str)],
+    ) -> Option<String> {
+        None
+    }
+
+    pub async fn notify<F>(
+        &self,
+        _summary: &str,
+        _body: &str,
+        _image: Option<&Path>,
+        _actions: &[(&str, &str)],
+        _on_action: F,
+    ) where
+        F: FnOnce(String) + Send + 'static,
+    {
+    }
+}
+
 // ----------------------------------------------------------------- clipboard
 
 fn which(binary: &str) -> Option<PathBuf> {
@@ -256,6 +299,7 @@ fn which(binary: &str) -> Option<PathBuf> {
     })
 }
 
+#[cfg(target_os = "linux")]
 fn clipboard_commands(copy: bool) -> Vec<Vec<&'static str>> {
     let wayland = std::env::var_os("WAYLAND_DISPLAY").is_some();
     let mut candidates: Vec<Vec<&'static str>> = Vec::new();
@@ -276,6 +320,22 @@ fn clipboard_commands(copy: bool) -> Vec<Vec<&'static str>> {
         .into_iter()
         .filter(|c| which(c[0]).is_some())
         .collect()
+}
+
+#[cfg(windows)]
+fn clipboard_commands(copy: bool) -> Vec<Vec<&'static str>> {
+    let script = if copy {
+        "[Console]::InputEncoding = [Text.UTF8Encoding]::new(); Set-Clipboard -Value ([Console]::In.ReadToEnd())"
+    } else {
+        "[Console]::OutputEncoding = [Text.UTF8Encoding]::new(); [Console]::Write((Get-Clipboard -Raw))"
+    };
+    vec![vec![
+        "powershell.exe",
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        script,
+    ]]
 }
 
 pub async fn copy_text(text: &str) -> bool {
@@ -335,9 +395,16 @@ fn spawn_detached(program: &str, args: &[&str]) -> bool {
 }
 
 /// Opens a web link in the default browser.
+#[cfg(target_os = "linux")]
 pub fn open_url(url: &str) -> bool {
     (url.starts_with("http://") || url.starts_with("https://"))
         && spawn_detached("xdg-open", &[url])
+}
+
+#[cfg(windows)]
+pub fn open_url(url: &str) -> bool {
+    (url.starts_with("http://") || url.starts_with("https://"))
+        && spawn_detached("rundll32.exe", &["url.dll,FileProtocolHandler", url])
 }
 
 /// Kinds of files that open in a viewer or player by themselves without
@@ -355,10 +422,21 @@ pub fn safe_to_open(path: &Path) -> bool {
         .is_some_and(|e| VIEWABLE.contains(&e.to_ascii_lowercase().as_str()))
 }
 
+#[cfg(target_os = "linux")]
 pub fn open_path(path: &Path) -> bool {
     path.exists() && spawn_detached("xdg-open", &[&path.to_string_lossy()])
 }
 
+#[cfg(windows)]
+pub fn open_path(path: &Path) -> bool {
+    path.exists()
+        && std::process::Command::new("explorer.exe")
+            .arg(path)
+            .spawn()
+            .is_ok()
+}
+
+#[cfg(target_os = "linux")]
 fn file_uri(path: &Path) -> String {
     use std::os::unix::ffi::OsStrExt;
     let mut uri = String::from("file://");
@@ -377,6 +455,7 @@ pub async fn reveal_path(path: &Path) -> bool {
     if !path.exists() {
         return false;
     }
+    #[cfg(target_os = "linux")]
     if let Ok(connection) = zbus::Connection::session().await {
         let uri = file_uri(path);
         let shown = connection
@@ -424,6 +503,7 @@ pub async fn pick(directory: bool) -> Vec<PathBuf> {
 
 // -------------------------------------------------------------------- window
 
+#[cfg(target_os = "linux")]
 const BROWSERS: &[&str] = &[
     "chromium",
     "chromium-browser",
@@ -437,9 +517,10 @@ const BROWSERS: &[&str] = &[
 ];
 
 /// Opens the UI in the nicest available way; returns what was used.
+#[cfg(target_os = "linux")]
 pub fn open_window(url: &str, profile_dir: &Path) -> &'static str {
     // 1. Our own native window (built with the `webview` feature).
-    #[cfg(feature = "webview")]
+    #[cfg(all(target_os = "linux", feature = "webview"))]
     if let Ok(exe) = std::env::current_exe() {
         if std::process::Command::new(exe)
             .args(["window", url])
@@ -481,10 +562,46 @@ pub fn open_window(url: &str, profile_dir: &Path) -> &'static str {
     "none"
 }
 
+#[cfg(windows)]
+pub fn open_window(url: &str, profile_dir: &Path) -> &'static str {
+    let edge = which("msedge.exe").or_else(|| {
+        ["ProgramFiles(x86)", "ProgramFiles", "LOCALAPPDATA"]
+            .into_iter()
+            .filter_map(std::env::var_os)
+            .map(|root| PathBuf::from(root).join("Microsoft/Edge/Application/msedge.exe"))
+            .find(|path| path.is_file())
+    });
+    if let Some(edge) = edge {
+        let _ = std::fs::create_dir_all(profile_dir);
+        if std::process::Command::new(edge)
+            .arg(format!("--app={url}"))
+            .arg(format!("--user-data-dir={}", profile_dir.display()))
+            .args([
+                "--window-size=1120,780",
+                "--no-first-run",
+                "--no-default-browser-check",
+            ])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .is_ok()
+        {
+            return "msedge";
+        }
+    }
+    if open_url(url) {
+        return "default browser";
+    }
+    tracing::warn!("Open {url} in a browser to use AirBridge");
+    "none"
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn notification_text_cannot_carry_markup_or_bidi_tricks() {
         assert_eq!(
