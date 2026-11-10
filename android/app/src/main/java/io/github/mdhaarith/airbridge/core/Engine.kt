@@ -105,6 +105,7 @@ sealed interface EngineEvent {
     data class Incoming(val transferId: String) : EngineEvent
     data class Message(val transferId: String, val from: String, val text: String, val copied: Boolean) : EngineEvent
     data class Finished(val transfer: Transfer) : EngineEvent
+    data class Paired(val alias: String) : EngineEvent
 }
 
 /** Runtime-only state of a transfer (never shown, never persisted). */
@@ -126,6 +127,7 @@ class Engine(private val platform: Platform) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var server: HttpServer? = null
     var stopCompanion: (() -> Unit)? = null
+    private var pairToken: String? = null
     var discovery: Discovery? = null
         private set
 
@@ -187,9 +189,14 @@ class Engine(private val platform: Platform) {
     fun refresh() {
         val d = discovery ?: return
         scope.launch { d.announceBurst() }
+        scope.launch { d.reconnectKnown() }
     }
 
-    suspend fun scan(): Int = discovery?.scan() ?: 0
+    suspend fun scan(): Int = coroutineScope {
+        val d = discovery ?: return@coroutineScope 0
+        val known = async { d.reconnectKnown() }
+        d.scan() + known.await()
+    }
 
     // ----------------------------------------------------------------- peers
 
@@ -224,6 +231,7 @@ class Engine(private val platform: Platform) {
                 }
             }
         }
+        if (verified) settings.update { it.remember(KnownDevice(info.fingerprint, info.alias, info.port, listOf(ip))) }
     }
 
     private fun isLoopback(ip: String) =
@@ -237,8 +245,14 @@ class Engine(private val platform: Platform) {
 
     fun isTrusted(id: String) = id in settings.value.trusted
 
-    fun setTrusted(id: String, trusted: Boolean) =
-        settings.update { it.copy(trusted = if (trusted) it.trusted + id else it.trusted - id) }
+    fun setTrusted(id: String, trusted: Boolean) = settings.update { settings ->
+        val next = settings.copy(
+            trusted = if (trusted) settings.trusted + id else settings.trusted - id,
+            known = if (trusted) settings.known else settings.known.filterNot { it.fingerprint == id },
+        )
+        val peer = _peers.value.firstOrNull { it.id == id && it.verified && it.https }
+        if (trusted && peer != null) next.remember(KnownDevice(id, peer.alias, peer.port, listOf(peer.ip))) else next
+    }
 
     // ------------------------------------------------------------- transfers
 
@@ -319,9 +333,62 @@ class Engine(private val platform: Platform) {
             req.method == "POST" && req.path == "$api/prepare-upload" -> prepareUpload(req)
             req.method == "POST" && req.path == "$api/upload" -> upload(req)
             req.method == "POST" && req.path == "$api/cancel" -> cancelRequest(req)
+            req.method == "POST" && req.path == PairCode.PATH -> pair(req)
             req.path == "/" -> HttpResponse(200, "AirBridge (LocalSend protocol v2)\n".toByteArray(), "text/plain")
             else -> HttpResponse.error(404, "Not found")
         }
+    }
+
+    /** A new one-time key for the pairing QR; the previous one stops working. */
+    @Synchronized
+    fun newPairToken(): String = BrowserCompanion.randomToken().also { pairToken = it }
+
+    @Synchronized
+    fun clearPairToken() { pairToken = null }
+
+    @Synchronized
+    private fun redeemPairToken(supplied: String?): Boolean {
+        if (!BrowserCompanion.authorized(pairToken ?: return false, supplied)) return false
+        pairToken = null
+        return true
+    }
+
+    /** A device that scanned our pairing QR. Its certificate is what becomes trusted. */
+    private fun pair(req: HttpRequest): HttpResponse {
+        val id = req.clientFingerprint ?: return HttpResponse.error(403, "A client certificate is required")
+        val body = try { PairRequest.parse(String(req.readBody(8_192))) }
+        catch (_: Exception) { return HttpResponse.error(400, "Invalid body") }
+        if (!redeemPairToken(req.query["token"])) return HttpResponse.error(403, "This QR code has expired")
+        val peer = _peers.value.firstOrNull { it.id == id }
+        val known = settings.value.known.firstOrNull { it.fingerprint == id }
+        val alias = body?.alias ?: peer?.alias ?: known?.alias ?: "Your device"
+        settings.update {
+            it.copy(trusted = it.trusted + id).remember(KnownDevice(id, alias, body?.port ?: peer?.port ?: known?.port ?: Protocol.DEFAULT_PORT,
+                listOf(req.remoteIp) + body?.addresses.orEmpty()))
+        }
+        _events.tryEmit(EngineEvent.Paired(alias))
+        return HttpResponse.json(200, "{}")
+    }
+
+    /** The scanning side: presents our certificate and trusts the one the QR promised. */
+    suspend fun redeemPair(code: PairCode): Boolean {
+        val addresses = (listOf(code.ip) + code.addresses).distinct()
+        val body = PeerClient.json(Protocol.json.encodeToString(PairRequest.serializer(), PairRequest(me().alias, port, ownAddresses())))
+        var failure: IOException? = null
+        for (ip in addresses) {
+            val result = try {
+                client.post(ip, code.port, true, code.fingerprint, PairCode.PATH, mapOf("token" to code.token), body,
+                    readTimeoutMs = 4_000, connectTimeoutMs = 4_000)
+            } catch (e: IOException) { failure = e; continue }
+            if (result.status != 200) return false
+            val id = result.peerFingerprint ?: return false
+            val alias = _peers.value.firstOrNull { it.id == id }?.alias
+                ?: discovery?.registerWith(ip, code.port, true, code.fingerprint, 3_000)?.alias ?: "Your device"
+            settings.update { it.copy(trusted = it.trusted + id).remember(KnownDevice(id, alias, code.port, listOf(ip) + addresses)) }
+            return true
+        }
+        failure?.let { throw it }
+        return false
     }
 
     private fun infoJson(): String {

@@ -25,6 +25,23 @@ device; it is confirmed over TLS first. A known device is never moved from
 HTTPS to plain HTTP, your own devices are only reached over HTTPS, and a PIN is
 only sent over HTTPS.
 
+**Pairing by QR code.** The code is the only way a device becomes trusted
+without a tap on both ends, so it is treated as a secret you show in person. It
+carries the certificate fingerprint to expect, a one-time key (5 minutes on the
+computer, the sharing session on a phone) and, from a phone, the Wi‑Fi Direct
+details. The scanner connects with that fingerprint pinned, so the key is only
+ever sent to the device that showed the code; a mismatch aborts before it is
+sent. The key is only accepted with a client certificate, and that certificate
+is what the host then trusts. A scanned code is untrusted input (a QR sticker
+can say anything): it must be well formed, must name a literal IPv4 address and
+a `DIRECT-` network, and nothing is trusted until you confirm the device by
+name on the scanning phone. Paired devices remember each other's private IPv4 addresses,
+including Tailscale addresses, and the private address they connected from. Only addresses in
+`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16` and the shared CGNAT range
+`100.64.0.0/10` are ever remembered or probed for reconnection. Every reconnect probe pins
+the paired certificate, so another device at an old address cannot take its place. Removing
+trust also removes the remembered addresses.
+
 **What arrives.** A sender cannot write more than the size you accepted (it is
 checked while data streams in), cannot write outside the download folder (no
 `..`, no symlinks, no overwriting, no hidden or too-long names, no invisible

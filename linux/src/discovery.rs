@@ -39,6 +39,7 @@ pub struct Discovery {
     port: u16,
     pending: Mutex<std::collections::HashSet<String>>,
     pub scanning: AtomicBool,
+    reconnecting: AtomicBool,
 }
 
 impl Discovery {
@@ -49,6 +50,7 @@ impl Discovery {
     fn bind(group: Ipv4Addr, port: u16) -> std::io::Result<UdpSocket> {
         let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
         socket.set_reuse_address(true)?;
+        #[cfg(unix)]
         socket.set_reuse_port(true)?;
         socket.bind(&SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, port)).into())?;
         let mut joined = 0;
@@ -95,6 +97,7 @@ impl Discovery {
             port,
             pending: Mutex::new(Default::default()),
             scanning: AtomicBool::new(false),
+            reconnecting: AtomicBool::new(false),
         });
 
         if let Some(socket) = discovery.socket.clone() {
@@ -124,6 +127,16 @@ impl Discovery {
         {
             let (app, discovery) = (app.clone(), discovery.clone());
             tokio::spawn(async move { discovery.liveness_loop(&app).await });
+        }
+        {
+            let (app, discovery) = (app.clone(), discovery.clone());
+            tokio::spawn(async move {
+                let mut interval = tokio::time::interval(Duration::from_secs(30));
+                loop {
+                    interval.tick().await;
+                    discovery.reconnect_known(&app).await;
+                }
+            });
         }
         discovery
     }
@@ -233,6 +246,49 @@ impl Discovery {
         }
     }
 
+    /// VPNs need no multicast: only remembered addresses of absent trusted devices are tried.
+    async fn reconnect_known(&self, app: &App) -> usize {
+        if !app.settings().https || self.reconnecting.swap(true, Ordering::SeqCst) {
+            return 0;
+        }
+        let known = app.settings().known.clone();
+        let targets = known
+            .into_iter()
+            .filter(|device| {
+                device.port >= 1024
+                    && is_localsend_id(&device.fingerprint)
+                    && app.registry.is_trusted(&device.fingerprint)
+                    && app.registry.get(&device.fingerprint).is_none()
+            })
+            .flat_map(|device| {
+                device
+                    .addresses
+                    .into_iter()
+                    .filter(|ip| net::is_pair_address(*ip))
+                    .take(6)
+                    .map(move |ip| (device.fingerprint.clone(), ip, device.port))
+            });
+        use futures_util::StreamExt;
+        let found = futures_util::stream::iter(targets)
+            .map(|(fingerprint, ip, port)| async move {
+                if !app.settings().https
+                    || !app.registry.is_trusted(&fingerprint)
+                    || app.registry.get(&fingerprint).is_some()
+                {
+                    return false;
+                }
+                register_with(app, IpAddr::V4(ip), port, true, Some(&fingerprint), 3)
+                    .await
+                    .is_some()
+            })
+            .buffer_unordered(8)
+            .filter(|found| std::future::ready(*found))
+            .count()
+            .await;
+        self.reconnecting.store(false, Ordering::SeqCst);
+        found
+    }
+
     /// Probes every host on the local networks (for networks without multicast).
     pub async fn scan(&self, app: &Arc<App>) -> usize {
         if self.scanning.swap(true, Ordering::SeqCst) {
@@ -263,11 +319,15 @@ impl Discovery {
                 }));
             }
         }
-        let found = futures_util::future::join_all(tasks)
-            .await
+        let (results, remembered) = tokio::join!(
+            futures_util::future::join_all(tasks),
+            self.reconnect_known(app),
+        );
+        let found = results
             .into_iter()
             .filter(|r| matches!(r, Ok(Some(_))))
-            .count();
+            .count()
+            + remembered;
         tracing::info!(
             "Network scan found {found} device(s) in {:.1}s",
             started.elapsed().as_secs_f32()
@@ -334,7 +394,6 @@ pub async fn register_with(
     {
         return None;
     }
-    app.registry
-        .upsert(info.clone(), ip, PeerKind::LocalSend, verified);
+    app.upsert_peer(info.clone(), ip, verified);
     Some(info)
 }

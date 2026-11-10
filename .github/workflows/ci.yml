@@ -48,6 +48,27 @@ jobs:
           name: airbridge-linux-x86_64
           path: linux/airbridge-x86_64.AppImage
 
+  windows:
+    name: Windows app (Rust)
+    runs-on: windows-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: linux
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: linux
+      - run: cargo build --release --locked
+      - run: cargo test --locked
+      - uses: actions/upload-artifact@v6
+        with:
+          name: airbridge-windows-x86_64
+          path: linux/target/release/airbridge.exe
+          if-no-files-found: error
+
   android:
     name: Android app + interop with Linux
     runs-on: ubuntu-24.04

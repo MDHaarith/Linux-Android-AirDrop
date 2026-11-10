@@ -49,6 +49,7 @@ class AirBridgeService : LifecycleService() {
                         val fromTrusted = engine.transfer(event.transferId)?.let { it.peerVerified && engine.isTrusted(it.peerId) } == true
                         if (fromTrusted && engine.settings.value.openReceived) Opener.openLink(this@AirBridgeService, event.text)
                     }
+                    is EngineEvent.Paired -> Unit
                     is EngineEvent.Finished -> {
                         progressShown.remove(event.transfer.id)
                         val t = event.transfer

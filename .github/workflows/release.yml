@@ -96,6 +96,33 @@ jobs:
           path: airbridge-x86_64.AppImage
           if-no-files-found: error
 
+  windows:
+    name: Windows release
+    needs: prepare
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
+          persist-credentials: false
+      - name: Stamp app versions
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: python .github/scripts/release_version.py stamp "$env:VERSION"
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: linux
+      - name: Windows binary
+        working-directory: linux
+        run: cargo build --release --locked
+      - uses: actions/upload-artifact@v6
+        with:
+          name: release-windows-x86_64
+          path: linux/target/release/airbridge.exe
+          if-no-files-found: error
+
   android:
     name: Android release
     needs: prepare
@@ -135,7 +162,7 @@ jobs:
 
   publish:
     name: Publish release
-    needs: [prepare, linux, android]
+    needs: [prepare, linux, windows, android]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -153,6 +180,7 @@ jobs:
           test -s airbridge-x86_64.AppImage
           chmod +x airbridge-x86_64.AppImage
           test -s airbridge-android.apk
+          test -s airbridge.exe
           [ -n "$UPDATE_SIGNING_KEY" ] || { echo "UPDATE_SIGNING_KEY secret is missing; refusing to publish an unsigned build"; exit 1; }
           umask 077
           printf '%s\n' "$UPDATE_SIGNING_KEY" > "$RUNNER_TEMP/key.pem"
@@ -172,6 +200,7 @@ jobs:
           body: |
             **Downloads**
             - `airbridge-android.apk`: the Android app (Android 10 or newer). Allow installs from your browser or file manager when asked.
+            - `airbridge.exe`: the Windows app (x86_64). Run it, allow Windows Firewall access on private networks, then pair your phone by QR.
             - `airbridge-x86_64.AppImage`: the Linux app. Make it executable and run it (needs GTK 3 and WebKitGTK 4.1, present on most desktops). Updates itself from the app's Update button.
 
             The APK is signed with a debug key made for this build, not a private release key, so a newer release may need the old app uninstalled first. See [SECURITY.md](https://github.com/${{ github.repository }}/blob/${{ needs.prepare.outputs.tag }}/docs/SECURITY.md).
@@ -179,4 +208,5 @@ jobs:
             airbridge-x86_64.AppImage
             airbridge-x86_64.AppImage.sig
             airbridge-android.apk
+            airbridge.exe
           generate_release_notes: true

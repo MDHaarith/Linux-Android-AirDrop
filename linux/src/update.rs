@@ -3,11 +3,15 @@
 //! an Ed25519 signature from the release key, bound to its tag so an older
 //! build cannot be replayed as a newer one.
 
+#[cfg(target_os = "linux")]
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 
-use anyhow::{anyhow, bail, Context, Result};
+#[cfg(any(target_os = "linux", test))]
+use anyhow::anyhow;
+use anyhow::{bail, Context, Result};
+#[cfg(any(target_os = "linux", test))]
 use ring::signature::{UnparsedPublicKey, ED25519};
 use serde::{Deserialize, Serialize};
 
@@ -15,8 +19,10 @@ use crate::fetch::download;
 
 const REPO: &str = "MDHaarith/Linux-Android-AirDrop";
 const ASSET: &str = "airbridge-x86_64.AppImage";
+#[cfg(target_os = "linux")]
 const MAX_SIZE: u64 = 512 * 1024 * 1024;
 /// Release signing key; the private half lives only in the repo's `UPDATE_SIGNING_KEY` secret.
+#[cfg(any(target_os = "linux", test))]
 const PUBLIC_KEY: [u8; 32] = [
     0xaa, 0x73, 0xb8, 0xf3, 0x37, 0xfa, 0xca, 0xc6, 0x1a, 0x52, 0x6a, 0x52, 0xd7, 0x19, 0x49, 0x66,
     0x4f, 0x83, 0x99, 0xd8, 0xeb, 0x77, 0x6a, 0xe6, 0x57, 0x4a, 0xe2, 0x78, 0x0a, 0xf0, 0x49, 0x2f,
@@ -30,10 +36,17 @@ pub fn current_version() -> &'static str {
 }
 
 /// The AppImage file we are running from, if any.
+#[cfg(target_os = "linux")]
 pub fn appimage() -> Option<PathBuf> {
     std::env::var_os("APPIMAGE")
         .map(PathBuf::from)
         .filter(|p| p.is_absolute())
+}
+
+// shortcut: no Windows self-update; download releases until signed exe replacement is supported.
+#[cfg(windows)]
+pub fn appimage() -> Option<PathBuf> {
+    None
 }
 
 #[derive(Serialize, Clone)]
@@ -41,8 +54,10 @@ pub struct Available {
     pub tag: String,
     pub page: String,
     #[serde(skip)]
+    #[cfg_attr(windows, allow(dead_code))]
     app_url: String,
     #[serde(skip)]
+    #[cfg_attr(windows, allow(dead_code))]
     sig_url: String,
 }
 
@@ -118,6 +133,7 @@ fn newest(releases: Vec<Release>, current: &str) -> Option<Available> {
 }
 
 /// What the signature covers: the file, then a newline and its tag.
+#[cfg(any(target_os = "linux", test))]
 fn verify(data: &[u8], tag: &str, signature: &[u8]) -> Result<()> {
     let mut message = Vec::with_capacity(data.len() + tag.len() + 1);
     message.extend_from_slice(data);
@@ -129,6 +145,7 @@ fn verify(data: &[u8], tag: &str, signature: &[u8]) -> Result<()> {
 }
 
 /// Downloads, verifies and swaps in the new AppImage. Takes effect on restart.
+#[cfg(target_os = "linux")]
 pub async fn install(update: &Available) -> Result<()> {
     let target = appimage().ok_or_else(|| anyhow!("only the AppImage can update itself"))?;
     let signature = download(&update.sig_url, 1024).await?;
@@ -157,6 +174,11 @@ pub async fn install(update: &Available) -> Result<()> {
         return Err(err).with_context(|| format!("could not replace {}", target.display()));
     }
     Ok(())
+}
+
+#[cfg(windows)]
+pub async fn install(_update: &Available) -> Result<()> {
+    bail!("Download the Windows executable from the releases page")
 }
 
 #[cfg(test)]

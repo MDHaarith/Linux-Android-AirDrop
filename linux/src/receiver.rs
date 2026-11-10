@@ -1,7 +1,7 @@
 //! The LocalSend v2 HTTPS API: the part other devices talk to.
 
 use std::collections::HashMap;
-use std::net::IpAddr;
+use std::net::{IpAddr, Ipv4Addr};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -18,6 +18,7 @@ use hyper_util::server::conn::auto;
 use hyper_util::service::TowerToHyperService;
 use rand::distributions::{Alphanumeric, DistString};
 use rustls::ServerConfig;
+use serde::Deserialize;
 use serde_json::json;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpListener;
@@ -28,7 +29,6 @@ use crate::app::App;
 use crate::identity::fingerprint;
 use crate::limits::ConnLimit;
 use crate::net;
-use crate::peers::PeerKind;
 use crate::protocol::{is_localsend_id, DeviceInfo, FileDto, PrepareUploadRequest, API, MAX_FILES};
 use crate::storage::{self, SaveError};
 use crate::transfers::{now, Direction, FileState, FileStatus, Status, Transfer};
@@ -60,6 +60,7 @@ pub fn router(app: Arc<App>) -> Router {
         .route(&format!("{API}/prepare-upload"), post(prepare_upload))
         .route(&format!("{API}/upload"), post(upload))
         .route(&format!("{API}/cancel"), post(cancel))
+        .route("/api/airbridge/v1/pair", post(pair))
         .route("/", get(|| async { "AirBridge (LocalSend protocol v2)\n" }))
         .layer(DefaultBodyLimit::max(MAX_BODY))
         .with_state(app)
@@ -195,10 +196,96 @@ async fn register(
         return error(400, "Invalid body");
     };
     if let Some((info, verified)) = parse_info(&app, &conn, info) {
-        app.registry
-            .upsert(info, conn.ip, PeerKind::LocalSend, verified);
+        app.upsert_peer(info, conn.ip, verified);
     }
     Json(app.me().info_json()).into_response()
+}
+
+#[derive(Debug, Deserialize)]
+struct PairRequest {
+    alias: String,
+    port: u16,
+    addresses: Vec<Ipv4Addr>,
+}
+
+impl PairRequest {
+    fn parse(body: &[u8]) -> Result<Option<Self>, &'static str> {
+        if body.iter().all(u8::is_ascii_whitespace) {
+            return Ok(None);
+        }
+        let mut request: Self = serde_json::from_slice(body).map_err(|_| "Invalid pair body")?;
+        if request.port < 1024
+            || request.addresses.len() > 8
+            || request
+                .addresses
+                .iter()
+                .any(|ip| !net::is_pair_address(*ip))
+        {
+            return Err("Invalid pair addresses or port");
+        }
+        let info = DeviceInfo {
+            alias: request.alias,
+            version: String::new(),
+            device_model: None,
+            device_type: None,
+            fingerprint: String::new(),
+            port: request.port,
+            protocol: "https".into(),
+            download: false,
+        }
+        .sanitized()?;
+        request.alias = info.alias;
+        Ok(Some(request))
+    }
+}
+
+/// A device that scanned our pairing QR. Its certificate is what becomes trusted,
+/// so a connection without one has nothing to pair.
+async fn pair(
+    State(app): State<Arc<App>>,
+    Extension(conn): Extension<ConnInfo>,
+    Query(query): Query<HashMap<String, String>>,
+    body: Bytes,
+) -> Response {
+    let Some(id) = conn.cert_fingerprint else {
+        return error(403, "A client certificate is required");
+    };
+    if !is_localsend_id(&id) || id.eq_ignore_ascii_case(&app.identity.fingerprint) {
+        return error(400, "Invalid device");
+    }
+    let request = match PairRequest::parse(&body) {
+        Ok(request) => request,
+        Err(message) => return error(400, message),
+    };
+    let token = query.get("token").map_or("", String::as_str);
+    if !app.redeem_pair_token(token) {
+        return error(403, "This QR code has expired");
+    }
+    app.set_trusted(&id, true);
+    let peer = app.registry.get(&id);
+    let request = request.unwrap_or_else(|| PairRequest {
+        alias: peer
+            .as_ref()
+            .map_or_else(|| "Paired device".into(), |p| p.info.alias.clone()),
+        port: peer
+            .as_ref()
+            .map_or(crate::config::DEFAULT_PORT, |p| p.info.port),
+        addresses: Vec::new(),
+    });
+    let source = match net::canonical(conn.ip) {
+        IpAddr::V4(ip) => Some(ip),
+        _ => None,
+    };
+    app.update_settings(|s| {
+        s.remember_device(
+            &id,
+            &request.alias,
+            request.port,
+            source.into_iter().chain(request.addresses),
+        );
+    });
+    app.bus.emit("paired", json!({ "alias": request.alias }));
+    Json(json!({})).into_response()
 }
 
 fn check_pin(app: &App, conn: &ConnInfo, given: Option<&String>) -> Option<Response> {
@@ -294,9 +381,7 @@ async fn prepare_upload(
         return error(429, "Too many requests");
     }
 
-    let peer = app
-        .registry
-        .upsert(info, conn.ip, PeerKind::LocalSend, verified);
+    let peer = app.upsert_peer(info, conn.ip, verified);
     let message = (files.len() == 1 && files[0].is_text_message())
         .then(|| files[0].preview.clone())
         .flatten();
@@ -486,4 +571,53 @@ async fn cancel(
         app.cancel(&id);
     }
     StatusCode::OK.into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pair_body_is_optional_but_validated_when_present() {
+        assert!(PairRequest::parse(b"").unwrap().is_none());
+        assert!(PairRequest::parse(b" \n").unwrap().is_none());
+        let request = PairRequest::parse(
+            br#"{"alias":"  Phone\u202e  ","port":53317,"addresses":["100.64.1.2","192.168.1.2"]}"#,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(request.alias, "Phone");
+        assert_eq!(request.addresses[0], Ipv4Addr::new(100, 64, 1, 2));
+        for address in [
+            "8.8.8.8",
+            "127.0.0.1",
+            "169.254.1.2",
+            "100.128.0.1",
+            "localhost",
+            "::ffff:100.64.1.2",
+            "100.064.1.2",
+        ] {
+            let body = json!({"alias":"Phone", "port":53317, "addresses":[address]}).to_string();
+            assert!(PairRequest::parse(body.as_bytes()).is_err(), "{address}");
+        }
+        for port in [0, 22, 1023, 65536] {
+            let body = json!({"alias":"Phone", "port":port, "addresses":[]}).to_string();
+            assert!(PairRequest::parse(body.as_bytes()).is_err());
+        }
+        for body in [
+            "null",
+            "[]",
+            "{}",
+            "invalid",
+            r#"{"alias":" ","port":53317,"addresses":[]}"#,
+        ] {
+            assert!(PairRequest::parse(body.as_bytes()).is_err());
+        }
+        let body =
+            json!({"alias":"Phone", "port":1024, "addresses":vec!["10.0.0.1"; 8]}).to_string();
+        assert!(PairRequest::parse(body.as_bytes()).is_ok());
+        let body =
+            json!({"alias":"Phone", "port":53317, "addresses":vec!["10.0.0.1"; 9]}).to_string();
+        assert!(PairRequest::parse(body.as_bytes()).is_err());
+    }
 }

@@ -1,4 +1,4 @@
-//! AirBridge: AirDrop-style sharing between Linux and Android.
+//! AirBridge: AirDrop-style sharing between Linux, Windows and Android.
 //!
 //! Speaks the LocalSend v2 protocol, so it works with the AirBridge Android
 //! app and with any LocalSend client.
@@ -10,6 +10,8 @@ mod companion;
 mod config;
 mod desktop;
 mod discovery;
+// shortcut: no Windows edge drop zone; add a native panel when needed.
+#[cfg(target_os = "linux")]
 mod edge;
 mod events;
 mod fetch;
@@ -24,11 +26,12 @@ mod sender;
 mod storage;
 mod thumbnail;
 mod transfers;
-#[cfg(feature = "tray")]
+#[cfg(all(target_os = "linux", feature = "tray"))]
+// shortcut: no Windows tray icon; add a native tray when background controls are needed.
 mod tray;
 mod ui;
 mod update;
-#[cfg(feature = "webview")]
+#[cfg(all(target_os = "linux", feature = "webview"))]
 mod window;
 
 use std::io::Write;
@@ -55,7 +58,7 @@ use crate::discovery::Discovery;
 #[command(
     name = "airbridge",
     version,
-    about = "AirDrop-style file & text sharing between Linux and Android"
+    about = "AirDrop-style file & text sharing between Linux, Windows and Android"
 )]
 struct Cli {
     /// Start the service without opening the window (for autostart).
@@ -100,11 +103,11 @@ enum Command {
     /// Stop the running service.
     Quit,
     /// (internal) Native window for the given URL.
-    #[cfg(feature = "webview")]
+    #[cfg(all(target_os = "linux", feature = "webview"))]
     #[command(hide = true)]
     Window { url: String },
     /// (internal) The drop zone on the screen edge; the service starts it.
-    #[cfg(feature = "edge")]
+    #[cfg(all(target_os = "linux", feature = "edge"))]
     #[command(hide = true)]
     Edge {
         #[arg(long, default_value = "right")]
@@ -134,7 +137,7 @@ fn init_logging() {
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
-    #[cfg(feature = "webview")]
+    #[cfg(all(target_os = "linux", feature = "webview"))]
     if let Some(Command::Window { url }) = &cli.command {
         // GTK must own the main thread; no tokio runtime here.
         return match window::run(url) {
@@ -146,7 +149,7 @@ fn main() -> ExitCode {
         };
     }
     init_logging();
-    #[cfg(feature = "edge")]
+    #[cfg(all(target_os = "linux", feature = "edge"))]
     if let Some(Command::Edge { side }) = &cli.command {
         // GTK must own the main thread, as for the window.
         return match edge::run(side) {
@@ -165,6 +168,7 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     };
+    #[cfg(target_os = "linux")]
     if update::RESTART.load(std::sync::atomic::Ordering::Relaxed) {
         // Close every socket first so the new version can take the ports.
         runtime.shutdown_timeout(Duration::from_secs(3));
@@ -238,9 +242,9 @@ async fn run(cli: Cli) -> Result<ExitCode> {
             }
             Ok(ExitCode::SUCCESS)
         }
-        #[cfg(feature = "webview")]
+        #[cfg(all(target_os = "linux", feature = "webview"))]
         Command::Window { .. } => unreachable!("handled in main"),
-        #[cfg(feature = "edge")]
+        #[cfg(all(target_os = "linux", feature = "edge"))]
         Command::Edge { .. } => unreachable!("handled in main"),
     }
 }
@@ -352,10 +356,10 @@ async fn serve(open_window: bool) -> Result<ExitCode> {
         Err(err) => tracing::warn!("Web companion unavailable: {err}"),
     }
 
-    #[cfg(feature = "tray")]
+    #[cfg(all(target_os = "linux", feature = "tray"))]
     tray::spawn(app.clone());
 
-    #[cfg(feature = "edge")]
+    #[cfg(all(target_os = "linux", feature = "edge"))]
     edge::supervise(app.clone());
 
     let me = app.me();
@@ -378,10 +382,17 @@ async fn serve(open_window: bool) -> Result<ExitCode> {
         app.open_window();
     }
 
+    #[cfg(unix)]
     let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+    let terminated = async {
+        #[cfg(unix)]
+        terminate.recv().await;
+        #[cfg(not(unix))]
+        std::future::pending::<()>().await;
+    };
     tokio::select! {
         _ = tokio::signal::ctrl_c() => {}
-        _ = terminate.recv() => {}
+        _ = terminated => {}
         _ = app.shutdown.cancelled() => {}
     }
     app.shutdown.cancel();
@@ -411,17 +422,24 @@ async fn ensure_running() -> Result<bool> {
         return Ok(false);
     }
     let exe = std::env::current_exe().context("locating airbridge")?;
+    let mut command = std::process::Command::new(exe);
+    command
+        .arg("daemon")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
-        std::process::Command::new(exe)
-            .arg("daemon")
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .process_group(0)
-            .spawn()
-            .context("starting the AirBridge service")?;
+        command.process_group(0);
     }
+    // shortcut: no Windows autostart; launch manually until a per-user installer exists.
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    }
+    command.spawn().context("starting the AirBridge service")?;
     for _ in 0..100 {
         tokio::time::sleep(Duration::from_millis(150)).await;
         if running_instance().await.is_some() {
