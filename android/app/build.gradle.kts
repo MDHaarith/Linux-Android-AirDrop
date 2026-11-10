@@ -15,8 +15,8 @@ android {
         applicationId = "io.github.mdhaarith.airbridge"
         minSdk = 29
         targetSdk = 35
-        versionCode = 1005
-        versionName = "0.1.5"
+        versionCode = 1013
+        versionName = "0.1.13"
     }
 
     // A stable release key keeps updates installable and lets Play Protect recognise the app.
