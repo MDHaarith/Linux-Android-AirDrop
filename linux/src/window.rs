@@ -1,4 +1,4 @@
-//! Native app window (WebKitGTK via wry) showing the local UI.
+//! Native app window (WebKitGTK or WebView2 via wry) showing the local UI.
 //!
 //! Runs in its own process (`airbridge window <url>`), so closing the window
 //! never stops the background service.
@@ -14,24 +14,41 @@ enum UserEvent {
     Drag(DragDropEvent),
     /// The page asked to close (the service is restarting after an update).
     Close,
+    /// Something asked for AirBridge while its window is open.
+    Focus,
 }
 
 pub fn run(url: &str) -> Result<()> {
     let event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
     let proxy = event_loop.create_proxy();
     let close = event_loop.create_proxy();
+    #[cfg(windows)]
+    let icon = {
+        use tao::platform::windows::IconExtWindows;
+        // The icon resource embedded by build.rs.
+        tao::window::Icon::from_resource(1, None).ok()
+    };
+    #[cfg(not(windows))]
+    let icon = None;
     let window = WindowBuilder::new()
+        .with_window_icon(icon)
         .with_title("AirBridge")
         .with_inner_size(LogicalSize::new(1120.0, 780.0))
         .with_min_inner_size(LogicalSize::new(720.0, 560.0))
         .build(&event_loop)?;
 
-    let builder = WebViewBuilder::new()
+    // WebView2 would otherwise keep its data next to the exe, which may be read-only.
+    let data = cfg!(windows).then(|| crate::config::cache_dir().join("webview"));
+    let mut context = wry::WebContext::new(data);
+    let builder = WebViewBuilder::new_with_web_context(&mut context)
         .with_url(url)
         .with_ipc_handler(move |request| {
-            if request.body() == "close" {
-                let _ = close.send_event(UserEvent::Close);
-            }
+            let event = match request.body().as_str() {
+                "close" => UserEvent::Close,
+                "focus" => UserEvent::Focus,
+                _ => return,
+            };
+            let _ = close.send_event(event);
         })
         .with_drag_drop_handler(move |event| {
             // WebKit also reports dragged browser URLs as paths. Let the DOM
@@ -65,6 +82,10 @@ pub fn run(url: &str) -> Result<()> {
                 ..
             }
             | Event::UserEvent(UserEvent::Close) => *control_flow = ControlFlow::Exit,
+            Event::UserEvent(UserEvent::Focus) => {
+                window.set_minimized(false);
+                window.set_focus();
+            }
             Event::UserEvent(UserEvent::Drag(event)) => {
                 let script = match event {
                     DragDropEvent::Drop {

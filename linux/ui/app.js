@@ -131,7 +131,7 @@ function handle({ event, data }) {
       return toast(`${data.alias || "Your phone"} is paired`, "It can now share with this computer without asking", "ok");
     case "staged": return addStagedPaths(data.files || []);
     case "scan": return setScanning(data.running, data.found);
-    case "focus": return flashMe();
+    case "focus": window.ipc?.postMessage("focus"); return flashMe();
     case "history-cleared":
       for (const [id, t] of state.transfers) if (isFinal(t)) state.transfers.delete(id);
       return renderActivity(true);

@@ -178,11 +178,17 @@ Optional tools: `wl-clipboard` (Wayland) or `xclip`/`xsel` (X11) for clipboard s
 
 ### Windows
 
-Download `airbridge.exe` from the newest
-[release](https://github.com/MDHaarith/Linux-Android-AirDrop/releases) and run it.
-Allow AirBridge through Windows Firewall on **private networks**. The UI opens in
-an Edge app window (or your default browser, which must be a current Edge, Chrome or
-Firefox; the legacy EdgeHTML Edge of older Windows 10 cannot run it); pair the Android app by QR. Remembered
+Download `airbridge-setup.exe` from the newest
+[release](https://github.com/MDHaarith/Linux-Android-AirDrop/releases) and run it (Windows 10
+or 11, x64, no admin rights needed). It adds AirBridge to the Start menu and, if you choose,
+to Explorer's **Send to** menu and to sign-in, and installs Microsoft's WebView2 runtime when
+it is missing. Or run `airbridge.exe` from the release without installing.
+
+Allow AirBridge through Windows Firewall on **private networks**, then pair the Android app by
+QR. AirBridge opens in its own window (WebView2); without the WebView2 runtime it uses an Edge
+app window or your default browser, which must be a current Edge, Chrome or Firefox (the
+legacy EdgeHTML Edge of older Windows 10 cannot run it). Closing the window keeps AirBridge
+receiving: its tray icon opens the window or the received files, and quits. Remembered
 addresses and Tailscale reconnect work the same way as on Linux.
 
 For a source build, install Rust with the MSVC toolchain and Visual Studio C++
@@ -190,12 +196,12 @@ build tools, then run `cargo build --release --locked` in `linux/`. The executab
 is `linux/target/release/airbridge.exe`.
 
 The Update button replaces `airbridge.exe` with the new signed release and restarts it, so
-keep the exe in a folder you can write to (not *Program Files*). Settings and pairings stay.
+keep the exe in a folder you can write to (not *Program Files*; the installer uses your own
+`AppData\Local\Programs`). Settings and pairings stay.
 
-Windows currently has no tray icon, native notifications, screen-edge drop zone or
-autostart. Requests needing attention open the UI; keep the app
-running while sharing. Quick Share works over Wi-Fi, but has no Bluetooth wake-up:
-open **Quick Share → Receive** on the phone when sending from Windows.
+Windows has no native notifications with Accept / Decline or screen-edge drop zone yet:
+requests needing attention open the AirBridge window. Quick Share works over Wi-Fi, but has
+no Bluetooth wake-up: open **Quick Share → Receive** on the phone when sending from Windows.
 
 ### Android (10 or newer)
 

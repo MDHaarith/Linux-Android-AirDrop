@@ -573,6 +573,24 @@ pub fn open_window(url: &str, profile_dir: &Path) -> &'static str {
 
 #[cfg(windows)]
 pub fn open_window(url: &str, profile_dir: &Path) -> &'static str {
+    // 1. Our own window, when the WebView2 runtime is installed (Windows 11 has it).
+    if wry::webview_version().is_ok() {
+        if let Ok(exe) = std::env::current_exe() {
+            use std::os::windows::process::CommandExt;
+            if std::process::Command::new(exe)
+                .args(["window", url])
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .creation_flags(0x08000000) // CREATE_NO_WINDOW
+                .spawn()
+                .is_ok()
+            {
+                return "webview";
+            }
+        }
+    }
+    // 2. An Edge app window, 3. the default browser.
     let edge = which("msedge.exe").or_else(|| {
         ["ProgramFiles(x86)", "ProgramFiles", "LOCALAPPDATA"]
             .into_iter()

@@ -27,11 +27,13 @@ mod storage;
 mod thumbnail;
 mod transfers;
 #[cfg(all(target_os = "linux", feature = "tray"))]
-// shortcut: no Windows tray icon; add a native tray when background controls are needed.
+mod tray;
+#[cfg(windows)]
+#[path = "tray_windows.rs"]
 mod tray;
 mod ui;
 mod update;
-#[cfg(all(target_os = "linux", feature = "webview"))]
+#[cfg(native_window)]
 mod window;
 
 use std::io::Write;
@@ -94,7 +96,7 @@ enum Command {
     /// Stop the running service.
     Quit,
     /// (internal) Native window for the given URL.
-    #[cfg(all(target_os = "linux", feature = "webview"))]
+    #[cfg(native_window)]
     #[command(hide = true)]
     Window { url: String },
     /// (internal) The drop zone on the screen edge; the service starts it.
@@ -159,7 +161,9 @@ fn init_logging() {
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
-    #[cfg(all(target_os = "linux", feature = "webview"))]
+    #[cfg(windows)]
+    hide_own_console();
+    #[cfg(native_window)]
     if let Some(Command::Window { url }) = &cli.command {
         // GTK must own the main thread; no tokio runtime here.
         return match window::run(url) {
@@ -211,6 +215,23 @@ fn main() -> ExitCode {
         }
     }
     code
+}
+
+/// Started from Explorer, a shortcut or Send To, the exe gets a console window
+/// of its own: close it. From a terminal (shared console) it stays.
+#[cfg(windows)]
+fn hide_own_console() {
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetConsoleProcessList(list: *mut u32, count: u32) -> u32;
+        fn FreeConsole() -> i32;
+    }
+    let mut processes = [0u32; 2];
+    // SAFETY: the buffer has room for the 2 entries passed as its length.
+    if unsafe { GetConsoleProcessList(processes.as_mut_ptr(), 2) } == 1 {
+        // SAFETY: no arguments; only detaches this process from its console.
+        unsafe { FreeConsole() };
+    }
 }
 
 async fn run(cli: Cli) -> Result<ExitCode> {
@@ -270,7 +291,7 @@ async fn run(cli: Cli) -> Result<ExitCode> {
             }
             Ok(ExitCode::SUCCESS)
         }
-        #[cfg(all(target_os = "linux", feature = "webview"))]
+        #[cfg(native_window)]
         Command::Window { .. } => unreachable!("handled in main"),
         #[cfg(all(target_os = "linux", feature = "edge"))]
         Command::Edge { .. } => unreachable!("handled in main"),
@@ -418,7 +439,7 @@ async fn serve(open_window: bool) -> Result<ExitCode> {
         Err(err) => tracing::warn!("Web companion unavailable: {err}"),
     }
 
-    #[cfg(all(target_os = "linux", feature = "tray"))]
+    #[cfg(any(windows, all(target_os = "linux", feature = "tray")))]
     tray::spawn(app.clone());
 
     #[cfg(all(target_os = "linux", feature = "edge"))]
@@ -495,7 +516,6 @@ async fn ensure_running() -> Result<bool> {
         use std::os::unix::process::CommandExt;
         command.process_group(0);
     }
-    // shortcut: no Windows autostart; launch manually until a per-user installer exists.
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
