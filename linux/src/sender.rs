@@ -7,6 +7,7 @@ use std::time::Duration;
 use bytes::Bytes;
 use futures_util::TryStreamExt;
 use hyper::Method;
+use serde::Deserialize;
 use serde_json::json;
 use tokio_util::io::ReaderStream;
 use tokio_util::sync::CancellationToken;
@@ -30,11 +31,73 @@ pub struct SendItem {
     pub temporary: bool,
 }
 
-/// Files are sent as-is; folders are sent recursively with relative names.
-/// Any requested path that cannot be read is an error, so nothing the user
-/// picked is silently left out.
-pub fn expand_paths(paths: &[PathBuf]) -> Result<Vec<SendItem>, String> {
-    fn walk(dir: &Path, prefix: &str, out: &mut Vec<SendItem>) -> Result<(), String> {
+/// Which files of the chosen folders to send, and under which folder name.
+#[derive(Debug, Default, Clone, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct Selection {
+    /// Only these kinds from folders: "photos", "videos", "audio", "documents".
+    pub kinds: Vec<String>,
+    /// Only these extensions from folders (no dot, any case), besides `kinds`.
+    pub extensions: Vec<String>,
+    /// Folder names skipped anywhere inside the chosen folders.
+    pub exclude: Vec<String>,
+    /// Everything arrives inside this folder; a single chosen folder takes
+    /// this name (sending `D:\` as "D-drive" keeps its whole hierarchy).
+    pub root: Option<String>,
+}
+
+const DOCUMENTS: &[&str] = &[
+    "pdf", "doc", "docx", "odt", "rtf", "txt", "md", "xls", "xlsx", "ods", "csv", "ppt", "pptx",
+    "odp", "epub",
+];
+/// Never user content, and often unreadable (Windows drive roots).
+const SYSTEM_FOLDERS: &[&str] = &["System Volume Information", "$RECYCLE.BIN"];
+
+impl Selection {
+    fn filters(&self) -> bool {
+        !self.kinds.is_empty() || !self.extensions.is_empty()
+    }
+
+    fn wants_file(&self, path: &Path) -> bool {
+        if !self.filters() {
+            return true;
+        }
+        let ext = path
+            .extension()
+            .map(|e| e.to_string_lossy().to_lowercase())
+            .unwrap_or_default();
+        let mime = mime_guess::from_path(path).first_or_octet_stream();
+        self.extensions
+            .iter()
+            .any(|e| e.trim_start_matches('.').eq_ignore_ascii_case(&ext))
+            || self.kinds.iter().any(|kind| match kind.as_str() {
+                "photos" => mime.type_() == "image",
+                "videos" => mime.type_() == "video",
+                "audio" => mime.type_() == "audio",
+                "documents" => DOCUMENTS.contains(&ext.as_str()),
+                _ => false,
+            })
+    }
+
+    fn wants_folder(&self, name: &str) -> bool {
+        !SYSTEM_FOLDERS
+            .iter()
+            .copied()
+            .chain(self.exclude.iter().map(String::as_str))
+            .any(|skip| skip.eq_ignore_ascii_case(name))
+    }
+}
+
+/// Files are sent as-is; folders are sent recursively with relative names,
+/// filtered by `selection`. Any requested path that cannot be read is an
+/// error, so nothing the user picked is silently left out.
+pub fn expand_paths(paths: &[PathBuf], selection: &Selection) -> Result<Vec<SendItem>, String> {
+    fn walk(
+        dir: &Path,
+        prefix: &str,
+        selection: &Selection,
+        out: &mut Vec<SendItem>,
+    ) -> Result<(), String> {
         let failed = |e: std::io::Error| format!("{}: {e}", dir.display());
         let mut entries = std::fs::read_dir(dir)
             .and_then(|d| d.collect::<std::io::Result<Vec<_>>>())
@@ -42,10 +105,11 @@ pub fn expand_paths(paths: &[PathBuf]) -> Result<Vec<SendItem>, String> {
         entries.sort_by_key(|e| e.file_name());
         for entry in entries {
             let kind = entry.file_type().map_err(failed)?;
-            let name = format!("{prefix}/{}", entry.file_name().to_string_lossy());
-            if kind.is_dir() {
-                walk(&entry.path(), &name, out)?;
-            } else if kind.is_file() {
+            let file_name = entry.file_name().to_string_lossy().into_owned();
+            let name = format!("{prefix}/{file_name}");
+            if kind.is_dir() && selection.wants_folder(&file_name) {
+                walk(&entry.path(), &name, selection, out)?;
+            } else if kind.is_file() && selection.wants_file(&entry.path()) {
                 out.push(SendItem {
                     path: entry.path(),
                     name,
@@ -55,14 +119,34 @@ pub fn expand_paths(paths: &[PathBuf]) -> Result<Vec<SendItem>, String> {
         }
         Ok(())
     }
+    let root = selection
+        .root
+        .as_deref()
+        .map(|r| r.trim_matches(['/', '\\', ' ']))
+        .filter(|r| !r.is_empty());
     let mut items = Vec::new();
     for path in paths {
+        // A drive root has no file name: "D:\" becomes "D".
         let name = path
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "file".into());
-        match std::fs::metadata(path) {
-            Ok(meta) if meta.is_dir() => walk(path, &name, &mut items)?,
+            .unwrap_or_else(|| {
+                path.to_string_lossy()
+                    .chars()
+                    .filter(|c| c.is_alphanumeric())
+                    .collect()
+            });
+        let name = if name.is_empty() { "file".into() } else { name };
+        let meta = std::fs::metadata(path);
+        let name = match root {
+            Some(root) if paths.len() == 1 && meta.as_ref().is_ok_and(|m| m.is_dir()) => {
+                root.to_string()
+            }
+            Some(root) => format!("{root}/{name}"),
+            None => name,
+        };
+        match meta {
+            Ok(meta) if meta.is_dir() => walk(path, &name, selection, &mut items)?,
             Ok(meta) if meta.is_file() => items.push(SendItem {
                 path: path.clone(),
                 name,
@@ -92,6 +176,7 @@ pub fn send_files(
     peer: Peer,
     items: Vec<SendItem>,
     pin: Option<String>,
+    verify: bool,
 ) -> Result<String, String> {
     if items.is_empty() {
         return Err("Nothing to send".into());
@@ -112,6 +197,7 @@ pub fn send_files(
         files,
     );
     transfer.peer_ip = Some(peer.ip);
+    transfer.verify = verify || app.settings().verify_sends;
     transfer.cleanup = items
         .iter()
         .filter(|i| i.temporary)
@@ -230,8 +316,71 @@ async fn add_previews(app: &Arc<App>, id: &str) {
     }
 }
 
+/// For a verified send: the SHA-256 of every file, before the offer, so the
+/// receiver can check what arrives (a file changed meanwhile fails there too).
+async fn hash_files(app: &Arc<App>, id: &str) -> Result<(), String> {
+    let files: Vec<(String, PathBuf)> = {
+        let transfers = app.transfers.lock().unwrap();
+        let Some(t) = transfers
+            .get(id)
+            .filter(|t| t.verify && t.message.is_none())
+        else {
+            return Ok(());
+        };
+        t.files
+            .iter()
+            .filter_map(|f| Some((f.id.clone(), PathBuf::from(f.path.clone()?))))
+            .collect()
+    };
+    let (app, id) = (app.clone(), id.to_string());
+    tokio::task::spawn_blocking(move || {
+        use sha2::{Digest, Sha256};
+        use std::io::Read;
+        let mut checked = 0u64;
+        let mut buf = vec![0; CHUNK];
+        for (file_id, path) in files {
+            let failed = |e: std::io::Error| format!("{}: {e}", path.display());
+            let mut file = std::fs::File::open(&path).map_err(failed)?;
+            let mut hasher = Sha256::new();
+            loop {
+                let n = file.read(&mut buf).map_err(failed)?;
+                if n == 0 {
+                    break;
+                }
+                hasher.update(&buf[..n]);
+                checked += n as u64;
+                let mut transfers = app.transfers.lock().unwrap();
+                match transfers.get_mut(&id) {
+                    Some(t) if !t.status.is_final() => t.checked = checked,
+                    _ => return Err("Cancelled".to_string()),
+                }
+                transfers.emit(&id, false);
+            }
+            let digest: String = hasher
+                .finalize()
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect();
+            let mut transfers = app.transfers.lock().unwrap();
+            if let Some(dto) = transfers
+                .get_mut(&id)
+                .and_then(|t| t.file_mut(&file_id))
+                .and_then(|f| f.dto.as_mut())
+            {
+                dto.sha256 = Some(digest);
+            }
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 async fn run(app: &Arc<App>, id: &str, peer: &Peer, pin: Option<String>) -> Outcome {
     add_previews(app, id).await;
+    if let Err(err) = hash_files(app, id).await {
+        return Outcome::Failed(err);
+    }
     let body = {
         let transfers = app.transfers.lock().unwrap();
         let Some(t) = transfers.get(id) else {
@@ -430,7 +579,8 @@ async fn upload(
             "The receiver cancelled the transfer".into(),
         )),
         422 => Err(Outcome::Failed(
-            "The file was damaged in transit (checksum mismatch)".into(),
+            "A file changed while it was sent, or was damaged in transit (checksum mismatch)"
+                .into(),
         )),
         code => Err(Outcome::Failed(format!("Upload refused (HTTP {code})"))),
     }
@@ -464,11 +614,148 @@ mod tests {
         std::fs::write(&file, b"a").unwrap();
         std::fs::create_dir(dir.path().join("folder")).unwrap();
         std::fs::write(dir.path().join("folder/b.bin"), b"b").unwrap();
-        let items = expand_paths(&[file.clone(), dir.path().join("folder")]).unwrap();
+        let all = Selection::default();
+        let items = expand_paths(&[file.clone(), dir.path().join("folder")], &all).unwrap();
         let names: Vec<_> = items.iter().map(|i| i.name.as_str()).collect();
         assert_eq!(names, ["a.bin", "folder/b.bin"]);
         let missing = dir.path().join("does-not-exist.bin");
-        let err = expand_paths(&[file, missing, dir.path().join("folder")]).unwrap_err();
+        let err = expand_paths(&[file, missing, dir.path().join("folder")], &all).unwrap_err();
         assert!(err.contains("does-not-exist.bin"), "{err}");
+    }
+
+    #[test]
+    fn folders_can_be_filtered_and_received_under_one_name() {
+        let drive = tempfile::tempdir().unwrap();
+        for path in [
+            "Photos/2024/a.JPG",
+            "Photos/notes.pdf",
+            "Videos/clip.mp4",
+            "Program Files/app/setup.exe",
+            "Games/save.raw",
+            "System Volume Information/x.jpg",
+        ] {
+            let path = drive.path().join(path);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, b"x").unwrap();
+        }
+        let selection = Selection {
+            kinds: vec!["photos".into(), "documents".into()],
+            extensions: vec![".raw".into()],
+            exclude: vec!["program files".into()],
+            root: Some("D-drive/".into()),
+        };
+        let items = expand_paths(&[drive.path().to_path_buf()], &selection).unwrap();
+        let names: Vec<_> = items.iter().map(|i| i.name.as_str()).collect();
+        assert_eq!(
+            names,
+            [
+                "D-drive/Games/save.raw",
+                "D-drive/Photos/2024/a.JPG",
+                "D-drive/Photos/notes.pdf"
+            ]
+        );
+        // Several chosen paths each keep their own name inside the folder.
+        let file = drive.path().join("Videos/clip.mp4");
+        let items = expand_paths(&[file.clone(), file], &selection).unwrap();
+        assert_eq!(items[0].name, "D-drive/clip.mp4");
+    }
+
+    fn wait_final(app: &App, id: &str) -> Transfer {
+        let deadline = std::time::Instant::now() + Duration::from_secs(60);
+        loop {
+            if let Some(t) = app
+                .transfers
+                .lock()
+                .unwrap()
+                .get(id)
+                .filter(|t| t.status.is_final())
+            {
+                return t.clone();
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "transfer {id} did not finish"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn verified_send_then_resend_skips_what_already_arrived() {
+        let settings = r#"{"notifications":false,"quickShare":false}"#;
+        let (_a_home, a) = crate::app::test_app(settings);
+        let (_b_home, b) = crate::app::test_app(settings);
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let mut info = b.me();
+        info.port = listener.local_addr().unwrap().port();
+        let tls = Some(b.identity.server_config());
+        tokio::spawn(crate::receiver::serve(b.clone(), listener, tls));
+        let peer = a.registry.upsert(
+            info,
+            "127.0.0.1".parse().unwrap(),
+            crate::peers::PeerKind::LocalSend,
+            true,
+        );
+        // The receiving user accepts everything.
+        let receiver = b.clone();
+        tokio::spawn(async move {
+            loop {
+                let waiting: Vec<String> = receiver
+                    .transfers
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .filter(|t| t.status == Status::Waiting)
+                    .map(|t| t.id.clone())
+                    .collect();
+                for id in waiting {
+                    receiver.decide(&id, true);
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        });
+
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("Album")).unwrap();
+        std::fs::write(dir.path().join("Album/a.jpg"), vec![7u8; 300_000]).unwrap();
+        std::fs::write(dir.path().join("Album/b.txt"), b"hello").unwrap();
+        let items = expand_paths(&[dir.path().join("Album")], &Selection::default()).unwrap();
+
+        let id = send_files(&a, peer.clone(), items.clone(), None, true).unwrap();
+        let (a2, id2) = (a.clone(), id.clone());
+        let sent = tokio::task::spawn_blocking(move || wait_final(&a2, &id2))
+            .await
+            .unwrap();
+        assert_eq!(sent.status, Status::Done, "{:?}", sent.error);
+        let received = b
+            .transfers
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|t| t.direction == Direction::In)
+            .cloned()
+            .unwrap();
+        assert!(received
+            .files
+            .iter()
+            .all(|f| f.status == FileStatus::Done && f.verified));
+        let downloads = b.settings().download_dir.clone();
+        assert_eq!(
+            std::fs::read(downloads.join("Album/b.txt")).unwrap(),
+            b"hello"
+        );
+
+        // Sending the same files again (a resume after an unclear failure)
+        // creates no copies: the receiver already has them.
+        let id = send_files(&a, peer, items, None, false).unwrap();
+        let (a2, id2) = (a.clone(), id.clone());
+        let again = tokio::task::spawn_blocking(move || wait_final(&a2, &id2))
+            .await
+            .unwrap();
+        assert_eq!(again.status, Status::Done, "{:?}", again.error);
+        assert!(again.files.iter().all(|f| f.status == FileStatus::Skipped));
+        assert!(!downloads.join("Album/b (1).txt").exists());
     }
 }

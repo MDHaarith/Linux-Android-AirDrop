@@ -387,6 +387,7 @@ function renderItem(t, structural) {
       ${!isFinal(t) ? `<button class="btn ghost small" data-act="cancel">${t.status === "waiting" && t.direction === "in" ? "Decline" : "Cancel"}</button>` : ""}
       ${t.direction === "in" && t.status === "waiting" ? `<button class="btn small" data-act="review">Review</button>` : ""}
       ${t.status === "done" && hasPath ? `<button class="btn ghost small" data-act="open">Open</button><button class="btn ghost small" data-act="reveal">Show in folder</button>` : ""}
+      ${canResume(t) ? `<button class="btn small" data-act="resume">Resume</button>` : ""}
       ${t.message ? `<button class="btn ghost small" data-act="copy">Copy</button>` : ""}
     </div>`;
   node.querySelectorAll("[data-act]").forEach((b) => b.addEventListener("click", () => itemAction(t.id, b.dataset.act)));
@@ -396,14 +397,29 @@ function renderItem(t, structural) {
   });
 }
 
+function canResume(t) {
+  return t.direction === "out" && !t.message && (t.status === "failed" || t.status === "cancelled")
+    && (t.files || []).some((f) => f.status !== "done" && f.status !== "skipped");
+}
+
 function statusText(t) {
   const when = ago(t.finished || t.created);
+  if (t.status === "waiting" && t.direction === "out" && t.verify && t.checked < t.total) {
+    return `Checking files… ${Math.floor((100 * t.checked) / (t.total || 1))}%`;
+  }
   if (t.status === "transferring") return `${bytes(t.done)} of ${bytes(t.total)} · ${bytes(t.speed)}/s`;
   if (t.status === "waiting") {
     const pin = t.peer?.pin ? ` · PIN ${t.peer.pin}` : "";
     return (t.direction === "out" ? `Waiting for ${t.peer?.alias || "device"}…` : "Waiting for you") + pin;
   }
-  if (t.status === "done") return `${t.message ? "" : bytes(t.total) + " · "}${when}`;
+  if (t.status === "done") {
+    const files = t.files || [];
+    // Outgoing: the receiver rejects a checksum mismatch, so a verified send that finished is verified.
+    const ok = t.direction === "out" ? t.verify
+      : files.some((f) => f.verified) && files.every((f) => f.verified || f.status === "skipped");
+    const verified = ok ? "Verified · " : "";
+    return `${t.message ? "" : bytes(t.total) + " · "}${verified}${when}`;
+  }
   return `${t.error || t.status} · ${when}`;
 }
 
@@ -413,6 +429,10 @@ async function itemAction(id, act) {
     if (act === "copy") {
       const t = state.transfers.get(id);
       if (t?.message && (await AB.copyText(t.message))) return toast("Copied to clipboard", "", "ok", 2000);
+    }
+    if (act === "resume") {
+      const t = state.transfers.get(id);
+      return await api(`/transfers/${id}/resume`, { body: { pin: state.pins[t?.peer?.id] } });
     }
     await api(`/transfers/${id}/${act}`, { body: {} });
   } catch (err) {
@@ -955,6 +975,7 @@ function openSettings() {
       <div class="field"><label for="sEdge">Drop zone side</label><select class="input" id="sEdge">
         <option value="right" ${s.edgeSide !== "left" ? "selected" : ""}>Right edge</option>
         <option value="left" ${s.edgeSide === "left" ? "selected" : ""}>Left edge</option></select></div>` : ""}
+      ${settingSwitch("verifySends", "Verify contents", "Check every file with SHA-256 so a damaged copy is caught (slower to start)")}
       ${settingSwitch("webCompanion", "Phone browser companion", "Phones without an app pair with a QR code (plain HTTP on your Wi‑Fi; what they send asks you first)")}
       <div class="field"><label for="sPin">Require a PIN (optional)</label><input class="input" id="sPin" placeholder="No PIN" value="${esc(s.pin || "")}" autocomplete="off"></div>
     </div>

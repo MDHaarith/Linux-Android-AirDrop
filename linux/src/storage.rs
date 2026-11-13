@@ -448,6 +448,7 @@ where
             dto.size
         )));
     }
+    let verified = hasher.is_some();
     if let (Some(hasher), Some(expected)) = (hasher, dto.sha256.as_ref()) {
         let actual: String = hasher
             .finalize()
@@ -484,12 +485,51 @@ where
         {
             f.status = FileStatus::Done;
             f.done = f.size;
+            f.verified = verified;
             f.path = Some(target.to_string_lossy().into_owned());
         }
         transfers.emit(transfer_id, true);
     }
     finish_if_complete(app, transfer_id);
     Ok(target)
+}
+
+/// Where an earlier transfer already saved this file: same name, size and
+/// modification time, and the same SHA-256 when the sender sent one. A resumed
+/// send then skips it instead of creating "name (1)" copies.
+pub fn already_received(download_dir: &Path, dto: &FileDto) -> Option<PathBuf> {
+    let root = download_dir.canonicalize().ok()?;
+    let path = root.join(safe_relative_path(&dto.file_name));
+    let meta = std::fs::symlink_metadata(&path).ok()?;
+    // Only real files inside the download folder, never through symlinks.
+    if !meta.is_file()
+        || meta.len() != dto.size
+        || !path.parent()?.canonicalize().ok()?.starts_with(&root)
+    {
+        return None;
+    }
+    let seconds = |t: std::time::SystemTime| {
+        t.duration_since(std::time::UNIX_EPOCH)
+            .ok()
+            .map(|d| d.as_secs())
+    };
+    let sent = parse_iso(dto.metadata.as_ref()?.modified.as_deref())?;
+    if seconds(meta.modified().ok()?) != seconds(sent) {
+        return None;
+    }
+    if let Some(expected) = &dto.sha256 {
+        let mut hasher = Sha256::new();
+        std::io::copy(&mut std::fs::File::open(&path).ok()?, &mut hasher).ok()?;
+        let actual: String = hasher
+            .finalize()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        if !actual.eq_ignore_ascii_case(expected) {
+            return None;
+        }
+    }
+    Some(path)
 }
 
 /// Finishes an incoming transfer once every file reached a final state.

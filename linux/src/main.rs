@@ -75,16 +75,7 @@ enum Command {
     /// Run the service in the foreground without opening the window.
     Daemon,
     /// Send files or folders. Without --to the window opens so you can pick a device.
-    Send {
-        #[arg(required = true)]
-        paths: Vec<PathBuf>,
-        /// Device name, IP or fingerprint.
-        #[arg(long, short)]
-        to: Option<String>,
-        /// PIN, if the receiver requires one.
-        #[arg(long)]
-        pin: Option<String>,
-    },
+    Send(SendArgs),
     /// Send a text message ("-" reads standard input).
     Text {
         text: String,
@@ -113,6 +104,37 @@ enum Command {
         #[arg(long, default_value = "right")]
         side: String,
     },
+}
+
+#[derive(clap::Args)]
+struct SendArgs {
+    #[arg(required = true)]
+    paths: Vec<PathBuf>,
+    /// Device name, IP or fingerprint.
+    #[arg(long, short)]
+    to: Option<String>,
+    /// PIN, if the receiver requires one.
+    #[arg(long)]
+    pin: Option<String>,
+    /// Send each file's SHA-256 so the receiver checks the contents.
+    #[arg(long)]
+    verify: bool,
+    /// With --verify: write "sha256  name" lines (sha256sum format) here afterwards.
+    #[arg(long, requires = "verify", value_name = "FILE")]
+    manifest: Option<PathBuf>,
+    /// From folders, send only these: photos, videos, audio, documents and/or
+    /// extensions such as raw,heic (comma-separated).
+    #[arg(long, value_delimiter = ',', value_name = "KINDS")]
+    only: Vec<String>,
+    /// Skip folders with these names anywhere inside (comma-separated).
+    #[arg(long, value_delimiter = ',', value_name = "NAMES")]
+    exclude: Vec<String>,
+    /// Receive everything inside this folder (a single folder takes this name).
+    #[arg(long = "as", value_name = "FOLDER")]
+    root: Option<String>,
+    /// Only show how many files and bytes would be sent.
+    #[arg(long)]
+    dry_run: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -189,7 +211,7 @@ async fn run(cli: Cli) -> Result<ExitCode> {
     match cli.command.unwrap_or(Command::Open) {
         Command::Open => serve(!cli.background).await,
         Command::Daemon => serve(false).await,
-        Command::Send { paths, to, pin } => send(paths, to, pin).await,
+        Command::Send(args) => send(args).await,
         Command::Text { text, to, pin } => {
             let text = if text == "-" {
                 let mut buf = String::new();
@@ -546,29 +568,83 @@ async fn wait_for_device(query: &str) -> Result<String> {
     bail!("no device called “{query}” found (try `airbridge devices`)")
 }
 
-async fn send(paths: Vec<PathBuf>, to: Option<String>, pin: Option<String>) -> Result<ExitCode> {
-    let paths = paths
+async fn send(args: SendArgs) -> Result<ExitCode> {
+    let paths = args
+        .paths
         .iter()
         .map(|p| std::fs::canonicalize(p).with_context(|| format!("{}", p.display())))
         .collect::<Result<Vec<_>>>()?;
+    let picky =
+        args.verify || !args.only.is_empty() || !args.exclude.is_empty() || args.root.is_some();
+    const KINDS: [&str; 4] = ["photos", "videos", "audio", "documents"];
+    let (kinds, extensions): (Vec<String>, Vec<String>) = args
+        .only
+        .iter()
+        .map(|o| o.trim().to_lowercase())
+        .filter(|o| !o.is_empty())
+        .partition(|o| KINDS.contains(&o.as_str()));
+    let options = json!({
+        "paths": paths,
+        "pin": args.pin,
+        "verify": args.verify,
+        "kinds": kinds,
+        "extensions": extensions,
+        "exclude": args.exclude,
+        "root": args.root,
+    });
     ensure_running().await?;
-    match to {
-        None => {
-            api(
-                Method::POST,
-                "/api/stage-paths",
-                Some(json!({ "paths": paths })),
-            )
-            .await?;
-            println!("Pick a device in the AirBridge window.");
-            Ok(ExitCode::SUCCESS)
+    if args.dry_run {
+        let mut body = options;
+        body["dryRun"] = true.into();
+        let (status, response) = api(Method::POST, "/api/send", Some(body)).await?;
+        if status != 200 {
+            bail!(
+                "{}",
+                response["message"].as_str().unwrap_or("request failed")
+            );
         }
-        Some(to) => {
-            let peer = wait_for_device(&to).await?;
-            let body = json!({ "peer": peer, "paths": paths, "pin": pin });
-            follow(api(Method::POST, "/api/send", Some(body)).await?).await
-        }
+        println!(
+            "{} file(s), {}",
+            response["count"].as_u64().unwrap_or(0),
+            human_size(response["bytes"].as_u64().unwrap_or(0))
+        );
+        return Ok(ExitCode::SUCCESS);
     }
+    let Some(to) = args.to else {
+        if picky {
+            bail!("--verify, --only, --exclude and --as need --to");
+        }
+        api(
+            Method::POST,
+            "/api/stage-paths",
+            Some(json!({ "paths": paths })),
+        )
+        .await?;
+        println!("Pick a device in the AirBridge window.");
+        return Ok(ExitCode::SUCCESS);
+    };
+    let mut body = options;
+    body["peer"] = wait_for_device(&to).await?.into();
+    let response = api(Method::POST, "/api/send", Some(body)).await?;
+    let id = response.1["id"].as_str().unwrap_or_default().to_string();
+    let code = follow(response).await?;
+    if let Some(manifest) = args.manifest {
+        let (_, t) = api(Method::GET, &format!("/api/transfers/{id}"), None).await?;
+        let lines: String = t["files"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|f| {
+                Some(format!(
+                    "{}  {}\n",
+                    f["sha256"].as_str()?,
+                    f["name"].as_str()?
+                ))
+            })
+            .collect();
+        std::fs::write(&manifest, lines).with_context(|| format!("{}", manifest.display()))?;
+    }
+    Ok(code)
 }
 
 /// Prints the progress of a transfer started through the API until it ends.

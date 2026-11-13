@@ -270,6 +270,21 @@ airbridge devices                      # list nearby devices
 airbridge quit
 ```
 
+Sending a drive or a big folder:
+
+```bash
+# Only photos and videos, no system or app folders, received as one "Laptop D" folder.
+airbridge send D:\ --to pixel --only photos,videos --exclude AppData,node_modules --as "Laptop D"
+airbridge send ~/Pictures --only raw,heic --dry-run   # how many files and bytes, sends nothing
+# The receiver checks every file's SHA-256; keep the list as a sha256sum manifest.
+airbridge send Archive/ --to pixel --verify --manifest archive.sha256
+```
+
+`--only` takes `photos`, `videos`, `audio`, `documents` and/or file extensions; filters apply
+to files found inside folders. *Verify contents* in Settings does the same as `--verify` for
+every send. If a send fails or is cancelled, **Resume** in the activity list sends the files
+that did not arrive; the receiver skips files it already has with the same size and date.
+
 **Android**
 
 - **Share from any app**: your devices are right in the share sheet's top row; tap one and it

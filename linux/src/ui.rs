@@ -24,7 +24,7 @@ use crate::assets;
 use crate::config;
 use crate::desktop;
 use crate::receiver::constant_time_eq;
-use crate::sender::{expand_paths, SendItem};
+use crate::sender::{expand_paths, Selection, SendItem};
 use crate::update;
 
 const COOKIE: &str = "airbridge_token";
@@ -221,7 +221,9 @@ async fn event_stream(app: Arc<App>, socket: WebSocket) {
 // ------------------------------------------------------------------ sending
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct SendRequest {
+    #[serde(default)]
     peer: String,
     #[serde(default)]
     paths: Vec<PathBuf>,
@@ -229,13 +231,30 @@ struct SendRequest {
     staged: Vec<String>,
     #[serde(default)]
     pin: Option<String>,
+    /// Send each file's SHA-256 so the receiver checks the contents.
+    #[serde(default)]
+    verify: bool,
+    /// Filters and destination folder for the chosen folders.
+    #[serde(default, flatten)]
+    selection: Selection,
+    /// Only count what would be sent.
+    #[serde(default)]
+    dry_run: bool,
 }
 
 async fn send(State(app): State<Arc<App>>, Json(request): Json<SendRequest>) -> Response {
-    let mut items = match expand_paths(&request.paths) {
+    let mut items = match expand_paths(&request.paths, &request.selection) {
         Ok(items) => items,
         Err(message) => return bad_request(message),
     };
+    if request.dry_run {
+        let bytes: u64 = items
+            .iter()
+            .filter_map(|i| std::fs::metadata(&i.path).ok())
+            .map(|m| m.len())
+            .sum();
+        return Json(json!({ "count": items.len(), "bytes": bytes })).into_response();
+    }
     {
         let mut staged = app.staged.lock().unwrap();
         for id in &request.staged {
@@ -247,7 +266,7 @@ async fn send(State(app): State<Arc<App>>, Json(request): Json<SendRequest>) -> 
     if items.is_empty() {
         return bad_request("Nothing to send");
     }
-    match app.send_files(&request.peer, items, request.pin) {
+    match app.send_files(&request.peer, items, request.pin, request.verify) {
         Ok(id) => Json(json!({ "id": id })).into_response(),
         Err(message) => bad_request(message),
     }
@@ -300,7 +319,7 @@ async fn send_url(State(app): State<Arc<App>>, Json(request): Json<UrlRequest>) 
     let url = request.url.trim().to_string();
     match crate::fetch::fetch(&url, request.name.as_deref()).await {
         Ok(crate::fetch::Fetched::File(item)) => {
-            match app.send_files(&request.peer, vec![item.clone()], None) {
+            match app.send_files(&request.peer, vec![item.clone()], None, false) {
                 Ok(id) => Json(json!({ "id": id, "kind": "file" })).into_response(),
                 Err(message) => {
                     let _ = std::fs::remove_dir_all(item.path.parent().unwrap_or(&item.path));
@@ -409,7 +428,7 @@ fn describe_paths(paths: &[PathBuf]) -> Vec<Value> {
         .filter_map(|path| {
             let meta = std::fs::metadata(path).ok()?;
             let size = if meta.is_dir() {
-                expand_paths(std::slice::from_ref(path)).unwrap_or_default().iter().filter_map(|i| std::fs::metadata(&i.path).ok()).map(|m| m.len()).sum()
+                expand_paths(std::slice::from_ref(path), &Selection::default()).unwrap_or_default().iter().filter_map(|i| std::fs::metadata(&i.path).ok()).map(|m| m.len()).sum()
             } else {
                 meta.len()
             };
@@ -467,6 +486,8 @@ struct ActionRequest {
     trust: bool,
     #[serde(default)]
     file: Option<String>,
+    #[serde(default)]
+    pin: Option<String>,
 }
 
 async fn transfer_action(
@@ -475,6 +496,12 @@ async fn transfer_action(
     body: Option<Json<ActionRequest>>,
 ) -> Response {
     let request = body.map(|Json(b)| b).unwrap_or_default();
+    if action == "resume" {
+        return match app.resume(&id, request.pin) {
+            Ok(id) => Json(json!({ "ok": true, "id": id })).into_response(),
+            Err(message) => bad_request(message),
+        };
+    }
     let (peer_id, message, path) = {
         let transfers = app.transfers.lock().unwrap();
         let Some(t) = transfers.get(&id) else {

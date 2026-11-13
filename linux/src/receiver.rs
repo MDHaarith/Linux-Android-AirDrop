@@ -449,25 +449,58 @@ async fn prepare_upload(
     }
     let download_dir = app.settings().download_dir.clone();
     let _ = std::fs::create_dir_all(&download_dir);
-    if storage::free_space(&download_dir).is_some_and(|free| free < total) {
+    // Files an earlier (interrupted) transfer already saved are not asked for:
+    // the sender marks files without a token as skipped.
+    let dtos: Vec<FileDto> = {
+        let transfers = app.transfers.lock().unwrap();
+        transfers
+            .get(&id)
+            .map(|t| t.files.iter().filter_map(|f| f.dto.clone()).collect())
+            .unwrap_or_default()
+    };
+    let have: HashMap<String, (std::path::PathBuf, u64)> = {
+        let dir = download_dir.clone();
+        tokio::task::spawn_blocking(move || {
+            dtos.into_iter()
+                .filter_map(|dto| {
+                    let path = storage::already_received(&dir, &dto)?;
+                    Some((dto.id, (path, dto.size)))
+                })
+                .collect()
+        })
+        .await
+        .unwrap_or_default()
+    };
+    let needed = total.saturating_sub(have.values().map(|(_, size)| size).sum());
+    if storage::free_space(&download_dir).is_some_and(|free| free < needed) {
         app.finish(&id, Status::Failed, Some("Not enough disk space".into()));
         return error(500, "Not enough disk space on the receiver");
     }
 
-    let mut transfers = app.transfers.lock().unwrap();
-    let Some(transfer) = transfers.get_mut(&id) else {
-        return error(500, "Session lost");
+    let (session_id, tokens) = {
+        let mut transfers = app.transfers.lock().unwrap();
+        let Some(transfer) = transfers.get_mut(&id) else {
+            return error(500, "Session lost");
+        };
+        let mut tokens = HashMap::new();
+        for f in transfer.files.iter_mut() {
+            if let Some((path, _)) = have.get(&f.id) {
+                f.status = FileStatus::Skipped;
+                f.path = Some(path.to_string_lossy().into_owned());
+                continue;
+            }
+            let token = Alphanumeric.sample_string(&mut rand::thread_rng(), 24);
+            f.token = Some(token.clone());
+            tokens.insert(f.id.clone(), token);
+        }
+        transfer.status = Status::Transferring;
+        transfer.started = Some(now());
+        let session_id = transfer.session_id.clone().unwrap_or_default();
+        transfers.emit(&id, true);
+        (session_id, tokens)
     };
-    let mut tokens = HashMap::new();
-    for f in transfer.files.iter_mut() {
-        let token = Alphanumeric.sample_string(&mut rand::thread_rng(), 24);
-        f.token = Some(token.clone());
-        tokens.insert(f.id.clone(), token);
-    }
-    transfer.status = Status::Transferring;
-    transfer.started = Some(now());
-    let session_id = transfer.session_id.clone().unwrap_or_default();
-    transfers.emit(&id, true);
+    // Everything was already here: nothing will be uploaded.
+    storage::finish_if_complete(&app, &id);
     Json(json!({ "sessionId": session_id, "files": tokens })).into_response()
 }
 

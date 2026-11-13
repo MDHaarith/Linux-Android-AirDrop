@@ -25,7 +25,7 @@ use crate::protocol::{DeviceInfo, PROTOCOL_VERSION};
 use crate::quickshare;
 use crate::sender::{self, SendItem};
 use crate::storage::{Partials, Reservations};
-use crate::transfers::{Direction, Status, Transfers};
+use crate::transfers::{Direction, FileStatus, Status, Transfers};
 
 const DECISION_TIMEOUT: Duration = Duration::from_secs(300);
 /// How long a window launch code stays valid (it also works only once).
@@ -435,6 +435,7 @@ impl App {
         peer_query: &str,
         items: Vec<SendItem>,
         pin: Option<String>,
+        verify: bool,
     ) -> Result<String, String> {
         let peer = self
             .registry
@@ -442,10 +443,42 @@ impl App {
             .or_else(|| self.registry.find(peer_query))
             .ok_or("Device not found")?;
         match peer.kind {
-            PeerKind::LocalSend => sender::send_files(self, peer, items, pin),
+            PeerKind::LocalSend => sender::send_files(self, peer, items, pin, verify),
             PeerKind::Web => self.companion.offer(self, &peer, items, None),
             PeerKind::QuickShare => quickshare::send_files(self, peer, items),
         }
+    }
+
+    /// Sends again the files of a failed or cancelled send that did not
+    /// arrive, under the same names (also after a restart: the history keeps
+    /// them). The receiver skips any it already saved.
+    pub fn resume(self: &Arc<Self>, id: &str, pin: Option<String>) -> Result<String, String> {
+        let (peer_id, items, verify) = {
+            let transfers = self.transfers.lock().unwrap();
+            let t = transfers
+                .get(id)
+                .filter(|t| t.direction == Direction::Out && t.message.is_none())
+                .filter(|t| matches!(t.status, Status::Failed | Status::Cancelled))
+                .ok_or("Only an unfinished send can be resumed")?;
+            let items: Vec<SendItem> = t
+                .files
+                .iter()
+                .filter(|f| !matches!(f.status, FileStatus::Done | FileStatus::Skipped))
+                .filter_map(|f| {
+                    Some(SendItem {
+                        path: PathBuf::from(f.path.as_ref()?),
+                        name: f.name.clone(),
+                        temporary: false,
+                    })
+                })
+                .collect();
+            let peer_id = t.peer["id"].as_str().unwrap_or(&t.peer_id).to_string();
+            (peer_id, items, t.verify)
+        };
+        if items.is_empty() {
+            return Err("Nothing is left to send".into());
+        }
+        self.send_files(&peer_id, items, pin, verify)
     }
 
     pub fn send_text(
