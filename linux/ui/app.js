@@ -11,6 +11,7 @@ const state = {
   settings: {},
   companion: {},
   multicast: true,
+  features: {},
   staged: [],          // {key, kind: "path"|"upload", name, size, type, path?, id?, progress, done}
   pins: {},            // peer id -> PIN to use
   unseen: 0,
@@ -142,6 +143,7 @@ function loadState(data) {
   dropTarget = state.settings.dropRecipient || null;
   state.companion = data.companion || {};
   state.multicast = data.multicast;
+  state.features = data.features || {};
   applyTheme(state.settings.theme);
   renderMe();
   const ids = new Set((data.peers || []).map((p) => p.id));
@@ -941,15 +943,17 @@ function openSettings() {
       ${settingSwitch("autoAcceptTrusted", "Accept from my devices", "No prompt for devices you trust, like your own phone")}
       ${settingSwitch("openReceived", "Open what my devices send", "A photo or link from your own devices opens right away")}
       ${settingSwitch("copyReceivedText", "Copy received text", "Text from trusted devices goes straight to your clipboard")}
-      ${settingSwitch("notifications", "Notifications", "Desktop notifications with Accept / Decline")}
+      ${state.features.desktopNotifications
+        ? settingSwitch("notifications", "Notifications", "Desktop notifications with Accept / Decline")
+        : settingSwitch("notifications", "Show what arrives", "Open the AirBridge window when files or text are received")}
       ${settingSwitch("quickShare", "Quick Share", "Android phones can share here from their built-in share sheet, no app needed")}
     </div>
     <p class="section-title">Sending</p>
     <div class="group">
-      ${settingSwitch("edgeDrop", "Screen-edge drop zone", "Drag anything to the side of the screen and drop it on a device")}
+      ${state.features.edgeDrop ? `${settingSwitch("edgeDrop", "Screen-edge drop zone", "Drag anything to the side of the screen and drop it on a device")}
       <div class="field"><label for="sEdge">Drop zone side</label><select class="input" id="sEdge">
         <option value="right" ${s.edgeSide !== "left" ? "selected" : ""}>Right edge</option>
-        <option value="left" ${s.edgeSide === "left" ? "selected" : ""}>Left edge</option></select></div>
+        <option value="left" ${s.edgeSide === "left" ? "selected" : ""}>Left edge</option></select></div>` : ""}
       ${settingSwitch("webCompanion", "Phone browser companion", "Phones without an app pair with a QR code (plain HTTP on your Wi‑Fi; what they send asks you first)")}
       <div class="field"><label for="sPin">Require a PIN (optional)</label><input class="input" id="sPin" placeholder="No PIN" value="${esc(s.pin || "")}" autocomplete="off"></div>
     </div>
@@ -969,7 +973,7 @@ function openSettings() {
     card.querySelector("#sDir").addEventListener("change", (e) => save({ downloadDir: e.target.value }));
     card.querySelector("#sPin").addEventListener("change", (e) => save({ pin: e.target.value }));
     card.querySelector("#sTheme").addEventListener("change", (e) => save({ theme: e.target.value }));
-    card.querySelector("#sEdge").addEventListener("change", (e) => save({ edgeSide: e.target.value }));
+    card.querySelector("#sEdge")?.addEventListener("change", (e) => save({ edgeSide: e.target.value }));
     card.querySelectorAll("input[data-key]").forEach((input) => input.addEventListener("change", () => save({ [input.dataset.key]: input.checked })));
     card.querySelector("#pickDir").addEventListener("click", async () => {
       const res = await api("/pick", { body: { directory: true } });

@@ -244,6 +244,11 @@ impl App {
             "transfers": self.transfers.lock().unwrap().snapshot(),
             "settings": self.settings().public_json(),
             "companion": { "url": self.companion_url() },
+            // What this build can do, so the window offers only working settings.
+            "features": {
+                "desktopNotifications": cfg!(target_os = "linux"),
+                "edgeDrop": cfg!(all(target_os = "linux", feature = "edge")),
+            },
             "multicast": discovery.is_some_and(|d| d.multicast_ok()),
             "scanning": discovery.is_some_and(|d| d.scanning.load(Ordering::Relaxed)),
         })
