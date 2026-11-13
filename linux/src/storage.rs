@@ -212,29 +212,28 @@ pub fn free_space(_path: &Path) -> Option<u64> {
 }
 
 /// Cleans up after an upload that did not complete (also on client disconnect).
+/// Created as soon as the file is marked as transferring, so every error exit
+/// marks it failed and lets the session finish.
 struct UploadGuard {
     app: Arc<App>,
     transfer_id: String,
     file_id: String,
-    part: PathBuf,
-    target: PathBuf,
+    /// Set once our own partial file exists.
+    part: Option<PathBuf>,
+    target: Option<PathBuf>,
     committed: bool,
-    #[cfg(windows)]
-    part_created: bool,
 }
 
 impl Drop for UploadGuard {
     fn drop(&mut self) {
-        self.app.reservations.release(&self.target);
+        if let Some(target) = &self.target {
+            self.app.reservations.release(target);
+        }
         if self.committed {
             return;
         }
-        #[cfg(windows)]
-        let remove_part = self.part_created;
-        #[cfg(target_os = "linux")]
-        let remove_part = true;
-        if remove_part {
-            let _ = std::fs::remove_file(&self.part);
+        if let Some(part) = &self.part {
+            let _ = std::fs::remove_file(part);
         }
         {
             let mut transfers = self.app.transfers.lock().unwrap();
@@ -265,12 +264,13 @@ where
 {
     // One upload per file at a time: a second request for the same file
     // would write the data twice.
-    {
+    let ended = {
         let mut transfers = app.transfers.lock().unwrap();
-        let Some(f) = transfers
-            .get_mut(transfer_id)
-            .and_then(|t| t.file_mut(&dto.id))
-        else {
+        let Some(t) = transfers.get_mut(transfer_id) else {
+            return Err(SaveError::Aborted);
+        };
+        let ended = t.ended.clone();
+        let Some(f) = t.file_mut(&dto.id) else {
             return Err(SaveError::Aborted);
         };
         if f.status == FileStatus::Transferring {
@@ -279,7 +279,16 @@ where
         f.status = FileStatus::Transferring;
         f.done = 0;
         transfers.emit(transfer_id, true);
-    }
+        ended
+    };
+    let mut guard = UploadGuard {
+        app: app.clone(),
+        transfer_id: transfer_id.to_string(),
+        file_id: dto.id.clone(),
+        part: None,
+        target: None,
+        committed: false,
+    };
     let download_dir = app.settings().download_dir.clone();
     tokio::fs::create_dir_all(&download_dir).await?;
     let download_dir = tokio::fs::canonicalize(&download_dir).await?;
@@ -298,6 +307,7 @@ where
         .map(|n| n.to_os_string())
         .unwrap_or_else(|| "file".into());
     let target = app.reservations.claim(&parent.join(file_name));
+    guard.target = Some(target.clone());
     let part = target.with_file_name(format!(
         ".{}.airbridge-part",
         target.file_name().unwrap_or_default().to_string_lossy()
@@ -305,28 +315,18 @@ where
     // A stale Windows partial must not block the next transfer of the same name.
     #[cfg(windows)]
     let part = part.with_extension(format!("{}.airbridge-part", uuid::Uuid::new_v4().simple()));
-    let mut guard = UploadGuard {
-        app: app.clone(),
-        transfer_id: transfer_id.to_string(),
-        file_id: dto.id.clone(),
-        part: part.clone(),
-        target: target.clone(),
-        committed: false,
-        #[cfg(windows)]
-        part_created: false,
-    };
 
     let mut file = tokio::fs::File::from_std(create_part(&part)?);
-    #[cfg(windows)]
-    {
-        guard.part_created = true;
-    }
+    guard.part = Some(part.clone());
     let mut hasher = dto.sha256.as_ref().map(|_| Sha256::new());
     let mut received = 0u64;
     loop {
-        let next = tokio::time::timeout(STALL_TIMEOUT, stream.next())
-            .await
-            .map_err(|_| SaveError::Io("the sender stopped sending".into()))?;
+        // A cancelled session stops at once, even while the sender is silent.
+        let next = tokio::select! {
+            _ = ended.cancelled() => return Err(SaveError::Aborted),
+            next = tokio::time::timeout(STALL_TIMEOUT, stream.next()) => next
+                .map_err(|_| SaveError::Io("the sender stopped sending".into()))?,
+        };
         let Some(chunk) = next else { break };
         let chunk = chunk.map_err(|e| SaveError::Io(e.to_string()))?;
         // Never write more than was announced (and accepted).
@@ -444,6 +444,76 @@ pub fn finish_if_complete(app: &Arc<App>, transfer_id: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::transfers::{Direction, FileState, Transfer};
+
+    fn incoming(app: &Arc<App>, name: &str, size: u64) -> (String, FileDto) {
+        let dto = FileDto {
+            id: "f1".into(),
+            file_name: name.into(),
+            size,
+            ..Default::default()
+        };
+        let mut t = Transfer::new(
+            Direction::In,
+            "peer",
+            serde_json::Value::Null,
+            vec![FileState::new(dto.clone(), None)],
+        );
+        t.session_id = Some("s".into());
+        t.status = Status::Transferring;
+        (app.transfers.lock().unwrap().add(t), dto)
+    }
+
+    fn parts(dir: &Path) -> usize {
+        std::fs::read_dir(dir)
+            .map(|d| {
+                d.flatten()
+                    .filter(|e| e.file_name().to_string_lossy().ends_with(".airbridge-part"))
+                    .count()
+            })
+            .unwrap_or(0)
+    }
+
+    #[tokio::test]
+    async fn destination_errors_fail_the_session_and_cancel_stops_a_silent_sender() {
+        let (_home, app) = crate::app::test_app(r#"{"notifications":false,"quickShare":false}"#);
+        let downloads = app.settings().download_dir.clone();
+        std::fs::create_dir_all(&downloads).unwrap();
+
+        // A folder that exists as a file: refused, and the session must not stay busy.
+        std::fs::write(downloads.join("taken"), b"").unwrap();
+        let (id, dto) = incoming(&app, "taken/blocked.bin", 4);
+        let data =
+            futures_util::stream::iter([Ok::<_, std::io::Error>(Bytes::from_static(b"data"))]);
+        assert!(matches!(
+            save_stream(&app, &id, &dto, data).await,
+            Err(SaveError::Io(_))
+        ));
+        let transfers = app.transfers.lock().unwrap();
+        assert_eq!(transfers.get(&id).unwrap().status, Status::Failed);
+        assert!(transfers.active_incoming().is_none());
+        drop(transfers);
+
+        // A sender that goes quiet mid-file is stopped as soon as the user cancels.
+        let (id, dto) = incoming(&app, "stalled.bin", 8);
+        let data =
+            futures_util::stream::iter([Ok::<_, std::io::Error>(Bytes::from_static(b"half"))])
+                .chain(futures_util::stream::pending());
+        let upload = tokio::spawn({
+            let (app, id) = (app.clone(), id.clone());
+            async move { save_stream(&app, &id, &dto, data).await }
+        });
+        while parts(&downloads) == 0 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        app.cancel(&id);
+        let result = tokio::time::timeout(Duration::from_secs(5), upload)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(result, Err(SaveError::Aborted)));
+        assert_eq!(parts(&downloads), 0);
+    }
 
     #[test]
     fn folders_stay_inside_root_and_existing_parts_are_not_followed() {

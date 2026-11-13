@@ -125,6 +125,9 @@ pub struct Transfer {
     /// Holds a secret (a Wi‑Fi password): the message is not saved to disk.
     #[serde(skip)]
     pub sensitive: bool,
+    /// Fired when the transfer ends, so uploads waiting for data stop at once.
+    #[serde(skip)]
+    pub ended: tokio_util::sync::CancellationToken,
     #[serde(skip)]
     last_emit: Option<Instant>,
 }
@@ -150,6 +153,7 @@ impl Transfer {
             auto_accepted: false,
             peer_verified: false,
             sensitive: false,
+            ended: Default::default(),
             last_emit: None,
         }
     }
@@ -336,6 +340,7 @@ impl Transfers {
         transfer.status = status;
         transfer.error = error;
         transfer.finished = Some(now());
+        transfer.ended.cancel();
         for path in transfer.cleanup.drain(..) {
             let _ = std::fs::remove_file(&path);
             if let Some(parent) = path.parent() {

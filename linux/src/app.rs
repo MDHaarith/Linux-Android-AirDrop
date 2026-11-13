@@ -751,6 +751,23 @@ pub fn human_size(bytes: u64) -> String {
     }
 }
 
+/// Held while a test points the profile variable at its own folder.
+#[cfg(test)]
+static TEST_ENV: Mutex<()> = Mutex::new(());
+
+/// An app with its own profile. Tests run in parallel, so setting the profile
+/// variable and loading from it must not interleave.
+#[cfg(test)]
+pub fn test_app(settings: &str) -> (tempfile::TempDir, Arc<App>) {
+    let _env = TEST_ENV.lock().unwrap_or_else(|e| e.into_inner());
+    let home = tempfile::tempdir().unwrap();
+    std::env::set_var("AIRBRIDGE_HOME", home.path());
+    std::fs::create_dir_all(home.path().join("config")).unwrap();
+    std::fs::write(home.path().join("config/settings.json"), settings).unwrap();
+    let app = App::new().unwrap();
+    (home, app)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
