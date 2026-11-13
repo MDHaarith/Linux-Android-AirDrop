@@ -224,7 +224,10 @@ struct SendRequest {
 }
 
 async fn send(State(app): State<Arc<App>>, Json(request): Json<SendRequest>) -> Response {
-    let mut items = expand_paths(&request.paths);
+    let mut items = match expand_paths(&request.paths) {
+        Ok(items) => items,
+        Err(message) => return bad_request(message),
+    };
     {
         let mut staged = app.staged.lock().unwrap();
         for id in &request.staged {
@@ -396,7 +399,7 @@ fn describe_paths(paths: &[PathBuf]) -> Vec<Value> {
         .filter_map(|path| {
             let meta = std::fs::metadata(path).ok()?;
             let size = if meta.is_dir() {
-                expand_paths(std::slice::from_ref(path)).iter().filter_map(|i| std::fs::metadata(&i.path).ok()).map(|m| m.len()).sum()
+                expand_paths(std::slice::from_ref(path)).unwrap_or_default().iter().filter_map(|i| std::fs::metadata(&i.path).ok()).map(|m| m.len()).sum()
             } else {
                 meta.len()
             };

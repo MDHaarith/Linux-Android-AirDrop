@@ -31,20 +31,20 @@ pub struct SendItem {
 }
 
 /// Files are sent as-is; folders are sent recursively with relative names.
-pub fn expand_paths(paths: &[PathBuf]) -> Vec<SendItem> {
-    fn walk(dir: &Path, prefix: &str, out: &mut Vec<SendItem>) {
-        let Ok(entries) = std::fs::read_dir(dir) else {
-            return;
-        };
-        let mut entries: Vec<_> = entries.flatten().collect();
+/// Any requested path that cannot be read is an error, so nothing the user
+/// picked is silently left out.
+pub fn expand_paths(paths: &[PathBuf]) -> Result<Vec<SendItem>, String> {
+    fn walk(dir: &Path, prefix: &str, out: &mut Vec<SendItem>) -> Result<(), String> {
+        let failed = |e: std::io::Error| format!("{}: {e}", dir.display());
+        let mut entries = std::fs::read_dir(dir)
+            .and_then(|d| d.collect::<std::io::Result<Vec<_>>>())
+            .map_err(failed)?;
         entries.sort_by_key(|e| e.file_name());
         for entry in entries {
-            let Ok(kind) = entry.file_type() else {
-                continue;
-            };
+            let kind = entry.file_type().map_err(failed)?;
             let name = format!("{prefix}/{}", entry.file_name().to_string_lossy());
             if kind.is_dir() {
-                walk(&entry.path(), &name, out);
+                walk(&entry.path(), &name, out)?;
             } else if kind.is_file() {
                 out.push(SendItem {
                     path: entry.path(),
@@ -53,6 +53,7 @@ pub fn expand_paths(paths: &[PathBuf]) -> Vec<SendItem> {
                 });
             }
         }
+        Ok(())
     }
     let mut items = Vec::new();
     for path in paths {
@@ -60,17 +61,38 @@ pub fn expand_paths(paths: &[PathBuf]) -> Vec<SendItem> {
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| "file".into());
-        if path.is_dir() {
-            walk(path, &name, &mut items);
-        } else if path.is_file() {
-            items.push(SendItem {
+        match std::fs::metadata(path) {
+            Ok(meta) if meta.is_dir() => walk(path, &name, &mut items)?,
+            Ok(meta) if meta.is_file() => items.push(SendItem {
                 path: path.clone(),
                 name,
                 temporary: false,
-            });
+            }),
+            Ok(_) => return Err(format!("{}: not a file or folder", path.display())),
+            Err(err) => return Err(format!("{}: {err}", path.display())),
         }
     }
-    items
+    Ok(items)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn missing_paths_are_reported_not_skipped() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("a.bin");
+        std::fs::write(&file, b"a").unwrap();
+        std::fs::create_dir(dir.path().join("folder")).unwrap();
+        std::fs::write(dir.path().join("folder/b.bin"), b"b").unwrap();
+        let items = expand_paths(&[file.clone(), dir.path().join("folder")]).unwrap();
+        let names: Vec<_> = items.iter().map(|i| i.name.as_str()).collect();
+        assert_eq!(names, ["a.bin", "folder/b.bin"]);
+        let missing = dir.path().join("does-not-exist.bin");
+        let err = expand_paths(&[file, missing, dir.path().join("folder")]).unwrap_err();
+        assert!(err.contains("does-not-exist.bin"), "{err}");
+    }
 }
 
 enum Outcome {
