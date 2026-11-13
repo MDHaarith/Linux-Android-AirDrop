@@ -756,25 +756,93 @@ pub fn open_window(url: &str, profile_dir: &Path) -> &'static str {
     "none"
 }
 
+/// Opens the UI on a background thread (installing WebView2 can take a while);
+/// it logs which window it used.
 #[cfg(windows)]
 pub fn open_window(url: &str, profile_dir: &Path) -> &'static str {
-    // 1. Our own window, when the WebView2 runtime is installed (Windows 11 has it).
-    if wry::webview_version().is_ok() {
-        if let Ok(exe) = std::env::current_exe() {
-            use std::os::windows::process::CommandExt;
-            if std::process::Command::new(exe)
-                .args(["window", url])
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .creation_flags(0x08000000) // CREATE_NO_WINDOW
-                .spawn()
-                .is_ok()
-            {
-                return "webview";
+    let (url, profile_dir) = (url.to_owned(), profile_dir.to_owned());
+    std::thread::spawn(move || {
+        // 1. Our own window. Windows 10 may lack the WebView2 runtime: install it.
+        if wry::webview_version().is_err() {
+            install_webview2();
+        }
+        let used = if native_window(&url) {
+            "webview"
+        } else {
+            browser_window(&url, &profile_dir)
+        };
+        tracing::info!("Window: {used}");
+    });
+    "background thread"
+}
+
+/// Microsoft's per-user WebView2 bootstrapper, run only if Microsoft signed it.
+#[cfg(windows)]
+fn install_webview2() {
+    use std::os::windows::process::CommandExt;
+    tracing::info!("Installing the WebView2 runtime for the app window");
+    const SCRIPT: &str = "$ErrorActionPreference='Stop'; \
+        $f = Join-Path $env:TEMP 'AirBridge-WebView2Setup.exe'; \
+        Invoke-WebRequest 'https://go.microsoft.com/fwlink/p/?LinkId=2124703' -OutFile $f -UseBasicParsing; \
+        $s = Get-AuthenticodeSignature $f; \
+        if ($s.Status -ne 'Valid' -or $s.SignerCertificate.Subject -notmatch 'O=Microsoft Corporation') { exit 2 }; \
+        $p = Start-Process $f -ArgumentList '/silent','/install' -Wait -PassThru; \
+        Remove-Item $f -ErrorAction SilentlyContinue; exit $p.ExitCode";
+    let status = std::process::Command::new("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-Command", SCRIPT])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .creation_flags(0x08000000) // CREATE_NO_WINDOW
+        .status();
+    if !matches!(status, Ok(s) if s.success()) || wry::webview_version().is_err() {
+        tracing::warn!("Could not install WebView2 ({status:?}); using a browser window");
+    }
+}
+
+/// Starts `airbridge window`; false if it is missing or dies at once.
+/// Its errors go to window.log in the cache folder.
+#[cfg(windows)]
+fn native_window(url: &str) -> bool {
+    use std::os::windows::process::CommandExt;
+    if wry::webview_version().is_err() {
+        return false;
+    }
+    let Ok(exe) = std::env::current_exe() else {
+        return false;
+    };
+    let log = crate::config::cache_dir().join("window.log");
+    let stderr = std::fs::create_dir_all(log.parent().unwrap_or(Path::new(".")))
+        .and_then(|()| std::fs::File::create(&log))
+        .map_or_else(|_| Stdio::null(), Stdio::from);
+    let Ok(mut child) = std::process::Command::new(exe)
+        .args(["window", url])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(stderr)
+        .creation_flags(0x08000000) // CREATE_NO_WINDOW
+        .spawn()
+    else {
+        return false;
+    };
+    // A window that fails to build exits within a moment; one that works keeps running.
+    for _ in 0..30 {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        match child.try_wait() {
+            Ok(None) => {}
+            Ok(Some(status)) if status.success() => return true, // closed by the user
+            Ok(Some(status)) => {
+                tracing::warn!("The app window failed ({status}); see {}", log.display());
+                return false;
             }
+            Err(_) => return false,
         }
     }
+    true
+}
+
+#[cfg(windows)]
+fn browser_window(url: &str, profile_dir: &Path) -> &'static str {
     // 2. An Edge app window, 3. the default browser.
     let edge = which("msedge.exe").or_else(|| {
         ["ProgramFiles(x86)", "ProgramFiles", "LOCALAPPDATA"]
