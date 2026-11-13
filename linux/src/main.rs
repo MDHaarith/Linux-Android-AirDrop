@@ -10,8 +10,7 @@ mod companion;
 mod config;
 mod desktop;
 mod discovery;
-// shortcut: no Windows edge drop zone; add a native panel when needed.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 mod edge;
 mod events;
 mod fetch;
@@ -100,11 +99,15 @@ enum Command {
     #[command(hide = true)]
     Window { url: String },
     /// (internal) The drop zone on the screen edge; the service starts it.
-    #[cfg(all(target_os = "linux", feature = "edge"))]
+    #[cfg(any(windows, all(target_os = "linux", feature = "edge")))]
     #[command(hide = true)]
     Edge {
         #[arg(long, default_value = "right")]
         side: String,
+        /// The drop zone page, with its sign-in code (Windows).
+        #[cfg(windows)]
+        #[arg(long)]
+        url: String,
     },
 }
 
@@ -179,6 +182,16 @@ fn main() -> ExitCode {
     if let Some(Command::Edge { side }) = &cli.command {
         // GTK must own the main thread, as for the window.
         return match edge::run(side) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(err) => {
+                eprintln!("airbridge edge: {err:#}");
+                ExitCode::from(3)
+            }
+        };
+    }
+    #[cfg(windows)]
+    if let Some(Command::Edge { side, url }) = &cli.command {
+        return match edge::run(side, url) {
             Ok(()) => ExitCode::SUCCESS,
             Err(err) => {
                 eprintln!("airbridge edge: {err:#}");
@@ -293,7 +306,7 @@ async fn run(cli: Cli) -> Result<ExitCode> {
         }
         #[cfg(native_window)]
         Command::Window { .. } => unreachable!("handled in main"),
-        #[cfg(all(target_os = "linux", feature = "edge"))]
+        #[cfg(any(windows, all(target_os = "linux", feature = "edge")))]
         Command::Edge { .. } => unreachable!("handled in main"),
     }
 }
@@ -442,7 +455,7 @@ async fn serve(open_window: bool) -> Result<ExitCode> {
     #[cfg(any(windows, all(target_os = "linux", feature = "tray")))]
     tray::spawn(app.clone());
 
-    #[cfg(all(target_os = "linux", feature = "edge"))]
+    #[cfg(any(windows, all(target_os = "linux", feature = "edge")))]
     edge::supervise(app.clone());
 
     let me = app.me();

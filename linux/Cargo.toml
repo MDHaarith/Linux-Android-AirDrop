@@ -83,13 +83,16 @@ rfd = { version = "0.15", default-features = false }
 # Own app window (WebView2) and tray icon; Windows needs no extra libraries for these.
 tao = "0.34"
 tray-icon = { version = "0.21", default-features = false }
-# Bluetooth wake-up for Quick Share phones (same version wry uses).
+# Bluetooth wake-up for Quick Share phones and toast notifications (same version wry uses).
 windows = { version = "0.61", features = [
     "Devices_Bluetooth",
     "Devices_Bluetooth_Advertisement",
     "Devices_Radios",
     "Foundation_Collections",
+    "Data_Xml_Dom",
     "Storage_Streams",
+    "UI_Notifications",
+    "Win32_System_Registry",
 ] }
 wry = "0.53"
 

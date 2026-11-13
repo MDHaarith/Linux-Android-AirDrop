@@ -78,6 +78,7 @@ pub fn router(app: Arc<App>) -> Router {
         .layer(middleware::from_fn_with_state(app.clone(), auth));
     Router::new()
         .route("/", get(index))
+        .route("/edge", get(edge_page))
         .route(
             "/assets/{*path}",
             get(|UrlPath(path): UrlPath<String>| async move { assets::response(&path) }),
@@ -149,21 +150,31 @@ async fn index(
     headers: HeaderMap,
     Query(query): Query<IndexQuery>,
 ) -> Response {
-    if !host_ok(&app, &headers) {
+    page(&app, &headers, query, "/", "index.html")
+}
+
+/// The screen-edge drop zone (Windows).
+async fn edge_page(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    Query(query): Query<IndexQuery>,
+) -> Response {
+    page(&app, &headers, query, "/edge", "edge.html")
+}
+
+fn page(app: &App, headers: &HeaderMap, query: IndexQuery, path: &str, file: &str) -> Response {
+    if !host_ok(app, headers) {
         return (StatusCode::FORBIDDEN, "bad host").into_response();
     }
     // A one-time launch code from the window URL buys the session cookie.
     if let Some(code) = query.code {
         if app.redeem_launch_code(&code) {
-            let cookie = format!(
-                "{COOKIE}={}; Path=/; HttpOnly; SameSite=Strict",
-                token(&app)
-            );
-            return ([(header::SET_COOKIE, cookie)], Redirect::to("/")).into_response();
+            let cookie = format!("{COOKIE}={}; Path=/; HttpOnly; SameSite=Strict", token(app));
+            return ([(header::SET_COOKIE, cookie)], Redirect::to(path)).into_response();
         }
     }
-    if has_token(&app, &headers) {
-        return assets::response("index.html");
+    if has_token(app, headers) {
+        return assets::response(file);
     }
     (
         StatusCode::UNAUTHORIZED,
@@ -760,4 +771,51 @@ async fn apply_update(State(app): State<Arc<App>>) -> Response {
         app.shutdown.cancel();
     });
     Json(json!({ "restarting": true })).into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use axum::body::Body;
+    use axum::http::Request;
+    use tower::ServiceExt;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn the_edge_page_signs_in_with_a_one_time_code() {
+        let (_home, app) = crate::app::test_app("{}");
+        let _ = app.ui.set(crate::app::UiInfo {
+            port: 4000,
+            token: "secret".into(),
+        });
+        let get = |uri: String, cookie: Option<&str>| {
+            let mut request = Request::get(uri).header(header::HOST, "127.0.0.1:4000");
+            if let Some(cookie) = cookie {
+                request = request.header(header::COOKIE, cookie);
+            }
+            router(app.clone()).oneshot(request.body(Body::empty()).unwrap())
+        };
+        let url = app.page_url("edge").unwrap();
+        let path = url.trim_start_matches("http://127.0.0.1:4000").to_string();
+        assert!(path.starts_with("/edge?code="));
+
+        let signed_in = get(path.clone(), None).await.unwrap();
+        assert_eq!(signed_in.headers()[header::LOCATION], "/edge");
+        assert!(signed_in.headers()[header::SET_COOKIE]
+            .to_str()
+            .unwrap()
+            .starts_with("airbridge_token=secret;"));
+        // The code works once.
+        let reused = get(path, None).await.unwrap();
+        assert_eq!(reused.status(), StatusCode::UNAUTHORIZED);
+
+        let page = get("/edge".into(), Some("airbridge_token=secret"))
+            .await
+            .unwrap();
+        assert_eq!(page.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(page.into_body(), 1 << 20)
+            .await
+            .unwrap();
+        assert!(String::from_utf8_lossy(&body).contains("edge.js"));
+    }
 }

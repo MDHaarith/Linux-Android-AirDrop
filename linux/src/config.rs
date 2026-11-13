@@ -249,7 +249,7 @@ impl Default for Settings {
             notifications: true,
             theme: "auto".into(),
             quick_share: true,
-            edge_drop: cfg!(target_os = "linux"),
+            edge_drop: true,
             edge_side: "right".into(),
             drop_recipient: None,
             open_received: true,

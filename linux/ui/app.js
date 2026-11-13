@@ -971,9 +971,7 @@ function openSettings() {
       ${settingSwitch("autoAcceptTrusted", "Accept from my devices", "No prompt for devices you trust, like your own phone")}
       ${settingSwitch("openReceived", "Open what my devices send", "A photo or link from your own devices opens right away")}
       ${settingSwitch("copyReceivedText", "Copy received text", "Text from trusted devices goes straight to your clipboard")}
-      ${state.features.desktopNotifications
-        ? settingSwitch("notifications", "Notifications", "Desktop notifications with Accept / Decline")
-        : settingSwitch("notifications", "Show what arrives", "Open the AirBridge window when files or text are received")}
+      ${settingSwitch("notifications", "Notifications", "Desktop notifications with Accept / Decline")}
       ${settingSwitch("quickShare", "Quick Share", "Android phones can share here from their built-in share sheet, no app needed")}
     </div>
     <p class="section-title">Sending</p>

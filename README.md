@@ -21,7 +21,7 @@ your computer from its own share sheet, just like an iPhone with a Mac. Backgrou
 | Part | Tech | Highlights |
 |---|---|---|
 | **Linux app** (`linux/`) | Rust (tokio, axum, rustls) + an embedded web UI | AirDrop-style window and requests, drag & drop, **Quick Share for stock Android**, **screen-edge drop zone** (KDE Plasma, wlroots, X11), tray icon, notifications with Accept/Decline, CLI, file-manager "Send with AirBridge" |
-| **Windows app** (same `linux/` crate) | Rust + the same embedded web UI | LocalSend HTTPS, QR pairing, remembered addresses / Tailscale, Edge app window, native file dialogs and clipboard |
+| **Windows app** (same `linux/` crate) | Rust + the same embedded web UI | LocalSend HTTPS, QR pairing, remembered addresses / Tailscale, own WebView2 window, tray icon, toast notifications with Accept/Decline, **screen-edge drop zone**, Quick Share with Bluetooth wake-up, installer with *Send to* shortcut, self-update |
 | **Android app** (`android/`) | Kotlin + Jetpack Compose | iOS-style app and requests, **your devices in the system share sheet (Direct Share)**, a one-tap share sheet, **edge panel over any app**, photo previews in notifications, Quick Settings tile, background receiving |
 | **Phone browser companion** | Served by the desktop app | A phone with *no app at all* scans a QR code and shares through its browser |
 
@@ -199,10 +199,11 @@ The Update button replaces `airbridge.exe` with the new signed release and resta
 keep the exe in a folder you can write to (not *Program Files*; the installer uses your own
 `AppData\Local\Programs`). Settings and pairings stay.
 
-Windows has no native notifications with Accept / Decline or screen-edge drop zone yet:
-requests needing attention open the AirBridge window. Quick Share wakes nearby phones over
-Bluetooth when the PC's adapter can advertise; otherwise the window says why, and you open
-**Quick Share → Receive** on the phone.
+Incoming files ask in a Windows notification with **Accept** / **Decline** (answer it while
+AirBridge runs; without notifications the window asks instead). The screen-edge drop zone is a
+thin handle on the side of the main screen: drag files or text onto it and drop them on a device.
+Quick Share wakes nearby phones over Bluetooth when the PC's adapter can advertise; otherwise the
+window says why, and you open **Quick Share → Receive** on the phone.
 
 ### Android (10 or newer)
 
@@ -360,6 +361,10 @@ input, and it steps aside when the pointer merely passes over it. When a drag ar
 the drag source for the best format (file list, original image bytes, URL, text), and sends it
 through the local API. URLs are downloaded by the service; web pages are sent as links.
 
+On Windows it is an always-on-top WebView2 window showing `ui/edge.html`: a 10-pixel handle
+that opens into the device list while a drag is over it. Files go through the native drop
+handler, text through the page, both to the same local API.
+
 ## Works with LocalSend
 
 The Linux app was tested against **LocalSend's own Rust CLI**, built from the official
@@ -390,7 +395,8 @@ Release runs queue so they cannot choose the same version. Retries reuse the tag
 already attached to that commit. Both app versions are stamped in the build checkout;
 the workflow does not create version-bump commits.
 
-The release contains the Android APK, Windows executable, Linux AppImage and its Ed25519 signature.
+The release contains the Android APK, the Windows installer and executable, and the Linux
+AppImage; the executable and the AppImage carry Ed25519 signatures for in-app updates.
 The repository's `UPDATE_SIGNING_KEY` secret must be configured. To choose a version
 manually, run **Release** from the Actions tab with e.g. `v0.2.0`, or push that tag.
 Leaving the manual version empty chooses the next patch automatically.

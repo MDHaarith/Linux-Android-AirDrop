@@ -1,7 +1,9 @@
 //! The drop zone on the screen edge (`airbridge edge`): drag anything to the
 //! side of the screen and drop it on a device. It runs as its own process,
 //! started and restarted by the service, and talks to it over the local API.
+//! Linux draws it with GTK; Windows shows `ui/edge.html` in WebView2.
 
+#[cfg(target_os = "linux")]
 #[cfg_attr(not(feature = "edge"), allow(dead_code))]
 pub mod drop;
 
@@ -9,14 +11,18 @@ pub mod drop;
 mod api;
 #[cfg(feature = "edge")]
 mod panel;
+#[cfg(windows)]
+mod panel_windows;
 
 #[cfg(feature = "edge")]
 pub use panel::run;
+#[cfg(windows)]
+pub use panel_windows::run;
 
-#[cfg(feature = "edge")]
+#[cfg(any(windows, feature = "edge"))]
 pub use supervisor::supervise;
 
-#[cfg(feature = "edge")]
+#[cfg(any(windows, feature = "edge"))]
 mod supervisor {
     use std::sync::Arc;
     use std::time::{Duration, Instant};
@@ -27,7 +33,9 @@ mod supervisor {
     pub const UNSUPPORTED: i32 = 3;
 
     fn graphical_session() -> bool {
-        std::env::var_os("WAYLAND_DISPLAY").is_some() || std::env::var_os("DISPLAY").is_some()
+        cfg!(windows)
+            || std::env::var_os("WAYLAND_DISPLAY").is_some()
+            || std::env::var_os("DISPLAY").is_some()
     }
 
     fn wanted(app: &App) -> Option<String> {
@@ -53,12 +61,21 @@ mod supervisor {
                 let Ok(exe) = std::env::current_exe() else {
                     return;
                 };
-                let mut child = match tokio::process::Command::new(exe)
+                let mut command = tokio::process::Command::new(exe);
+                command
                     .args(["edge", "--side", &side])
                     .stdin(std::process::Stdio::null())
-                    .kill_on_drop(true)
-                    .spawn()
+                    .kill_on_drop(true);
+                // The page signs in with a one-time code, like the app window.
+                #[cfg(windows)]
                 {
+                    let Some(url) = app.page_url("edge") else {
+                        return;
+                    };
+                    command.args(["--url", &url]);
+                    command.creation_flags(0x08000000); // CREATE_NO_WINDOW
+                }
+                let mut child = match command.spawn() {
                     Ok(child) => child,
                     Err(err) => {
                         tracing::warn!("Could not start the drop zone: {err}");

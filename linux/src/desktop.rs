@@ -58,7 +58,6 @@ pub struct Notifier {
 /// Text from other devices (names, messages) as plain notification text:
 /// markup escaped where the server renders it, so a hostile name cannot
 /// add links or hide what is being offered, and no invisible bidi controls.
-#[cfg(target_os = "linux")]
 fn plain_text(text: &str, markup: bool) -> String {
     let mut out = String::with_capacity(text.len());
     for c in text.chars() {
@@ -255,37 +254,223 @@ impl Notifier {
     }
 }
 
-// shortcut: no Windows native notifications; callers show the UI until toast support is added.
+/// Windows toast notifications. Buttons answer while AirBridge runs (the
+/// toast reports back to this process); no COM activator is registered.
 #[cfg(windows)]
 #[derive(Default)]
-pub struct Notifier {}
+pub struct Notifier {
+    registered: std::sync::OnceLock<bool>,
+}
+
+#[cfg(windows)]
+mod toast {
+    use std::path::Path;
+    use std::sync::{Arc, Mutex};
+
+    use tokio::sync::oneshot;
+    use windows::core::{IInspectable, Interface, HSTRING};
+    use windows::Data::Xml::Dom::XmlDocument;
+    use windows::Foundation::TypedEventHandler;
+    use windows::UI::Notifications::{
+        ToastActivatedEventArgs, ToastDismissalReason, ToastDismissedEventArgs, ToastNotification,
+        ToastNotificationManager, ToastNotifier,
+    };
+
+    const APP_ID: &str = "io.github.mdhaarith.AirBridge";
+
+    /// Names this app (and its icon) for toasts, as the registry entry
+    /// unpackaged apps use instead of a Start menu shortcut.
+    pub fn register() -> anyhow::Result<()> {
+        use windows::Win32::System::Registry::{RegSetKeyValueW, HKEY_CURRENT_USER, REG_SZ};
+        let icon = crate::config::data_dir().join("airbridge.png");
+        std::fs::create_dir_all(crate::config::data_dir())?;
+        std::fs::write(&icon, include_bytes!("../packaging/windows/airbridge.png"))?;
+        let key = HSTRING::from(format!(r"Software\Classes\AppUserModelId\{APP_ID}"));
+        for (name, value) in [
+            ("DisplayName", "AirBridge".to_string()),
+            ("IconUri", icon.to_string_lossy().into_owned()),
+        ] {
+            let data: Vec<u16> = value.encode_utf16().chain([0]).collect();
+            // SAFETY: `data` is a NUL-terminated UTF-16 string of the given byte length.
+            unsafe {
+                RegSetKeyValueW(
+                    HKEY_CURRENT_USER,
+                    &key,
+                    &HSTRING::from(name),
+                    REG_SZ.0,
+                    Some(data.as_ptr().cast()),
+                    (data.len() * 2) as u32,
+                )
+            }
+            .ok()?;
+        }
+        Ok(())
+    }
+
+    fn notifier() -> windows::core::Result<ToastNotifier> {
+        ToastNotificationManager::CreateToastNotifierWithId(&HSTRING::from(APP_ID))
+    }
+
+    /// A shown toast; the receiver gets the action key ("default" for the
+    /// toast itself), or None when it was dismissed.
+    pub struct Shown {
+        pub toast: ToastNotification,
+        pub answer: oneshot::Receiver<Option<String>>,
+    }
+
+    pub fn show(
+        summary: &str,
+        body: &str,
+        image: Option<&Path>,
+        actions: &[(&str, &str)],
+        question: bool,
+    ) -> anyhow::Result<Shown> {
+        let doc = XmlDocument::new()?;
+        doc.LoadXml(&HSTRING::from(super::toast_xml(
+            summary, body, image, actions, question,
+        )))?;
+        let toast = ToastNotification::CreateToastNotification(&doc)?;
+
+        let (tx, answer) = oneshot::channel();
+        let tx = Arc::new(Mutex::new(Some(tx)));
+        let reply = move |tx: &Mutex<Option<oneshot::Sender<Option<String>>>>, value| {
+            if let Some(tx) = tx.lock().unwrap().take() {
+                let _ = tx.send(value);
+            }
+        };
+        let (activated, dismissed, failed) = (tx.clone(), tx.clone(), tx);
+        toast.Activated(&TypedEventHandler::<ToastNotification, IInspectable>::new(
+            move |_, args| {
+                let key = args
+                    .as_ref()
+                    .and_then(|args| args.cast::<ToastActivatedEventArgs>().ok())
+                    .and_then(|args| args.Arguments().ok())
+                    .map(|key| key.to_string())
+                    .unwrap_or_else(|| "default".into());
+                reply(&activated, Some(key));
+                Ok(())
+            },
+        ))?;
+        toast.Dismissed(&TypedEventHandler::<
+            ToastNotification,
+            ToastDismissedEventArgs,
+        >::new(move |_, args| {
+            let reason = args.as_ref().and_then(|args| args.Reason().ok());
+            // Timed out: it waits in the notification center, buttons still work.
+            if reason != Some(ToastDismissalReason::TimedOut) {
+                reply(&dismissed, None);
+            }
+            Ok(())
+        }))?;
+        toast.Failed(&TypedEventHandler::new(move |_, _| {
+            reply(&failed, None);
+            Ok(())
+        }))?;
+        notifier()?.Show(&toast)?;
+        Ok(Shown { toast, answer })
+    }
+
+    pub fn hide(toast: &ToastNotification) {
+        if let Ok(notifier) = notifier() {
+            let _ = notifier.Hide(toast);
+        }
+    }
+}
+
+/// The toast: text from other devices escaped, so a name cannot add
+/// buttons, images or markup. "default" is a click on the toast itself.
+#[cfg(any(windows, test))]
+fn toast_xml(
+    summary: &str,
+    body: &str,
+    image: Option<&Path>,
+    actions: &[(&str, &str)],
+    question: bool,
+) -> String {
+    let xml = |text: &str| plain_text(text, true).replace('"', "&quot;");
+    let mut doc = format!(
+        "<toast launch=\"default\"{}><visual><binding template=\"ToastGeneric\"><text>{}</text><text>{}</text>",
+        // A question stays on screen until it is answered.
+        if question { " scenario=\"reminder\"" } else { "" },
+        xml(summary),
+        xml(body)
+    );
+    if let Some(image) = image {
+        doc += &format!("<image src=\"{}\"/>", xml(&image.to_string_lossy()));
+    }
+    doc += "</binding></visual><actions>";
+    for (key, label) in actions.iter().filter(|(key, _)| *key != "default") {
+        doc += &format!(
+            "<action content=\"{}\" arguments=\"{}\" activationType=\"foreground\"/>",
+            xml(label),
+            xml(key)
+        );
+    }
+    doc + "</actions></toast>"
+}
 
 #[cfg(windows)]
 impl Notifier {
     pub async fn available(&self) -> bool {
-        false
+        *self.registered.get_or_init(|| {
+            toast::register()
+                .inspect_err(|err| tracing::info!("Notifications unavailable: {err:#}"))
+                .is_ok()
+        })
     }
 
+    /// Shows a toast with buttons and waits for the answer. Dropping the
+    /// future (e.g. because the user answered in the window) removes it.
     pub async fn ask(
         &self,
-        _summary: &str,
-        _body: &str,
-        _image: Option<&Path>,
-        _actions: &[(&str, &str)],
+        summary: &str,
+        body: &str,
+        image: Option<&Path>,
+        actions: &[(&str, &str)],
     ) -> Option<String> {
-        None
+        if !self.available().await {
+            return None;
+        }
+        let shown = toast::show(summary, body, image, actions, true)
+            .inspect_err(|err| tracing::debug!("notification failed: {err:#}"))
+            .ok()?;
+        struct Hide(windows::UI::Notifications::ToastNotification);
+        impl Drop for Hide {
+            fn drop(&mut self) {
+                toast::hide(&self.0);
+            }
+        }
+        let _hide = Hide(shown.toast);
+        shown.answer.await.ok().flatten()
     }
 
+    /// Fire-and-forget toast; `on_action` runs for a clicked button or the toast.
     pub async fn notify<F>(
         &self,
-        _summary: &str,
-        _body: &str,
-        _image: Option<&Path>,
-        _actions: &[(&str, &str)],
-        _on_action: F,
+        summary: &str,
+        body: &str,
+        image: Option<&Path>,
+        actions: &[(&str, &str)],
+        on_action: F,
     ) where
         F: FnOnce(String) + Send + 'static,
     {
+        if !self.available().await {
+            return;
+        }
+        match toast::show(summary, body, image, actions, false) {
+            Ok(shown) => {
+                tokio::spawn(async move {
+                    let _toast = shown.toast;
+                    if let Ok(Ok(Some(action))) =
+                        tokio::time::timeout(Duration::from_secs(600), shown.answer).await
+                    {
+                        on_action(action);
+                    }
+                });
+            }
+            Err(err) => tracing::debug!("notification failed: {err:#}"),
+        }
     }
 }
 
@@ -627,6 +812,25 @@ pub fn open_window(url: &str, profile_dir: &Path) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn toast_text_cannot_add_markup() {
+        let doc = toast_xml(
+            "“<b>x</b>\" would like to share",
+            "a & b\u{202E}",
+            None,
+            &[("accept", "Accept"), ("default", "Show")],
+            true,
+        );
+        assert_eq!(
+            doc,
+            "<toast launch=\"default\" scenario=\"reminder\"><visual><binding template=\"ToastGeneric\">\
+             <text>“&lt;b&gt;x&lt;/b&gt;&quot; would like to share</text><text>a &amp; b</text>\
+             </binding></visual><actions>\
+             <action content=\"Accept\" arguments=\"accept\" activationType=\"foreground\"/>\
+             </actions></toast>"
+        );
+    }
 
     #[cfg(target_os = "linux")]
     #[test]

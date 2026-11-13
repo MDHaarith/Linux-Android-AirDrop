@@ -151,13 +151,18 @@ impl App {
     /// than the API token, since URLs end up in process lists, logs and
     /// browser history: once used (or after a minute) it is worthless.
     pub fn ui_url(&self) -> Option<String> {
+        self.page_url("")
+    }
+
+    /// A page of the local UI with a one-time sign-in code.
+    pub fn page_url(&self, page: &str) -> Option<String> {
         use rand::distributions::{Alphanumeric, DistString};
         let ui = self.ui.get()?;
         let code = Alphanumeric.sample_string(&mut rand::thread_rng(), 32);
         let mut codes = self.launch_codes.lock().unwrap();
         codes.retain(|(_, at)| at.elapsed() < LAUNCH_CODE_TTL);
         codes.push((code.clone(), std::time::Instant::now()));
-        Some(format!("http://127.0.0.1:{}/?code={code}", ui.port))
+        Some(format!("http://127.0.0.1:{}/{page}?code={code}", ui.port))
     }
 
     /// Uses up a launch code; true if it was valid.
@@ -246,8 +251,7 @@ impl App {
             "companion": { "url": self.companion_url() },
             // What this build can do, so the window offers only working settings.
             "features": {
-                "desktopNotifications": cfg!(target_os = "linux"),
-                "edgeDrop": cfg!(all(target_os = "linux", feature = "edge")),
+                "edgeDrop": cfg!(any(windows, all(target_os = "linux", feature = "edge"))),
             },
             "bluetoothProblem": self.quick_share.lock().unwrap().as_ref()
                 .and_then(|s| s.bluetooth_problem.lock().unwrap().clone()),
@@ -582,8 +586,6 @@ impl App {
         if !self.settings().notifications {
             return;
         }
-        #[cfg(windows)]
-        self.open_window();
         let (count, names) = describe_files(
             &files
                 .iter()
@@ -605,6 +607,11 @@ impl App {
         let app = self.clone();
         let id = id.to_string();
         tokio::spawn(async move {
+            // Without notifications, Windows shows what arrived in the window.
+            if cfg!(windows) && !app.notifier.available().await {
+                app.open_window();
+                return;
+            }
             let image = match photo {
                 Some(photo) => tokio::task::spawn_blocking(move || {
                     crate::thumbnail::jpeg(&photo)
@@ -676,8 +683,10 @@ impl App {
             if !notify {
                 return;
             }
-            #[cfg(windows)]
-            app.open_window();
+            if cfg!(windows) && !app.notifier.available().await {
+                app.open_window();
+                return;
+            }
             let preview: String = text.chars().take(240).collect();
             let link = text.trim();
             let link = ((link.starts_with("http://") || link.starts_with("https://"))

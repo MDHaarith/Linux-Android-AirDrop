@@ -87,18 +87,21 @@ pub fn run(url: &str) -> Result<()> {
                 window.set_focus();
             }
             Event::UserEvent(UserEvent::Drag(event)) => {
+                // The page works in CSS pixels; WebView2 reports physical ones.
+                let scale = if cfg!(windows) {
+                    window.scale_factor()
+                } else {
+                    1.0
+                };
+                let css = |(x, y): (i32, i32)| (f64::from(x) / scale, f64::from(y) / scale);
                 let script = match event {
-                    DragDropEvent::Drop {
-                        paths,
-                        position: (x, y),
-                    } => {
+                    DragDropEvent::Drop { paths, position } => {
+                        let (x, y) = css(position);
                         let json = serde_json::to_string(&paths).unwrap_or_else(|_| "[]".into());
                         format!("window.airbridgeNativeDrop?.({json}, {x}, {y})")
                     }
-                    DragDropEvent::Enter {
-                        position: (x, y), ..
-                    }
-                    | DragDropEvent::Over { position: (x, y) } => {
+                    DragDropEvent::Enter { position, .. } | DragDropEvent::Over { position } => {
+                        let (x, y) = css(position);
                         format!("window.airbridgeNativeDrag?.({x}, {y})")
                     }
                     DragDropEvent::Leave => "window.airbridgeNativeDrag?.(null, null)".into(),
