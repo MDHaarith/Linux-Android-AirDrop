@@ -222,6 +222,8 @@ pub struct Settings {
     /// Open what your own (trusted) devices send right away, like AirDrop
     /// between your own Apple devices.
     pub open_received: bool,
+    /// Send a SHA-256 of every file so the receiver checks the contents.
+    pub verify_sends: bool,
 }
 
 impl Default for Settings {
@@ -247,10 +249,11 @@ impl Default for Settings {
             notifications: true,
             theme: "auto".into(),
             quick_share: true,
-            edge_drop: cfg!(target_os = "linux"),
+            edge_drop: true,
             edge_side: "right".into(),
             drop_recipient: None,
             open_received: true,
+            verify_sends: false,
         }
     }
 }
@@ -418,6 +421,7 @@ impl Settings {
         set_bool!("quickShare", quick_share);
         set_bool!("edgeDrop", edge_drop);
         set_bool!("openReceived", open_received);
+        set_bool!("verifySends", verify_sends);
         if let Some(value) = map.get("dropRecipient") {
             if value.is_null()
                 || value

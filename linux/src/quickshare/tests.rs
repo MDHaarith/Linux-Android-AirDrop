@@ -33,15 +33,8 @@ async fn wait(
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn phone_and_laptop_share_over_quick_share() {
-    let home = tempfile::tempdir().unwrap();
-    std::env::set_var("AIRBRIDGE_HOME", home.path());
-    std::fs::create_dir_all(home.path().join("config")).unwrap();
-    std::fs::write(
-        home.path().join("config/settings.json"),
-        r#"{"alias":"Test Laptop","notifications":false,"quickShare":false}"#,
-    )
-    .unwrap();
-    let app = App::new().unwrap();
+    let (_home, app) =
+        crate::app::test_app(r#"{"alias":"Test Laptop","notifications":false,"quickShare":false}"#);
     let downloads: PathBuf = app.settings().download_dir.clone();
 
     // The receiving side: the real accept path, on localhost.

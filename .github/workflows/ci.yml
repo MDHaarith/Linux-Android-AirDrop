@@ -62,11 +62,17 @@ jobs:
         with:
           workspaces: linux
       - run: cargo build --release --locked
+      - run: ../.github/scripts/check_windows_exe.ps1
+        shell: pwsh
+      - run: ../.github/scripts/build_windows_installer.ps1
+        shell: pwsh
       - run: cargo test --locked
       - uses: actions/upload-artifact@v6
         with:
           name: airbridge-windows-x86_64
-          path: linux/target/release/airbridge.exe
+          path: |
+            linux/target/release/airbridge.exe
+            linux/target/release/airbridge-setup.exe
           if-no-files-found: error
 
   android:

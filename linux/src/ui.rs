@@ -24,7 +24,7 @@ use crate::assets;
 use crate::config;
 use crate::desktop;
 use crate::receiver::constant_time_eq;
-use crate::sender::{expand_paths, SendItem};
+use crate::sender::{expand_paths, Selection, SendItem};
 use crate::update;
 
 const COOKIE: &str = "airbridge_token";
@@ -32,6 +32,14 @@ const COOKIE: &str = "airbridge_token";
 fn bad_request(message: impl Into<String>) -> Response {
     (
         StatusCode::BAD_REQUEST,
+        Json(json!({ "message": message.into() })),
+    )
+        .into_response()
+}
+
+fn server_error(message: impl Into<String>) -> Response {
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
         Json(json!({ "message": message.into() })),
     )
         .into_response()
@@ -70,6 +78,7 @@ pub fn router(app: Arc<App>) -> Router {
         .layer(middleware::from_fn_with_state(app.clone(), auth));
     Router::new()
         .route("/", get(index))
+        .route("/edge", get(edge_page))
         .route(
             "/assets/{*path}",
             get(|UrlPath(path): UrlPath<String>| async move { assets::response(&path) }),
@@ -141,21 +150,31 @@ async fn index(
     headers: HeaderMap,
     Query(query): Query<IndexQuery>,
 ) -> Response {
-    if !host_ok(&app, &headers) {
+    page(&app, &headers, query, "/", "index.html")
+}
+
+/// The screen-edge drop zone (Windows).
+async fn edge_page(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    Query(query): Query<IndexQuery>,
+) -> Response {
+    page(&app, &headers, query, "/edge", "edge.html")
+}
+
+fn page(app: &App, headers: &HeaderMap, query: IndexQuery, path: &str, file: &str) -> Response {
+    if !host_ok(app, headers) {
         return (StatusCode::FORBIDDEN, "bad host").into_response();
     }
     // A one-time launch code from the window URL buys the session cookie.
     if let Some(code) = query.code {
         if app.redeem_launch_code(&code) {
-            let cookie = format!(
-                "{COOKIE}={}; Path=/; HttpOnly; SameSite=Strict",
-                token(&app)
-            );
-            return ([(header::SET_COOKIE, cookie)], Redirect::to("/")).into_response();
+            let cookie = format!("{COOKIE}={}; Path=/; HttpOnly; SameSite=Strict", token(app));
+            return ([(header::SET_COOKIE, cookie)], Redirect::to(path)).into_response();
         }
     }
-    if has_token(&app, &headers) {
-        return assets::response("index.html");
+    if has_token(app, headers) {
+        return assets::response(file);
     }
     (
         StatusCode::UNAUTHORIZED,
@@ -213,7 +232,9 @@ async fn event_stream(app: Arc<App>, socket: WebSocket) {
 // ------------------------------------------------------------------ sending
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct SendRequest {
+    #[serde(default)]
     peer: String,
     #[serde(default)]
     paths: Vec<PathBuf>,
@@ -221,10 +242,30 @@ struct SendRequest {
     staged: Vec<String>,
     #[serde(default)]
     pin: Option<String>,
+    /// Send each file's SHA-256 so the receiver checks the contents.
+    #[serde(default)]
+    verify: bool,
+    /// Filters and destination folder for the chosen folders.
+    #[serde(default, flatten)]
+    selection: Selection,
+    /// Only count what would be sent.
+    #[serde(default)]
+    dry_run: bool,
 }
 
 async fn send(State(app): State<Arc<App>>, Json(request): Json<SendRequest>) -> Response {
-    let mut items = expand_paths(&request.paths);
+    let mut items = match expand_paths(&request.paths, &request.selection) {
+        Ok(items) => items,
+        Err(message) => return bad_request(message),
+    };
+    if request.dry_run {
+        let bytes: u64 = items
+            .iter()
+            .filter_map(|i| std::fs::metadata(&i.path).ok())
+            .map(|m| m.len())
+            .sum();
+        return Json(json!({ "count": items.len(), "bytes": bytes })).into_response();
+    }
     {
         let mut staged = app.staged.lock().unwrap();
         for id in &request.staged {
@@ -236,7 +277,7 @@ async fn send(State(app): State<Arc<App>>, Json(request): Json<SendRequest>) -> 
     if items.is_empty() {
         return bad_request("Nothing to send");
     }
-    match app.send_files(&request.peer, items, request.pin) {
+    match app.send_files(&request.peer, items, request.pin, request.verify) {
         Ok(id) => Json(json!({ "id": id })).into_response(),
         Err(message) => bad_request(message),
     }
@@ -263,8 +304,10 @@ struct PeerRequest {
 }
 
 async fn send_clipboard(State(app): State<Arc<App>>, Json(request): Json<PeerRequest>) -> Response {
-    let Some(text) = desktop::read_clipboard().await.filter(|t| !t.is_empty()) else {
-        return bad_request("The clipboard is empty (or wl-paste/xclip is not installed)");
+    let text = match desktop::read_clipboard().await {
+        Some(text) if !text.is_empty() => text,
+        Some(_) => return bad_request("The clipboard is empty"),
+        None => return bad_request(desktop::CLIPBOARD_UNREADABLE),
     };
     match app.send_text(&request.peer, text, None) {
         Ok(id) => Json(json!({ "id": id })).into_response(),
@@ -287,7 +330,7 @@ async fn send_url(State(app): State<Arc<App>>, Json(request): Json<UrlRequest>) 
     let url = request.url.trim().to_string();
     match crate::fetch::fetch(&url, request.name.as_deref()).await {
         Ok(crate::fetch::Fetched::File(item)) => {
-            match app.send_files(&request.peer, vec![item.clone()], None) {
+            match app.send_files(&request.peer, vec![item.clone()], None, false) {
                 Ok(id) => Json(json!({ "id": id, "kind": "file" })).into_response(),
                 Err(message) => {
                     let _ = std::fs::remove_dir_all(item.path.parent().unwrap_or(&item.path));
@@ -396,7 +439,7 @@ fn describe_paths(paths: &[PathBuf]) -> Vec<Value> {
         .filter_map(|path| {
             let meta = std::fs::metadata(path).ok()?;
             let size = if meta.is_dir() {
-                expand_paths(std::slice::from_ref(path)).iter().filter_map(|i| std::fs::metadata(&i.path).ok()).map(|m| m.len()).sum()
+                expand_paths(std::slice::from_ref(path), &Selection::default()).unwrap_or_default().iter().filter_map(|i| std::fs::metadata(&i.path).ok()).map(|m| m.len()).sum()
             } else {
                 meta.len()
             };
@@ -454,6 +497,8 @@ struct ActionRequest {
     trust: bool,
     #[serde(default)]
     file: Option<String>,
+    #[serde(default)]
+    pin: Option<String>,
 }
 
 async fn transfer_action(
@@ -462,6 +507,12 @@ async fn transfer_action(
     body: Option<Json<ActionRequest>>,
 ) -> Response {
     let request = body.map(|Json(b)| b).unwrap_or_default();
+    if action == "resume" {
+        return match app.resume(&id, request.pin) {
+            Ok(id) => Json(json!({ "ok": true, "id": id })).into_response(),
+            Err(message) => bad_request(message),
+        };
+    }
     let (peer_id, message, path) = {
         let transfers = app.transfers.lock().unwrap();
         let Some(t) = transfers.get(&id) else {
@@ -479,8 +530,9 @@ async fn transfer_action(
     };
     let ok = match action.as_str() {
         "accept" => {
+            // Still accept if trusting cannot be saved (update_settings logs it).
             if request.trust {
-                app.set_trusted(&peer_id, true);
+                let _ = app.set_trusted(&peer_id, true);
             }
             app.decide(&id, true)
         }
@@ -571,9 +623,11 @@ async fn trust(
     State(app): State<Arc<App>>,
     UrlPath(id): UrlPath<String>,
     Json(request): Json<TrustRequest>,
-) -> StatusCode {
-    app.set_trusted(&id, request.trusted);
-    StatusCode::NO_CONTENT
+) -> Response {
+    match app.set_trusted(&id, request.trusted) {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(message) => server_error(message),
+    }
 }
 
 // ---------------------------------------------------------------- settings
@@ -582,7 +636,10 @@ async fn update_settings(State(app): State<Arc<App>>, Json(changes): Json<Value>
     if let Err(message) = config::check_changes(&changes) {
         return bad_request(message);
     }
-    let changed = app.update_settings(|s| s.apply(&changes));
+    let changed = match app.update_settings(|s| s.apply(&changes)) {
+        Ok(changed) => changed,
+        Err(message) => return server_error(message),
+    };
     if changed.contains(&"alias") {
         if let Some(discovery) = app.discovery.get().cloned() {
             let app = app.clone();
@@ -609,12 +666,14 @@ async fn update_settings(State(app): State<Arc<App>>, Json(changes): Json<Value>
     Json(app.settings().public_json()).into_response()
 }
 
-async fn reset_pairing(State(app): State<Arc<App>>) -> Json<Value> {
-    app.update_settings(|s| s.regenerate_web_key());
+async fn reset_pairing(State(app): State<Arc<App>>) -> Response {
+    if let Err(message) = app.update_settings(|s| s.regenerate_web_key()) {
+        return server_error(message);
+    }
     app.companion.disconnect_all();
     let url = app.companion_url();
     app.bus.emit("companion", json!({ "url": url }));
-    Json(json!({ "url": url }))
+    Json(json!({ "url": url })).into_response()
 }
 
 async fn qr(State(app): State<Arc<App>>) -> Response {
@@ -682,21 +741,21 @@ async fn check_update() -> Response {
         Ok(available) => Json(json!({
             "current": update::current_version(),
             "available": available,
-            "canInstall": update::appimage().is_some(),
+            "canInstall": update::program().is_some(),
         }))
         .into_response(),
         Err(err) => bad_request(format!("Could not check for updates: {err:#}")),
     }
 }
 
-/// Installs the newest build and restarts; outside the AppImage it opens the release page.
+/// Installs the newest build and restarts; outside the AppImage or exe it opens the release page.
 async fn apply_update(State(app): State<Arc<App>>) -> Response {
     let available = match update::check().await {
         Ok(Some(available)) => available,
         Ok(None) => return bad_request("AirBridge is up to date."),
         Err(err) => return bad_request(format!("Could not check for updates: {err:#}")),
     };
-    if update::appimage().is_none() {
+    if update::program().is_none() {
         desktop::open_url(&available.page);
         return Json(json!({ "restarting": false })).into_response();
     }
@@ -712,4 +771,51 @@ async fn apply_update(State(app): State<Arc<App>>) -> Response {
         app.shutdown.cancel();
     });
     Json(json!({ "restarting": true })).into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use axum::body::Body;
+    use axum::http::Request;
+    use tower::ServiceExt;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn the_edge_page_signs_in_with_a_one_time_code() {
+        let (_home, app) = crate::app::test_app("{}");
+        let _ = app.ui.set(crate::app::UiInfo {
+            port: 4000,
+            token: "secret".into(),
+        });
+        let get = |uri: String, cookie: Option<&str>| {
+            let mut request = Request::get(uri).header(header::HOST, "127.0.0.1:4000");
+            if let Some(cookie) = cookie {
+                request = request.header(header::COOKIE, cookie);
+            }
+            router(app.clone()).oneshot(request.body(Body::empty()).unwrap())
+        };
+        let url = app.page_url("edge").unwrap();
+        let path = url.trim_start_matches("http://127.0.0.1:4000").to_string();
+        assert!(path.starts_with("/edge?code="));
+
+        let signed_in = get(path.clone(), None).await.unwrap();
+        assert_eq!(signed_in.headers()[header::LOCATION], "/edge");
+        assert!(signed_in.headers()[header::SET_COOKIE]
+            .to_str()
+            .unwrap()
+            .starts_with("airbridge_token=secret;"));
+        // The code works once.
+        let reused = get(path, None).await.unwrap();
+        assert_eq!(reused.status(), StatusCode::UNAUTHORIZED);
+
+        let page = get("/edge".into(), Some("airbridge_token=secret"))
+            .await
+            .unwrap();
+        assert_eq!(page.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(page.into_body(), 1 << 20)
+            .await
+            .unwrap();
+        assert!(String::from_utf8_lossy(&body).contains("edge.js"));
+    }
 }

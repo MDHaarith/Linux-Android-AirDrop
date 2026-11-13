@@ -24,8 +24,8 @@ use crate::peers::{Peer, PeerKind, Registry};
 use crate::protocol::{DeviceInfo, PROTOCOL_VERSION};
 use crate::quickshare;
 use crate::sender::{self, SendItem};
-use crate::storage::Reservations;
-use crate::transfers::{Direction, Status, Transfers};
+use crate::storage::{Partials, Reservations};
+use crate::transfers::{Direction, FileStatus, Status, Transfers};
 
 const DECISION_TIMEOUT: Duration = Duration::from_secs(300);
 /// How long a window launch code stays valid (it also works only once).
@@ -46,6 +46,8 @@ pub struct App {
     pub notifier: Notifier,
     pub companion: Hub,
     pub reservations: Reservations,
+    /// Partial downloads, so a crash leaves none behind after the next start.
+    pub partials: Partials,
     /// Files dropped into the window, copied to the cache until sent.
     pub staged: Mutex<HashMap<String, SendItem>>,
     /// Wrong PINs: a few per address, and a cap for everyone together so
@@ -89,6 +91,7 @@ impl App {
             notifier: Notifier::default(),
             companion: Hub::default(),
             reservations: Reservations::default(),
+            partials: Partials::new(config::data_dir().join("partials.json")),
             staged: Mutex::new(HashMap::new()),
             pin_failures: RateLimit::new(5, 20, Duration::from_secs(600)),
             requests: RateLimit::new(20, 120, Duration::from_secs(60)),
@@ -110,19 +113,23 @@ impl App {
         self.settings.read().unwrap()
     }
 
-    pub fn update_settings<R>(&self, change: impl FnOnce(&mut Settings) -> R) -> R {
+    /// Changes and saves the settings. If they cannot be saved, nothing
+    /// changes: the app never shows a setting that would be lost on restart.
+    pub fn update_settings<R>(&self, change: impl FnOnce(&mut Settings) -> R) -> Result<R, String> {
         let mut settings = self.settings.write().unwrap();
         let before = settings.clone();
         let result = change(&mut settings);
         if *settings == before {
-            return result;
+            return Ok(result);
         }
         if let Err(err) = settings.save() {
             tracing::warn!("Could not save settings: {err}");
+            *settings = before;
+            return Err(format!("Could not save settings: {err}"));
         }
         drop(settings);
         self.bus.emit("settings", self.settings().public_json());
-        result
+        Ok(result)
     }
 
     /// How we describe ourselves to other devices.
@@ -144,13 +151,18 @@ impl App {
     /// than the API token, since URLs end up in process lists, logs and
     /// browser history: once used (or after a minute) it is worthless.
     pub fn ui_url(&self) -> Option<String> {
+        self.page_url("")
+    }
+
+    /// A page of the local UI with a one-time sign-in code.
+    pub fn page_url(&self, page: &str) -> Option<String> {
         use rand::distributions::{Alphanumeric, DistString};
         let ui = self.ui.get()?;
         let code = Alphanumeric.sample_string(&mut rand::thread_rng(), 32);
         let mut codes = self.launch_codes.lock().unwrap();
         codes.retain(|(_, at)| at.elapsed() < LAUNCH_CODE_TTL);
         codes.push((code.clone(), std::time::Instant::now()));
-        Some(format!("http://127.0.0.1:{}/?code={code}", ui.port))
+        Some(format!("http://127.0.0.1:{}/{page}?code={code}", ui.port))
     }
 
     /// Uses up a launch code; true if it was valid.
@@ -237,6 +249,12 @@ impl App {
             "transfers": self.transfers.lock().unwrap().snapshot(),
             "settings": self.settings().public_json(),
             "companion": { "url": self.companion_url() },
+            // What this build can do, so the window offers only working settings.
+            "features": {
+                "edgeDrop": cfg!(any(windows, all(target_os = "linux", feature = "edge"))),
+            },
+            "bluetoothProblem": self.quick_share.lock().unwrap().as_ref()
+                .and_then(|s| s.bluetooth_problem.lock().unwrap().clone()),
             "multicast": discovery.is_some_and(|d| d.multicast_ok()),
             "scanning": discovery.is_some_and(|d| d.scanning.load(Ordering::Relaxed)),
         })
@@ -423,6 +441,7 @@ impl App {
         peer_query: &str,
         items: Vec<SendItem>,
         pin: Option<String>,
+        verify: bool,
     ) -> Result<String, String> {
         let peer = self
             .registry
@@ -430,10 +449,42 @@ impl App {
             .or_else(|| self.registry.find(peer_query))
             .ok_or("Device not found")?;
         match peer.kind {
-            PeerKind::LocalSend => sender::send_files(self, peer, items, pin),
+            PeerKind::LocalSend => sender::send_files(self, peer, items, pin, verify),
             PeerKind::Web => self.companion.offer(self, &peer, items, None),
             PeerKind::QuickShare => quickshare::send_files(self, peer, items),
         }
+    }
+
+    /// Sends again the files of a failed or cancelled send that did not
+    /// arrive, under the same names (also after a restart: the history keeps
+    /// them). The receiver skips any it already saved.
+    pub fn resume(self: &Arc<Self>, id: &str, pin: Option<String>) -> Result<String, String> {
+        let (peer_id, items, verify) = {
+            let transfers = self.transfers.lock().unwrap();
+            let t = transfers
+                .get(id)
+                .filter(|t| t.direction == Direction::Out && t.message.is_none())
+                .filter(|t| matches!(t.status, Status::Failed | Status::Cancelled))
+                .ok_or("Only an unfinished send can be resumed")?;
+            let items: Vec<SendItem> = t
+                .files
+                .iter()
+                .filter(|f| !matches!(f.status, FileStatus::Done | FileStatus::Skipped))
+                .filter_map(|f| {
+                    Some(SendItem {
+                        path: PathBuf::from(f.path.as_ref()?),
+                        name: f.name.clone(),
+                        temporary: false,
+                    })
+                })
+                .collect();
+            let peer_id = t.peer["id"].as_str().unwrap_or(&t.peer_id).to_string();
+            (peer_id, items, t.verify)
+        };
+        if items.is_empty() {
+            return Err("Nothing is left to send".into());
+        }
+        self.send_files(&peer_id, items, pin, verify)
     }
 
     pub fn send_text(
@@ -457,14 +508,13 @@ impl App {
         }
     }
 
-    pub fn set_trusted(&self, peer_id: &str, trusted: bool) {
+    pub fn set_trusted(&self, peer_id: &str, trusted: bool) -> Result<(), String> {
         // Only devices with a provable id (a certificate) can be trusted:
         // Quick Share senders and browsers are known by address or by a
         // pairing key that travels in the clear.
         if trusted && !crate::protocol::is_localsend_id(peer_id) {
-            return;
+            return Ok(());
         }
-        self.registry.set_trusted(peer_id, trusted);
         let peer = self.registry.get(peer_id);
         self.update_settings(|s| {
             s.set_trusted(peer_id, trusted);
@@ -473,7 +523,9 @@ impl App {
                     s.remember_device(peer_id, &peer.info.alias, peer.info.port, [ip]);
                 }
             }
-        });
+        })?;
+        self.registry.set_trusted(peer_id, trusted);
+        Ok(())
     }
 
     /// TLS-confirmed LocalSend addresses can follow a trusted device between networks.
@@ -483,7 +535,8 @@ impl App {
             .upsert(info, ip, PeerKind::LocalSend, verified);
         if verified && self.registry.is_trusted(peer.id()) {
             if let IpAddr::V4(ip) = net::canonical(peer.ip) {
-                self.update_settings(|s| {
+                // Best effort: the address is only a hint for reaching it later.
+                let _ = self.update_settings(|s| {
                     s.remember_device(peer.id(), &peer.info.alias, peer.info.port, [ip]);
                 });
             }
@@ -533,8 +586,6 @@ impl App {
         if !self.settings().notifications {
             return;
         }
-        #[cfg(windows)]
-        self.open_window();
         let (count, names) = describe_files(
             &files
                 .iter()
@@ -556,6 +607,11 @@ impl App {
         let app = self.clone();
         let id = id.to_string();
         tokio::spawn(async move {
+            // Without notifications, Windows shows what arrived in the window.
+            if cfg!(windows) && !app.notifier.available().await {
+                app.open_window();
+                return;
+            }
             let image = match photo {
                 Some(photo) => tokio::task::spawn_blocking(move || {
                     crate::thumbnail::jpeg(&photo)
@@ -627,8 +683,10 @@ impl App {
             if !notify {
                 return;
             }
-            #[cfg(windows)]
-            app.open_window();
+            if cfg!(windows) && !app.notifier.available().await {
+                app.open_window();
+                return;
+            }
             let preview: String = text.chars().take(240).collect();
             let link = text.trim();
             let link = ((link.starts_with("http://") || link.starts_with("https://"))
@@ -751,9 +809,40 @@ pub fn human_size(bytes: u64) -> String {
     }
 }
 
+/// Held while a test points the profile variable at its own folder.
+#[cfg(test)]
+static TEST_ENV: Mutex<()> = Mutex::new(());
+
+/// An app with its own profile. Tests run in parallel, so setting the profile
+/// variable and loading from it must not interleave.
+#[cfg(test)]
+pub fn test_app(settings: &str) -> (tempfile::TempDir, Arc<App>) {
+    let _env = TEST_ENV.lock().unwrap_or_else(|e| e.into_inner());
+    let home = tempfile::tempdir().unwrap();
+    std::env::set_var("AIRBRIDGE_HOME", home.path());
+    std::fs::create_dir_all(home.path().join("config")).unwrap();
+    std::fs::write(home.path().join("config/settings.json"), settings).unwrap();
+    let app = App::new().unwrap();
+    (home, app)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn settings_that_cannot_be_saved_are_not_kept() {
+        let (home, app) =
+            test_app(r#"{"alias":"Before","notifications":false,"quickShare":false}"#);
+        let path = home.path().join("config/settings.json");
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir_all(path.join("blocked")).unwrap();
+        // The settings path is read from the profile variable when saving.
+        let _env = TEST_ENV.lock().unwrap_or_else(|e| e.into_inner());
+        std::env::set_var("AIRBRIDGE_HOME", home.path());
+        assert!(app.update_settings(|s| s.alias = "After".into()).is_err());
+        assert_eq!(app.settings().alias, "Before");
+    }
 
     #[test]
     fn share_phrases_read_like_airdrop() {

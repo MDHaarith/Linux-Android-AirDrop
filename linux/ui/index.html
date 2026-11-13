@@ -40,6 +40,7 @@
     <div class="empty" id="empty">
       <h2>No one nearby yet</h2>
       <p>Open <b>AirBridge</b>, <b>Quick Share</b> or <b>LocalSend</b> on your phone on the same Wi‑Fi, or pair your phone's browser.</p>
+      <p class="muted" id="emptyBluetooth" hidden></p>
       <div class="row">
         <button class="btn ghost" id="emptyPair"></button>
         <button class="btn ghost" id="emptyScan"></button>
@@ -106,6 +107,15 @@
   <div class="modal" id="modal" hidden></div>
   <div class="toasts" id="toasts"></div>
 
+  <div id="unsupported" role="alert" hidden style="position:fixed;inset:0;z-index:9999;display:flex;align-items:center;justify-content:center;padding:24px;background:#fff;color:#111;font:16px/1.5 system-ui,sans-serif;text-align:center">
+    <div style="max-width:520px">
+      <h2>This browser cannot run AirBridge</h2>
+      <p>AirBridge is still running and can receive files, but its window needs a current browser:
+        Microsoft Edge (from microsoft.com/edge), Chrome or Firefox. Install one, then open AirBridge again.</p>
+    </div>
+  </div>
+
+  <script src="/assets/compat.js"></script>
   <script src="/assets/shared.js"></script>
   <script src="/assets/app.js"></script>
 </body>

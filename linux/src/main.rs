@@ -10,8 +10,7 @@ mod companion;
 mod config;
 mod desktop;
 mod discovery;
-// shortcut: no Windows edge drop zone; add a native panel when needed.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 mod edge;
 mod events;
 mod fetch;
@@ -27,11 +26,13 @@ mod storage;
 mod thumbnail;
 mod transfers;
 #[cfg(all(target_os = "linux", feature = "tray"))]
-// shortcut: no Windows tray icon; add a native tray when background controls are needed.
+mod tray;
+#[cfg(windows)]
+#[path = "tray_windows.rs"]
 mod tray;
 mod ui;
 mod update;
-#[cfg(all(target_os = "linux", feature = "webview"))]
+#[cfg(native_window)]
 mod window;
 
 use std::io::Write;
@@ -75,16 +76,7 @@ enum Command {
     /// Run the service in the foreground without opening the window.
     Daemon,
     /// Send files or folders. Without --to the window opens so you can pick a device.
-    Send {
-        #[arg(required = true)]
-        paths: Vec<PathBuf>,
-        /// Device name, IP or fingerprint.
-        #[arg(long, short)]
-        to: Option<String>,
-        /// PIN, if the receiver requires one.
-        #[arg(long)]
-        pin: Option<String>,
-    },
+    Send(SendArgs),
     /// Send a text message ("-" reads standard input).
     Text {
         text: String,
@@ -103,16 +95,51 @@ enum Command {
     /// Stop the running service.
     Quit,
     /// (internal) Native window for the given URL.
-    #[cfg(all(target_os = "linux", feature = "webview"))]
+    #[cfg(native_window)]
     #[command(hide = true)]
     Window { url: String },
     /// (internal) The drop zone on the screen edge; the service starts it.
-    #[cfg(all(target_os = "linux", feature = "edge"))]
+    #[cfg(any(windows, all(target_os = "linux", feature = "edge")))]
     #[command(hide = true)]
     Edge {
         #[arg(long, default_value = "right")]
         side: String,
+        /// The drop zone page, with its sign-in code (Windows).
+        #[cfg(windows)]
+        #[arg(long)]
+        url: String,
     },
+}
+
+#[derive(clap::Args)]
+struct SendArgs {
+    #[arg(required = true)]
+    paths: Vec<PathBuf>,
+    /// Device name, IP or fingerprint.
+    #[arg(long, short)]
+    to: Option<String>,
+    /// PIN, if the receiver requires one.
+    #[arg(long)]
+    pin: Option<String>,
+    /// Send each file's SHA-256 so the receiver checks the contents.
+    #[arg(long)]
+    verify: bool,
+    /// With --verify: write "sha256  name" lines (sha256sum format) here afterwards.
+    #[arg(long, requires = "verify", value_name = "FILE")]
+    manifest: Option<PathBuf>,
+    /// From folders, send only these: photos, videos, audio, documents and/or
+    /// extensions such as raw,heic (comma-separated).
+    #[arg(long, value_delimiter = ',', value_name = "KINDS")]
+    only: Vec<String>,
+    /// Skip folders with these names anywhere inside (comma-separated).
+    #[arg(long, value_delimiter = ',', value_name = "NAMES")]
+    exclude: Vec<String>,
+    /// Receive everything inside this folder (a single folder takes this name).
+    #[arg(long = "as", value_name = "FOLDER")]
+    root: Option<String>,
+    /// Only show how many files and bytes would be sent.
+    #[arg(long)]
+    dry_run: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -137,7 +164,9 @@ fn init_logging() {
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
-    #[cfg(all(target_os = "linux", feature = "webview"))]
+    #[cfg(windows)]
+    hide_own_console();
+    #[cfg(native_window)]
     if let Some(Command::Window { url }) = &cli.command {
         // GTK must own the main thread; no tokio runtime here.
         return match window::run(url) {
@@ -160,6 +189,16 @@ fn main() -> ExitCode {
             }
         };
     }
+    #[cfg(windows)]
+    if let Some(Command::Edge { side, url }) = &cli.command {
+        return match edge::run(side, url) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(err) => {
+                eprintln!("airbridge edge: {err:#}");
+                ExitCode::from(3)
+            }
+        };
+    }
     let runtime = tokio::runtime::Runtime::new().expect("tokio runtime");
     let code = match runtime.block_on(run(cli)) {
         Ok(code) => code,
@@ -168,16 +207,22 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     };
-    #[cfg(target_os = "linux")]
     if update::RESTART.load(std::sync::atomic::Ordering::Relaxed) {
         // Close every socket first so the new version can take the ports.
         runtime.shutdown_timeout(Duration::from_secs(3));
-        if let Some(appimage) = update::appimage() {
-            use std::os::unix::process::CommandExt;
-            if let Err(err) = std::process::Command::new(appimage)
-                .process_group(0)
-                .spawn()
+        if let Some(program) = update::program() {
+            let mut command = std::process::Command::new(program);
+            #[cfg(unix)]
             {
+                use std::os::unix::process::CommandExt;
+                command.process_group(0);
+            }
+            #[cfg(windows)]
+            {
+                use std::os::windows::process::CommandExt;
+                command.creation_flags(0x08000000); // CREATE_NO_WINDOW
+            }
+            if let Err(err) = command.spawn() {
                 eprintln!("airbridge: could not restart after the update: {err}");
             }
         }
@@ -185,11 +230,28 @@ fn main() -> ExitCode {
     code
 }
 
+/// Started from Explorer, a shortcut or Send To, the exe gets a console window
+/// of its own: close it. From a terminal (shared console) it stays.
+#[cfg(windows)]
+fn hide_own_console() {
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetConsoleProcessList(list: *mut u32, count: u32) -> u32;
+        fn FreeConsole() -> i32;
+    }
+    let mut processes = [0u32; 2];
+    // SAFETY: the buffer has room for the 2 entries passed as its length.
+    if unsafe { GetConsoleProcessList(processes.as_mut_ptr(), 2) } == 1 {
+        // SAFETY: no arguments; only detaches this process from its console.
+        unsafe { FreeConsole() };
+    }
+}
+
 async fn run(cli: Cli) -> Result<ExitCode> {
     match cli.command.unwrap_or(Command::Open) {
         Command::Open => serve(!cli.background).await,
         Command::Daemon => serve(false).await,
-        Command::Send { paths, to, pin } => send(paths, to, pin).await,
+        Command::Send(args) => send(args).await,
         Command::Text { text, to, pin } => {
             let text = if text == "-" {
                 let mut buf = String::new();
@@ -242,9 +304,9 @@ async fn run(cli: Cli) -> Result<ExitCode> {
             }
             Ok(ExitCode::SUCCESS)
         }
-        #[cfg(all(target_os = "linux", feature = "webview"))]
+        #[cfg(native_window)]
         Command::Window { .. } => unreachable!("handled in main"),
-        #[cfg(all(target_os = "linux", feature = "edge"))]
+        #[cfg(any(windows, all(target_os = "linux", feature = "edge")))]
         Command::Edge { .. } => unreachable!("handled in main"),
     }
 }
@@ -289,16 +351,50 @@ pub fn stop_quick_share(app: &App) {
     }
 }
 
+/// Held by the service for its whole life, so only one service owns a profile
+/// (its identity, settings and instance file). The OS releases it when the
+/// process ends, even after a crash. None: another service holds it.
+fn lock_profile() -> Result<Option<std::fs::File>> {
+    let dir = config::config_dir();
+    std::fs::create_dir_all(&dir)?;
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(dir.join("service.lock"))?;
+    match file.try_lock() {
+        Ok(()) => Ok(Some(file)),
+        Err(std::fs::TryLockError::WouldBlock) => Ok(None),
+        Err(std::fs::TryLockError::Error(err)) => Err(err.into()),
+    }
+}
+
+async fn already_running(open_window: bool) -> Result<ExitCode> {
+    if open_window {
+        api(Method::POST, "/api/show", None).await?;
+    } else {
+        println!("AirBridge is already running.");
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
 async fn serve(open_window: bool) -> Result<ExitCode> {
     if running_instance().await.is_some() {
-        if open_window {
-            api(Method::POST, "/api/show", None).await?;
-        } else {
-            println!("AirBridge is already running.");
-        }
-        return Ok(ExitCode::SUCCESS);
+        return already_running(open_window).await;
     }
+    let Some(_profile_lock) = lock_profile()? else {
+        // Launched at the same moment as another service: let that one finish starting.
+        for _ in 0..100 {
+            tokio::time::sleep(Duration::from_millis(150)).await;
+            if running_instance().await.is_some() {
+                return already_running(open_window).await;
+            }
+        }
+        bail!("another AirBridge service is starting with this profile");
+    };
 
+    #[cfg(windows)]
+    update::remove_old_copy();
     let app = App::new()?;
     let _ = std::fs::remove_dir_all(config::cache_dir().join("staging"));
     let settings = app.settings().clone();
@@ -356,10 +452,10 @@ async fn serve(open_window: bool) -> Result<ExitCode> {
         Err(err) => tracing::warn!("Web companion unavailable: {err}"),
     }
 
-    #[cfg(all(target_os = "linux", feature = "tray"))]
+    #[cfg(any(windows, all(target_os = "linux", feature = "tray")))]
     tray::spawn(app.clone());
 
-    #[cfg(all(target_os = "linux", feature = "edge"))]
+    #[cfg(any(windows, all(target_os = "linux", feature = "edge")))]
     edge::supervise(app.clone());
 
     let me = app.me();
@@ -433,7 +529,6 @@ async fn ensure_running() -> Result<bool> {
         use std::os::unix::process::CommandExt;
         command.process_group(0);
     }
-    // shortcut: no Windows autostart; launch manually until a per-user installer exists.
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -514,29 +609,83 @@ async fn wait_for_device(query: &str) -> Result<String> {
     bail!("no device called “{query}” found (try `airbridge devices`)")
 }
 
-async fn send(paths: Vec<PathBuf>, to: Option<String>, pin: Option<String>) -> Result<ExitCode> {
-    let paths = paths
+async fn send(args: SendArgs) -> Result<ExitCode> {
+    let paths = args
+        .paths
         .iter()
         .map(|p| std::fs::canonicalize(p).with_context(|| format!("{}", p.display())))
         .collect::<Result<Vec<_>>>()?;
+    let picky =
+        args.verify || !args.only.is_empty() || !args.exclude.is_empty() || args.root.is_some();
+    const KINDS: [&str; 4] = ["photos", "videos", "audio", "documents"];
+    let (kinds, extensions): (Vec<String>, Vec<String>) = args
+        .only
+        .iter()
+        .map(|o| o.trim().to_lowercase())
+        .filter(|o| !o.is_empty())
+        .partition(|o| KINDS.contains(&o.as_str()));
+    let options = json!({
+        "paths": paths,
+        "pin": args.pin,
+        "verify": args.verify,
+        "kinds": kinds,
+        "extensions": extensions,
+        "exclude": args.exclude,
+        "root": args.root,
+    });
     ensure_running().await?;
-    match to {
-        None => {
-            api(
-                Method::POST,
-                "/api/stage-paths",
-                Some(json!({ "paths": paths })),
-            )
-            .await?;
-            println!("Pick a device in the AirBridge window.");
-            Ok(ExitCode::SUCCESS)
+    if args.dry_run {
+        let mut body = options;
+        body["dryRun"] = true.into();
+        let (status, response) = api(Method::POST, "/api/send", Some(body)).await?;
+        if status != 200 {
+            bail!(
+                "{}",
+                response["message"].as_str().unwrap_or("request failed")
+            );
         }
-        Some(to) => {
-            let peer = wait_for_device(&to).await?;
-            let body = json!({ "peer": peer, "paths": paths, "pin": pin });
-            follow(api(Method::POST, "/api/send", Some(body)).await?).await
-        }
+        println!(
+            "{} file(s), {}",
+            response["count"].as_u64().unwrap_or(0),
+            human_size(response["bytes"].as_u64().unwrap_or(0))
+        );
+        return Ok(ExitCode::SUCCESS);
     }
+    let Some(to) = args.to else {
+        if picky {
+            bail!("--verify, --only, --exclude and --as need --to");
+        }
+        api(
+            Method::POST,
+            "/api/stage-paths",
+            Some(json!({ "paths": paths })),
+        )
+        .await?;
+        println!("Pick a device in the AirBridge window.");
+        return Ok(ExitCode::SUCCESS);
+    };
+    let mut body = options;
+    body["peer"] = wait_for_device(&to).await?.into();
+    let response = api(Method::POST, "/api/send", Some(body)).await?;
+    let id = response.1["id"].as_str().unwrap_or_default().to_string();
+    let code = follow(response).await?;
+    if let Some(manifest) = args.manifest {
+        let (_, t) = api(Method::GET, &format!("/api/transfers/{id}"), None).await?;
+        let lines: String = t["files"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|f| {
+                Some(format!(
+                    "{}  {}\n",
+                    f["sha256"].as_str()?,
+                    f["name"].as_str()?
+                ))
+            })
+            .collect();
+        std::fs::write(&manifest, lines).with_context(|| format!("{}", manifest.display()))?;
+    }
+    Ok(code)
 }
 
 /// Prints the progress of a transfer started through the API until it ends.

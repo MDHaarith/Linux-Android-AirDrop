@@ -117,10 +117,22 @@ jobs:
       - name: Windows binary
         working-directory: linux
         run: cargo build --release --locked
+      - name: Check it starts without the Visual C++ runtime and has its icon
+        working-directory: linux
+        shell: pwsh
+        run: ../.github/scripts/check_windows_exe.ps1
+      - name: Installer
+        working-directory: linux
+        shell: pwsh
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: ../.github/scripts/build_windows_installer.ps1 -Version "$env:VERSION"
       - uses: actions/upload-artifact@v6
         with:
           name: release-windows-x86_64
-          path: linux/target/release/airbridge.exe
+          path: |
+            linux/target/release/airbridge.exe
+            linux/target/release/airbridge-setup.exe
           if-no-files-found: error
 
   android:
@@ -181,14 +193,17 @@ jobs:
           chmod +x airbridge-x86_64.AppImage
           test -s airbridge-android.apk
           test -s airbridge.exe
+          test -s airbridge-setup.exe
           [ -n "$UPDATE_SIGNING_KEY" ] || { echo "UPDATE_SIGNING_KEY secret is missing; refusing to publish an unsigned build"; exit 1; }
           umask 077
           printf '%s\n' "$UPDATE_SIGNING_KEY" > "$RUNNER_TEMP/key.pem"
           trap 'rm -f "$RUNNER_TEMP/key.pem" "$RUNNER_TEMP/message"' EXIT
-          # The signature binds the AppImage to its version tag.
-          { cat airbridge-x86_64.AppImage; printf '\n%s' "$TAG"; } > "$RUNNER_TEMP/message"
-          openssl pkeyutl -sign -rawin -inkey "$RUNNER_TEMP/key.pem" -in "$RUNNER_TEMP/message" -out airbridge-x86_64.AppImage.sig
-          test "$(stat -c %s airbridge-x86_64.AppImage.sig)" -eq 64
+          # The signature binds each self-updating program to its version tag.
+          for asset in airbridge-x86_64.AppImage airbridge.exe; do
+            { cat "$asset"; printf '\n%s' "$TAG"; } > "$RUNNER_TEMP/message"
+            openssl pkeyutl -sign -rawin -inkey "$RUNNER_TEMP/key.pem" -in "$RUNNER_TEMP/message" -out "$asset.sig"
+            test "$(stat -c %s "$asset.sig")" -eq 64
+          done
       - uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ needs.prepare.outputs.tag }}
@@ -200,7 +215,8 @@ jobs:
           body: |
             **Downloads**
             - `airbridge-android.apk`: the Android app (Android 10 or newer). Allow installs from your browser or file manager when asked.
-            - `airbridge.exe`: the Windows app (x86_64). Run it, allow Windows Firewall access on private networks, then pair your phone by QR.
+            - `airbridge-setup.exe`: the Windows installer (x86_64, no admin needed): Start menu and *Send to* shortcuts, optional start at sign-in, and the WebView2 runtime if missing.
+            - `airbridge.exe`: the Windows app without installing. Run it, allow Windows Firewall access on private networks, then pair your phone by QR. Both update themselves from the app's Update button.
             - `airbridge-x86_64.AppImage`: the Linux app. Make it executable and run it (needs GTK 3 and WebKitGTK 4.1, present on most desktops). Updates itself from the app's Update button.
 
             The APK is signed with a debug key made for this build, not a private release key, so a newer release may need the old app uninstalled first. See [SECURITY.md](https://github.com/${{ github.repository }}/blob/${{ needs.prepare.outputs.tag }}/docs/SECURITY.md).
@@ -209,4 +225,6 @@ jobs:
             airbridge-x86_64.AppImage.sig
             airbridge-android.apk
             airbridge.exe
+            airbridge.exe.sig
+            airbridge-setup.exe
           generate_release_notes: true

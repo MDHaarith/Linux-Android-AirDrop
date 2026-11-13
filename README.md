@@ -21,7 +21,7 @@ your computer from its own share sheet, just like an iPhone with a Mac. Backgrou
 | Part | Tech | Highlights |
 |---|---|---|
 | **Linux app** (`linux/`) | Rust (tokio, axum, rustls) + an embedded web UI | AirDrop-style window and requests, drag & drop, **Quick Share for stock Android**, **screen-edge drop zone** (KDE Plasma, wlroots, X11), tray icon, notifications with Accept/Decline, CLI, file-manager "Send with AirBridge" |
-| **Windows app** (same `linux/` crate) | Rust + the same embedded web UI | LocalSend HTTPS, QR pairing, remembered addresses / Tailscale, Edge app window, native file dialogs and clipboard |
+| **Windows app** (same `linux/` crate) | Rust + the same embedded web UI | LocalSend HTTPS, QR pairing, remembered addresses / Tailscale, own WebView2 window, tray icon, toast notifications with Accept/Decline, **screen-edge drop zone**, Quick Share with Bluetooth wake-up, installer with *Send to* shortcut, self-update |
 | **Android app** (`android/`) | Kotlin + Jetpack Compose | iOS-style app and requests, **your devices in the system share sheet (Direct Share)**, a one-tap share sheet, **edge panel over any app**, photo previews in notifications, Quick Settings tile, background receiving |
 | **Phone browser companion** | Served by the desktop app | A phone with *no app at all* scans a QR code and shares through its browser |
 
@@ -43,8 +43,8 @@ viewer, several files in their folder, a link in the browser).
 **Share from any Android phone, no app needed.** AirBridge shows up in Android's built-in
 *Quick Share* sheet like any Chromebook or Windows PC. Pick it, check that the four-digit PIN
 matches the one on your computer, accept, done. Links open with one click from the
-notification. When you send *to* a phone, AirBridge wakes nearby phones over Bluetooth (BlueZ)
-so they appear as targets.
+notification. When you send *to* a phone, AirBridge wakes nearby phones over Bluetooth (BlueZ on
+Linux, the built-in Bluetooth LE stack on Windows) so they appear as targets.
 
 **Drag to the edge of the screen.** Drag an image out of a web page, files out of Dolphin, or a
 piece of text to the right edge of the screen. A card slides out with your devices. Drop it on
@@ -178,21 +178,32 @@ Optional tools: `wl-clipboard` (Wayland) or `xclip`/`xsel` (X11) for clipboard s
 
 ### Windows
 
-Download `airbridge.exe` from the newest
-[release](https://github.com/MDHaarith/Linux-Android-AirDrop/releases) and run it.
-Allow AirBridge through Windows Firewall on **private networks**. The UI opens in
-an Edge app window (or your default browser); pair the Android app by QR. Remembered
+Download `airbridge-setup.exe` from the newest
+[release](https://github.com/MDHaarith/Linux-Android-AirDrop/releases) and run it (Windows 10
+or 11, x64, no admin rights needed). It adds AirBridge to the Start menu and, if you choose,
+to Explorer's **Send to** menu and to sign-in, and installs Microsoft's WebView2 runtime when
+it is missing. Or run `airbridge.exe` from the release without installing.
+
+Allow AirBridge through Windows Firewall on **private networks**, then pair the Android app by
+QR. AirBridge opens in its own window (WebView2); without the WebView2 runtime it uses an Edge
+app window or your default browser, which must be a current Edge, Chrome or Firefox (the
+legacy EdgeHTML Edge of older Windows 10 cannot run it). Closing the window keeps AirBridge
+receiving: its tray icon opens the window or the received files, and quits. Remembered
 addresses and Tailscale reconnect work the same way as on Linux.
 
 For a source build, install Rust with the MSVC toolchain and Visual Studio C++
 build tools, then run `cargo build --release --locked` in `linux/`. The executable
 is `linux/target/release/airbridge.exe`.
 
-Windows currently has no tray icon, native notifications, screen-edge drop zone,
-autostart or self-update. Requests needing attention open the UI; keep the app
-running while sharing. Quick Share works over Wi-Fi, but has no Bluetooth wake-up:
-open **Quick Share → Receive** on the phone when sending from Windows. Free disk
-space is not checked before receiving.
+The Update button replaces `airbridge.exe` with the new signed release and restarts it, so
+keep the exe in a folder you can write to (not *Program Files*; the installer uses your own
+`AppData\Local\Programs`). Settings and pairings stay.
+
+Incoming files ask in a Windows notification with **Accept** / **Decline** (answer it while
+AirBridge runs; without notifications the window asks instead). The screen-edge drop zone is a
+thin handle on the side of the main screen: drag files or text onto it and drop them on a device.
+Quick Share wakes nearby phones over Bluetooth when the PC's adapter can advertise; otherwise the
+window says why, and you open **Quick Share → Receive** on the phone.
 
 ### Android (10 or newer)
 
@@ -270,6 +281,21 @@ airbridge devices                      # list nearby devices
 airbridge quit
 ```
 
+Sending a drive or a big folder:
+
+```bash
+# Only photos and videos, no system or app folders, received as one "Laptop D" folder.
+airbridge send D:\ --to pixel --only photos,videos --exclude AppData,node_modules --as "Laptop D"
+airbridge send ~/Pictures --only raw,heic --dry-run   # how many files and bytes, sends nothing
+# The receiver checks every file's SHA-256; keep the list as a sha256sum manifest.
+airbridge send Archive/ --to pixel --verify --manifest archive.sha256
+```
+
+`--only` takes `photos`, `videos`, `audio`, `documents` and/or file extensions; filters apply
+to files found inside folders. *Verify contents* in Settings does the same as `--verify` for
+every send. If a send fails or is cancelled, **Resume** in the activity list sends the files
+that did not arrive; the receiver skips files it already has with the same size and date.
+
 **Android**
 
 - **Share from any app**: your devices are right in the share sheet's top row; tap one and it
@@ -335,6 +361,10 @@ input, and it steps aside when the pointer merely passes over it. When a drag ar
 the drag source for the best format (file list, original image bytes, URL, text), and sends it
 through the local API. URLs are downloaded by the service; web pages are sent as links.
 
+On Windows it is an always-on-top WebView2 window showing `ui/edge.html`: a 10-pixel handle
+that opens into the device list while a drag is over it. Files go through the native drop
+handler, text through the page, both to the same local API.
+
 ## Works with LocalSend
 
 The Linux app was tested against **LocalSend's own Rust CLI**, built from the official
@@ -365,7 +395,8 @@ Release runs queue so they cannot choose the same version. Retries reuse the tag
 already attached to that commit. Both app versions are stamped in the build checkout;
 the workflow does not create version-bump commits.
 
-The release contains the Android APK, Windows executable, Linux AppImage and its Ed25519 signature.
+The release contains the Android APK, the Windows installer and executable, and the Linux
+AppImage; the executable and the AppImage carry Ed25519 signatures for in-app updates.
 The repository's `UPDATE_SIGNING_KEY` secret must be configured. To choose a version
 manually, run **Release** from the Actions tab with e.g. `v0.2.0`, or push that tag.
 Leaving the manual version empty chooses the next patch automatically.

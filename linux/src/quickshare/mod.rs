@@ -5,8 +5,10 @@
 //! Only the Wi-Fi LAN medium is implemented: devices find each other with
 //! mDNS and talk over TCP, end-to-end encrypted with UKEY2 + SecureMessage.
 
-// shortcut: no Windows BLE wake-up; open Quick Share Receive until a native beacon exists.
 #[cfg(target_os = "linux")]
+mod ble;
+#[cfg(windows)]
+#[path = "ble_windows.rs"]
 mod ble;
 mod crypto;
 mod inbound;
@@ -45,6 +47,8 @@ pub struct Service {
     fullname: Mutex<Option<String>>,
     stop: CancellationToken,
     wake: watch::Sender<Option<Instant>>,
+    /// Why phones cannot be woken over Bluetooth, once that was tried.
+    pub bluetooth_problem: Mutex<Option<String>>,
 }
 
 impl Service {
@@ -69,6 +73,7 @@ impl Service {
             fullname: Mutex::new(None),
             stop: CancellationToken::new(),
             wake: watch::Sender::new(None),
+            bluetooth_problem: Mutex::new(None),
         });
         service.advertise(&app.settings().alias)?;
         tokio::spawn(accept_loop(app.clone(), listener, service.stop.clone()));
@@ -78,8 +83,11 @@ impl Service {
             }
             Err(err) => tracing::warn!("Cannot look for Quick Share devices: {err}"),
         }
-        #[cfg(target_os = "linux")]
-        tokio::spawn(beacon_loop(service.clone(), service.wake.subscribe()));
+        tokio::spawn(beacon_loop(
+            app.clone(),
+            service.clone(),
+            service.wake.subscribe(),
+        ));
         tracing::info!("Quick Share: visible to Android phones on port {port}");
         Ok(service)
     }
@@ -164,11 +172,35 @@ async fn accept_loop(app: Arc<App>, listener: TcpListener, stop: CancellationTok
     }
 }
 
+/// The "someone nearby is sharing" payload of the Bluetooth wake-up: the
+/// fixed prefix Android looks for, then 10 random bytes.
+fn service_data() -> Vec<u8> {
+    use rand::RngCore;
+    let mut data = vec![
+        0xfc, 0x12, 0x8e, 0x01, 0x42, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    ];
+    let mut salt = [0u8; 10];
+    rand::thread_rng().fill_bytes(&mut salt);
+    data.extend_from_slice(&salt);
+    data
+}
+
 /// Broadcasts the Bluetooth "nearby sharing" advertisement until the wake
 /// deadline passes. Without Bluetooth, phones show up only while their
-/// Quick Share "receive" screen is open.
-#[cfg(target_os = "linux")]
-async fn beacon_loop(service: Arc<Service>, mut wake: watch::Receiver<Option<Instant>>) {
+/// Quick Share "receive" screen is open; the window says so.
+async fn beacon_loop(
+    app: Arc<App>,
+    service: Arc<Service>,
+    mut wake: watch::Receiver<Option<Instant>>,
+) {
+    let report = |problem: Option<String>| {
+        let mut current = service.bluetooth_problem.lock().unwrap();
+        if *current != problem {
+            app.bus
+                .emit("bluetooth", serde_json::json!({ "problem": problem }));
+            *current = problem;
+        }
+    };
     let mut beacon: Option<ble::Beacon> = None;
     let mut retry_after: Option<Instant> = None;
     loop {
@@ -176,13 +208,17 @@ async fn beacon_loop(service: Arc<Service>, mut wake: watch::Receiver<Option<Ins
         let now = Instant::now();
         let active = deadline.is_some_and(|until| until > now);
         if active && beacon.is_none() && retry_after.is_none_or(|t| t <= now) {
-            let created = async { ble::Beacon::new(zbus::Connection::system().await?).await };
-            match created.await {
+            #[cfg(target_os = "linux")]
+            let created = async { ble::Beacon::new(zbus::Connection::system().await?).await }.await;
+            #[cfg(windows)]
+            let created = ble::Beacon::new().await;
+            match created {
                 Ok(created) => beacon = Some(created),
                 Err(err) => {
                     tracing::info!(
                         "Quick Share: cannot wake nearby phones over Bluetooth: {err:#}"
                     );
+                    report(Some(format!("{err:#}")));
                     retry_after = Some(now + Duration::from_secs(300));
                 }
             }
@@ -194,10 +230,14 @@ async fn beacon_loop(service: Arc<Service>, mut wake: watch::Receiver<Option<Ins
                 current.stop().await;
                 Ok(())
             };
-            if let Err(err) = result {
-                tracing::info!("Quick Share: Bluetooth advertisement failed: {err:#}");
-                beacon = None;
-                retry_after = Some(now + Duration::from_secs(60));
+            match result {
+                Ok(()) => report(None),
+                Err(err) => {
+                    tracing::info!("Quick Share: Bluetooth advertisement failed: {err:#}");
+                    report(Some(format!("{err:#}")));
+                    beacon = None;
+                    retry_after = Some(now + Duration::from_secs(60));
+                }
             }
         }
         let sleep = async {

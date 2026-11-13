@@ -60,6 +60,9 @@ pub struct FileState {
     pub path: Option<String>,
     pub done: u64,
     pub status: FileStatus,
+    /// The receiver checked the contents against the sender's SHA-256.
+    #[serde(default)]
+    pub verified: bool,
     #[serde(skip)]
     pub dto: Option<FileDto>,
     #[serde(skip)]
@@ -76,6 +79,7 @@ impl FileState {
             path,
             done: 0,
             status: FileStatus::Queued,
+            verified: false,
             dto: Some(dto),
             token: None,
         }
@@ -102,6 +106,12 @@ pub struct Transfer {
     pub started: Option<f64>,
     pub finished: Option<f64>,
     pub files: Vec<FileState>,
+    /// Outgoing: send a SHA-256 of every file (see `Settings::verify_sends`).
+    #[serde(default)]
+    pub verify: bool,
+    /// Bytes hashed so far while preparing a verified send.
+    #[serde(default)]
+    pub checked: u64,
     #[serde(skip)]
     pub peer_id: String,
     #[serde(skip)]
@@ -125,6 +135,9 @@ pub struct Transfer {
     /// Holds a secret (a Wi‑Fi password): the message is not saved to disk.
     #[serde(skip)]
     pub sensitive: bool,
+    /// Fired when the transfer ends, so uploads waiting for data stop at once.
+    #[serde(skip)]
+    pub ended: tokio_util::sync::CancellationToken,
     #[serde(skip)]
     last_emit: Option<Instant>,
 }
@@ -142,6 +155,8 @@ impl Transfer {
             started: None,
             finished: None,
             files,
+            verify: false,
+            checked: 0,
             peer_id: peer_id.to_string(),
             peer_ip: None,
             session_id: None,
@@ -150,6 +165,7 @@ impl Transfer {
             auto_accepted: false,
             peer_verified: false,
             sensitive: false,
+            ended: Default::default(),
             last_emit: None,
         }
     }
@@ -196,6 +212,14 @@ impl Transfer {
                     if let Some(thumb) = preview.and_then(crate::thumbnail::accept) {
                         json["thumb"] = thumb.into();
                     }
+                }
+            }
+        }
+        // Checksums, so a verified send can be kept as a manifest.
+        if let Some(files) = value["files"].as_array_mut() {
+            for (json, file) in files.iter_mut().zip(&self.files) {
+                if let Some(sha256) = file.dto.as_ref().and_then(|d| d.sha256.as_deref()) {
+                    json["sha256"] = sha256.into();
                 }
             }
         }
@@ -336,6 +360,7 @@ impl Transfers {
         transfer.status = status;
         transfer.error = error;
         transfer.finished = Some(now());
+        transfer.ended.cancel();
         for path in transfer.cleanup.drain(..) {
             let _ = std::fs::remove_file(&path);
             if let Some(parent) = path.parent() {
