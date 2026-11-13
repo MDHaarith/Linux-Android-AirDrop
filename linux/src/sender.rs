@@ -75,26 +75,6 @@ pub fn expand_paths(paths: &[PathBuf]) -> Result<Vec<SendItem>, String> {
     Ok(items)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn missing_paths_are_reported_not_skipped() {
-        let dir = tempfile::tempdir().unwrap();
-        let file = dir.path().join("a.bin");
-        std::fs::write(&file, b"a").unwrap();
-        std::fs::create_dir(dir.path().join("folder")).unwrap();
-        std::fs::write(dir.path().join("folder/b.bin"), b"b").unwrap();
-        let items = expand_paths(&[file.clone(), dir.path().join("folder")]).unwrap();
-        let names: Vec<_> = items.iter().map(|i| i.name.as_str()).collect();
-        assert_eq!(names, ["a.bin", "folder/b.bin"]);
-        let missing = dir.path().join("does-not-exist.bin");
-        let err = expand_paths(&[file, missing, dir.path().join("folder")]).unwrap_err();
-        assert!(err.contains("does-not-exist.bin"), "{err}");
-    }
-}
-
 enum Outcome {
     Done,
     Declined,
@@ -471,4 +451,24 @@ async fn cancel_remote(app: &App, peer: &Peer, session: &str) {
         options,
     )
     .await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn missing_paths_are_reported_not_skipped() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("a.bin");
+        std::fs::write(&file, b"a").unwrap();
+        std::fs::create_dir(dir.path().join("folder")).unwrap();
+        std::fs::write(dir.path().join("folder/b.bin"), b"b").unwrap();
+        let items = expand_paths(&[file.clone(), dir.path().join("folder")]).unwrap();
+        let names: Vec<_> = items.iter().map(|i| i.name.as_str()).collect();
+        assert_eq!(names, ["a.bin", "folder/b.bin"]);
+        let missing = dir.path().join("does-not-exist.bin");
+        let err = expand_paths(&[file, missing, dir.path().join("folder")]).unwrap_err();
+        assert!(err.contains("does-not-exist.bin"), "{err}");
+    }
 }

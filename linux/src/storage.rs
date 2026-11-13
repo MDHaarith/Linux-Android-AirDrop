@@ -575,10 +575,11 @@ mod tests {
             save_stream(&app, &id, &dto, data).await,
             Err(SaveError::Io(_))
         ));
-        let transfers = app.transfers.lock().unwrap();
-        assert_eq!(transfers.get(&id).unwrap().status, Status::Failed);
-        assert!(transfers.active_incoming().is_none());
-        drop(transfers);
+        {
+            let transfers = app.transfers.lock().unwrap();
+            assert_eq!(transfers.get(&id).unwrap().status, Status::Failed);
+            assert!(transfers.active_incoming().is_none());
+        }
 
         // A sender that goes quiet mid-file is stopped as soon as the user cancels.
         let (id, dto) = incoming(&app, "stalled.bin", 8);
