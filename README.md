@@ -189,8 +189,11 @@ For a source build, install Rust with the MSVC toolchain and Visual Studio C++
 build tools, then run `cargo build --release --locked` in `linux/`. The executable
 is `linux/target/release/airbridge.exe`.
 
-Windows currently has no tray icon, native notifications, screen-edge drop zone,
-autostart or self-update. Requests needing attention open the UI; keep the app
+The Update button replaces `airbridge.exe` with the new signed release and restarts it, so
+keep the exe in a folder you can write to (not *Program Files*). Settings and pairings stay.
+
+Windows currently has no tray icon, native notifications, screen-edge drop zone or
+autostart. Requests needing attention open the UI; keep the app
 running while sharing. Quick Share works over Wi-Fi, but has no Bluetooth wake-up:
 open **Quick Share → Receive** on the phone when sending from Windows.
 

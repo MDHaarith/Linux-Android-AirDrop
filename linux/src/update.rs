@@ -1,5 +1,5 @@
 //! In-app updates from versioned releases (every merge to main that passed CI).
-//! Only the AppImage replaces itself; the download must carry
+//! The AppImage and the Windows exe replace themselves; the download must carry
 //! an Ed25519 signature from the release key, bound to its tag so an older
 //! build cannot be replayed as a newer one.
 
@@ -8,45 +8,58 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 
-#[cfg(any(target_os = "linux", test))]
-use anyhow::anyhow;
-use anyhow::{bail, Context, Result};
-#[cfg(any(target_os = "linux", test))]
+use anyhow::{anyhow, bail, Context, Result};
 use ring::signature::{UnparsedPublicKey, ED25519};
 use serde::{Deserialize, Serialize};
 
 use crate::fetch::download;
 
 const REPO: &str = "MDHaarith/Linux-Android-AirDrop";
+#[cfg(not(windows))]
 const ASSET: &str = "airbridge-x86_64.AppImage";
-#[cfg(target_os = "linux")]
+#[cfg(windows)]
+const ASSET: &str = "airbridge.exe";
 const MAX_SIZE: u64 = 512 * 1024 * 1024;
 /// Release signing key; the private half lives only in the repo's `UPDATE_SIGNING_KEY` secret.
-#[cfg(any(target_os = "linux", test))]
 const PUBLIC_KEY: [u8; 32] = [
     0xaa, 0x73, 0xb8, 0xf3, 0x37, 0xfa, 0xca, 0xc6, 0x1a, 0x52, 0x6a, 0x52, 0xd7, 0x19, 0x49, 0x66,
     0x4f, 0x83, 0x99, 0xd8, 0xeb, 0x77, 0x6a, 0xe6, 0x57, 0x4a, 0xe2, 0x78, 0x0a, 0xf0, 0x49, 0x2f,
 ];
 
-/// Set once a new AppImage is in place; `main` relaunches it after shutdown.
+/// Set once a new build is in place; `main` relaunches it after shutdown.
 pub static RESTART: AtomicBool = AtomicBool::new(false);
 
 pub fn current_version() -> &'static str {
     env!("CARGO_PKG_VERSION")
 }
 
-/// The AppImage file we are running from, if any.
+/// The program file an update replaces: the AppImage, or the Windows exe.
 #[cfg(target_os = "linux")]
-pub fn appimage() -> Option<PathBuf> {
+pub fn program() -> Option<PathBuf> {
     std::env::var_os("APPIMAGE")
         .map(PathBuf::from)
         .filter(|p| p.is_absolute())
 }
 
-// shortcut: no Windows self-update; download releases until signed exe replacement is supported.
 #[cfg(windows)]
-pub fn appimage() -> Option<PathBuf> {
-    None
+pub fn program() -> Option<PathBuf> {
+    std::env::current_exe().ok()
+}
+
+/// Where the replaced Windows exe goes: a running exe can be renamed, not deleted.
+#[cfg(windows)]
+fn old_copy(exe: &std::path::Path) -> PathBuf {
+    let mut name = exe.file_name().unwrap_or_default().to_os_string();
+    name.push(".old");
+    exe.with_file_name(name)
+}
+
+/// Removes the exe an update replaced, once it no longer runs.
+#[cfg(windows)]
+pub fn remove_old_copy() {
+    if let Some(exe) = program() {
+        let _ = std::fs::remove_file(old_copy(&exe));
+    }
 }
 
 #[derive(Serialize, Clone)]
@@ -54,10 +67,8 @@ pub struct Available {
     pub tag: String,
     pub page: String,
     #[serde(skip)]
-    #[cfg_attr(windows, allow(dead_code))]
     app_url: String,
     #[serde(skip)]
-    #[cfg_attr(windows, allow(dead_code))]
     sig_url: String,
 }
 
@@ -97,7 +108,7 @@ fn version(tag: &str) -> Option<[u64; 3]> {
     parts.next().is_none().then_some(parsed)
 }
 
-/// The newest stable version that is newer than this one and ships a signed AppImage.
+/// The newest stable version that is newer than this one and ships this platform's program, signed.
 pub async fn check() -> Result<Option<Available>> {
     let url = format!("https://api.github.com/repos/{REPO}/releases?per_page=20");
     let releases: Vec<Release> = serde_json::from_slice(&download(&url, 4 * 1024 * 1024).await?)
@@ -133,7 +144,6 @@ fn newest(releases: Vec<Release>, current: &str) -> Option<Available> {
 }
 
 /// What the signature covers: the file, then a newline and its tag.
-#[cfg(any(target_os = "linux", test))]
 fn verify(data: &[u8], tag: &str, signature: &[u8]) -> Result<()> {
     let mut message = Vec::with_capacity(data.len() + tag.len() + 1);
     message.extend_from_slice(data);
@@ -144,17 +154,21 @@ fn verify(data: &[u8], tag: &str, signature: &[u8]) -> Result<()> {
         .map_err(|_| anyhow!("the update's signature is not valid"))
 }
 
-/// Downloads, verifies and swaps in the new AppImage. Takes effect on restart.
-#[cfg(target_os = "linux")]
+/// Downloads, verifies and swaps in the new build. Takes effect on restart.
 pub async fn install(update: &Available) -> Result<()> {
-    let target = appimage().ok_or_else(|| anyhow!("only the AppImage can update itself"))?;
+    let target = program().ok_or_else(|| anyhow!("only the AppImage can update itself"))?;
     let signature = download(&update.sig_url, 1024).await?;
     let data = download(&update.app_url, MAX_SIZE).await?;
     verify(&data, &update.tag, &signature)?;
+    #[cfg(not(windows))]
     if !data.starts_with(b"\x7fELF") {
         bail!("the update is not a Linux program");
     }
-    let dir = target.parent().context("AppImage has no folder")?;
+    #[cfg(windows)]
+    if !data.starts_with(b"MZ") {
+        bail!("the update is not a Windows program");
+    }
+    let dir = target.parent().context("the program has no folder")?;
     let temp = dir.join(format!(".{ASSET}.update"));
     let written = (|| -> std::io::Result<()> {
         use std::io::Write;
@@ -164,10 +178,11 @@ pub async fn install(update: &Available) -> Result<()> {
             .truncate(true)
             .open(&temp)?;
         file.write_all(&data)?;
+        #[cfg(target_os = "linux")]
         file.set_permissions(std::fs::Permissions::from_mode(0o755))?;
         file.sync_all()?;
-        // The running copy keeps its open inode, so replacing the file is safe.
-        std::fs::rename(&temp, &target)
+        drop(file);
+        replace(&temp, &target)
     })();
     if let Err(err) = written {
         let _ = std::fs::remove_file(&temp);
@@ -176,9 +191,21 @@ pub async fn install(update: &Available) -> Result<()> {
     Ok(())
 }
 
+/// The running copy keeps its open inode, so replacing the file is safe.
+#[cfg(not(windows))]
+fn replace(new: &std::path::Path, target: &std::path::Path) -> std::io::Result<()> {
+    std::fs::rename(new, target)
+}
+
+/// Windows cannot overwrite a running exe, but can rename it out of the way.
 #[cfg(windows)]
-pub async fn install(_update: &Available) -> Result<()> {
-    bail!("Download the Windows executable from the releases page")
+fn replace(new: &std::path::Path, target: &std::path::Path) -> std::io::Result<()> {
+    let old = old_copy(target);
+    let _ = std::fs::remove_file(&old);
+    std::fs::rename(target, &old)?;
+    std::fs::rename(new, target).inspect_err(|_| {
+        let _ = std::fs::rename(&old, target);
+    })
 }
 
 #[cfg(test)]
@@ -203,6 +230,19 @@ mod tests {
         assert!(verify(data, "main-1", &[0; 64]).is_err());
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn running_exe_is_moved_aside_for_the_update() {
+        let dir = tempfile::tempdir().unwrap();
+        let (exe, new) = (dir.path().join("airbridge.exe"), dir.path().join("new"));
+        std::fs::write(&exe, b"MZ old").unwrap();
+        std::fs::write(&new, b"MZ new").unwrap();
+        let _running = std::fs::File::open(&exe).unwrap();
+        replace(&new, &exe).unwrap();
+        assert_eq!(std::fs::read(&exe).unwrap(), b"MZ new");
+        assert_eq!(std::fs::read(old_copy(&exe)).unwrap(), b"MZ old");
+    }
+
     #[test]
     fn picks_the_newest_signed_stable_version() {
         let release = |tag: &str, names: &[&str]| Release {
@@ -218,7 +258,8 @@ mod tests {
                 })
                 .collect(),
         };
-        let signed = [ASSET, "airbridge-x86_64.AppImage.sig"];
+        let sig = format!("{ASSET}.sig");
+        let signed = [ASSET, sig.as_str()];
         let releases = || {
             vec![
                 release("v9.0.0", &[ASSET]), // unsigned: skipped

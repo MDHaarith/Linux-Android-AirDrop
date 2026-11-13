@@ -190,16 +190,22 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     };
-    #[cfg(target_os = "linux")]
     if update::RESTART.load(std::sync::atomic::Ordering::Relaxed) {
         // Close every socket first so the new version can take the ports.
         runtime.shutdown_timeout(Duration::from_secs(3));
-        if let Some(appimage) = update::appimage() {
-            use std::os::unix::process::CommandExt;
-            if let Err(err) = std::process::Command::new(appimage)
-                .process_group(0)
-                .spawn()
+        if let Some(program) = update::program() {
+            let mut command = std::process::Command::new(program);
+            #[cfg(unix)]
             {
+                use std::os::unix::process::CommandExt;
+                command.process_group(0);
+            }
+            #[cfg(windows)]
+            {
+                use std::os::windows::process::CommandExt;
+                command.creation_flags(0x08000000); // CREATE_NO_WINDOW
+            }
+            if let Err(err) = command.spawn() {
                 eprintln!("airbridge: could not restart after the update: {err}");
             }
         }
@@ -353,6 +359,8 @@ async fn serve(open_window: bool) -> Result<ExitCode> {
         bail!("another AirBridge service is starting with this profile");
     };
 
+    #[cfg(windows)]
+    update::remove_old_copy();
     let app = App::new()?;
     let _ = std::fs::remove_dir_all(config::cache_dir().join("staging"));
     let settings = app.settings().clone();
