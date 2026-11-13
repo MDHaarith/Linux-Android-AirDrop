@@ -191,8 +191,7 @@ is `linux/target/release/airbridge.exe`.
 Windows currently has no tray icon, native notifications, screen-edge drop zone,
 autostart or self-update. Requests needing attention open the UI; keep the app
 running while sharing. Quick Share works over Wi-Fi, but has no Bluetooth wake-up:
-open **Quick Share → Receive** on the phone when sending from Windows. Free disk
-space is not checked before receiving.
+open **Quick Share → Receive** on the phone when sending from Windows.
 
 ### Android (10 or newer)
 

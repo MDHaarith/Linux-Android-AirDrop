@@ -261,9 +261,30 @@ pub fn free_space(path: &Path) -> Option<u64> {
 }
 
 #[cfg(windows)]
-pub fn free_space(_path: &Path) -> Option<u64> {
-    // shortcut: no std disk-space API; add a native query when preflight space checks are needed.
-    None
+pub fn free_space(path: &Path) -> Option<u64> {
+    use std::os::windows::ffi::OsStrExt;
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetDiskFreeSpaceExW(
+            directory: *const u16,
+            free_to_caller: *mut u64,
+            total: *mut u64,
+            total_free: *mut u64,
+        ) -> i32;
+    }
+    let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+    let mut free = 0u64;
+    // SAFETY: `wide` is NUL-terminated and outlives the call; the API accepts
+    // null for the totals we do not need. Works for other drives and UNC shares.
+    let ok = unsafe {
+        GetDiskFreeSpaceExW(
+            wide.as_ptr(),
+            &mut free,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        )
+    };
+    (ok != 0).then_some(free)
 }
 
 /// Cleans up after an upload that did not complete (also on client disconnect).
@@ -538,6 +559,11 @@ mod tests {
                     .count()
             })
             .unwrap_or(0)
+    }
+
+    #[test]
+    fn free_space_is_known_before_receiving() {
+        assert!(free_space(&std::env::temp_dir()).is_some_and(|free| free > 0));
     }
 
     #[test]
