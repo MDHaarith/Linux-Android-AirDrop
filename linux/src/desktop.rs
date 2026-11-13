@@ -362,6 +362,15 @@ pub async fn copy_text(text: &str) -> bool {
     false
 }
 
+/// Shown when `read_clipboard` fails (wl-paste also fails on an empty clipboard).
+#[cfg(target_os = "linux")]
+pub const CLIPBOARD_UNREADABLE: &str =
+    "Could not read the clipboard: it is empty, or wl-clipboard, xclip or xsel is not installed";
+#[cfg(windows)]
+pub const CLIPBOARD_UNREADABLE: &str =
+    "Could not read the clipboard: Windows PowerShell is unavailable or another app is using the clipboard";
+
+/// The clipboard text; None if it could not be read.
 pub async fn read_clipboard() -> Option<String> {
     for cmd in clipboard_commands(false) {
         let output = tokio::time::timeout(

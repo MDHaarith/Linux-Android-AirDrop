@@ -274,8 +274,10 @@ struct PeerRequest {
 }
 
 async fn send_clipboard(State(app): State<Arc<App>>, Json(request): Json<PeerRequest>) -> Response {
-    let Some(text) = desktop::read_clipboard().await.filter(|t| !t.is_empty()) else {
-        return bad_request("The clipboard is empty (or wl-paste/xclip is not installed)");
+    let text = match desktop::read_clipboard().await {
+        Some(text) if !text.is_empty() => text,
+        Some(_) => return bad_request("The clipboard is empty"),
+        None => return bad_request(desktop::CLIPBOARD_UNREADABLE),
     };
     match app.send_text(&request.peer, text, None) {
         Ok(id) => Json(json!({ "id": id })).into_response(),
