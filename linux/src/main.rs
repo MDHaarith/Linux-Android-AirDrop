@@ -289,15 +289,47 @@ pub fn stop_quick_share(app: &App) {
     }
 }
 
+/// Held by the service for its whole life, so only one service owns a profile
+/// (its identity, settings and instance file). The OS releases it when the
+/// process ends, even after a crash. None: another service holds it.
+fn lock_profile() -> Result<Option<std::fs::File>> {
+    let dir = config::config_dir();
+    std::fs::create_dir_all(&dir)?;
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(dir.join("service.lock"))?;
+    match file.try_lock() {
+        Ok(()) => Ok(Some(file)),
+        Err(std::fs::TryLockError::WouldBlock) => Ok(None),
+        Err(std::fs::TryLockError::Error(err)) => Err(err.into()),
+    }
+}
+
+async fn already_running(open_window: bool) -> Result<ExitCode> {
+    if open_window {
+        api(Method::POST, "/api/show", None).await?;
+    } else {
+        println!("AirBridge is already running.");
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
 async fn serve(open_window: bool) -> Result<ExitCode> {
     if running_instance().await.is_some() {
-        if open_window {
-            api(Method::POST, "/api/show", None).await?;
-        } else {
-            println!("AirBridge is already running.");
-        }
-        return Ok(ExitCode::SUCCESS);
+        return already_running(open_window).await;
     }
+    let Some(_profile_lock) = lock_profile()? else {
+        // Launched at the same moment as another service: let that one finish starting.
+        for _ in 0..100 {
+            tokio::time::sleep(Duration::from_millis(150)).await;
+            if running_instance().await.is_some() {
+                return already_running(open_window).await;
+            }
+        }
+        bail!("another AirBridge service is starting with this profile");
+    };
 
     let app = App::new()?;
     let _ = std::fs::remove_dir_all(config::cache_dir().join("staging"));
