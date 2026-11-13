@@ -144,6 +144,9 @@ fn start(app: &Arc<App>, transfer: Transfer, peer: Peer, pin: Option<String>) ->
         app.unregister_cancel(&transfer_id);
         let cancelled_session = {
             let mut transfers = app.transfers.lock().unwrap();
+            let remote = transfers
+                .get(&transfer_id)
+                .and_then(|t| t.remote_session_id.clone());
             match outcome {
                 Some(Outcome::Done) => {
                     if let Some(t) = transfers.get_mut(&transfer_id) {
@@ -164,14 +167,13 @@ fn start(app: &Arc<App>, transfer: Transfer, peer: Peer, pin: Option<String>) ->
                     transfers.finish(&transfer_id, Status::Declined, Some("Declined".into()));
                     None
                 }
+                // The receiver accepted: end its session too, or it stays busy
+                // waiting for files that will never come.
                 Some(Outcome::Failed(error)) => {
                     transfers.finish(&transfer_id, Status::Failed, Some(error));
-                    None
+                    remote
                 }
                 None => {
-                    let remote = transfers
-                        .get(&transfer_id)
-                        .and_then(|t| t.remote_session_id.clone());
                     let reason = transfers.get(&transfer_id).and_then(|t| t.error.clone());
                     transfers.finish(
                         &transfer_id,
@@ -362,9 +364,16 @@ async fn upload(
             async move { Ok(Bytes::from(text)) },
         )),
         (None, Some(path)) => {
-            let file = tokio::fs::File::open(&path)
-                .await
-                .map_err(|e| Outcome::Failed(format!("{path}: {e}")))?;
+            let file = match tokio::fs::File::open(&path).await {
+                Ok(file) => file,
+                Err(e) => {
+                    let mut transfers = app.transfers.lock().unwrap();
+                    if let Some(f) = transfers.get_mut(id).and_then(|t| t.file_mut(file_id)) {
+                        f.status = FileStatus::Failed;
+                    }
+                    return Err(Outcome::Failed(format!("{path}: {e}")));
+                }
+            };
             Box::pin(ReaderStream::with_capacity(file, CHUNK))
         }
         (None, None) => return Err(Outcome::Failed("No data".into())),
