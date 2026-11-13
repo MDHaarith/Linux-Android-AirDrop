@@ -7,7 +7,6 @@
 use std::collections::HashMap;
 
 use anyhow::{anyhow, bail, Result};
-use rand::RngCore;
 use zbus::names::OwnedInterfaceName;
 use zbus::zvariant::{ObjectPath, OwnedObjectPath, OwnedValue, Value};
 use zbus::Connection;
@@ -15,17 +14,6 @@ use zbus::Connection;
 const SERVICE_UUID: &str = "0000fe2c-0000-1000-8000-00805f9b34fb";
 const PATH: &str = "/io/github/mdhaarith/airbridge/quickshare";
 const ADVERTISING_MANAGER: &str = "org.bluez.LEAdvertisingManager1";
-
-/// The fixed prefix Android looks for, then 10 random bytes.
-pub fn service_data() -> Vec<u8> {
-    let mut data = vec![
-        0xfc, 0x12, 0x8e, 0x01, 0x42, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    ];
-    let mut salt = [0u8; 10];
-    rand::thread_rng().fill_bytes(&mut salt);
-    data.extend_from_slice(&salt);
-    data
-}
 
 struct Advertisement {
     data: Vec<u8>,
@@ -132,7 +120,7 @@ impl Beacon {
             .at(
                 &path,
                 Advertisement {
-                    data: service_data(),
+                    data: super::service_data(),
                 },
             )
             .await?;

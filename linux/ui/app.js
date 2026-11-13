@@ -132,6 +132,7 @@ function handle({ event, data }) {
     case "staged": return addStagedPaths(data.files || []);
     case "scan": return setScanning(data.running, data.found);
     case "focus": window.ipc?.postMessage("focus"); return flashMe();
+    case "bluetooth": state.bluetoothProblem = data.problem || null; return renderEmpty();
     case "history-cleared":
       for (const [id, t] of state.transfers) if (isFinal(t)) state.transfers.delete(id);
       return renderActivity(true);
@@ -145,6 +146,7 @@ function loadState(data) {
   state.companion = data.companion || {};
   state.multicast = data.multicast;
   state.features = data.features || {};
+  state.bluetoothProblem = data.bluetoothProblem || null;
   applyTheme(state.settings.theme);
   renderMe();
   const ids = new Set((data.peers || []).map((p) => p.id));
@@ -235,6 +237,11 @@ function layoutPeers() {
 function renderEmpty() {
   const empty = state.peers.size === 0;
   $("empty").hidden = !empty;
+  const bluetooth = $("emptyBluetooth");
+  bluetooth.hidden = !state.bluetoothProblem || state.settings.quickShare === false;
+  bluetooth.textContent = state.bluetoothProblem
+    ? `Phones can't be woken over Bluetooth: ${state.bluetoothProblem}. On an Android phone, open Quick Share → Receive to show it here.`
+    : "";
   $("hint").hidden = empty || state.staged.length > 0;
   renderDropTarget();
 }

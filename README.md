@@ -43,8 +43,8 @@ viewer, several files in their folder, a link in the browser).
 **Share from any Android phone, no app needed.** AirBridge shows up in Android's built-in
 *Quick Share* sheet like any Chromebook or Windows PC. Pick it, check that the four-digit PIN
 matches the one on your computer, accept, done. Links open with one click from the
-notification. When you send *to* a phone, AirBridge wakes nearby phones over Bluetooth (BlueZ)
-so they appear as targets.
+notification. When you send *to* a phone, AirBridge wakes nearby phones over Bluetooth (BlueZ on
+Linux, the built-in Bluetooth LE stack on Windows) so they appear as targets.
 
 **Drag to the edge of the screen.** Drag an image out of a web page, files out of Dolphin, or a
 piece of text to the right edge of the screen. A card slides out with your devices. Drop it on
@@ -200,8 +200,9 @@ keep the exe in a folder you can write to (not *Program Files*; the installer us
 `AppData\Local\Programs`). Settings and pairings stay.
 
 Windows has no native notifications with Accept / Decline or screen-edge drop zone yet:
-requests needing attention open the AirBridge window. Quick Share works over Wi-Fi, but has
-no Bluetooth wake-up: open **Quick Share → Receive** on the phone when sending from Windows.
+requests needing attention open the AirBridge window. Quick Share wakes nearby phones over
+Bluetooth when the PC's adapter can advertise; otherwise the window says why, and you open
+**Quick Share → Receive** on the phone.
 
 ### Android (10 or newer)
 

@@ -249,6 +249,8 @@ impl App {
                 "desktopNotifications": cfg!(target_os = "linux"),
                 "edgeDrop": cfg!(all(target_os = "linux", feature = "edge")),
             },
+            "bluetoothProblem": self.quick_share.lock().unwrap().as_ref()
+                .and_then(|s| s.bluetooth_problem.lock().unwrap().clone()),
             "multicast": discovery.is_some_and(|d| d.multicast_ok()),
             "scanning": discovery.is_some_and(|d| d.scanning.load(Ordering::Relaxed)),
         })
