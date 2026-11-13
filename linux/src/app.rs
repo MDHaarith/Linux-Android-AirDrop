@@ -24,7 +24,7 @@ use crate::peers::{Peer, PeerKind, Registry};
 use crate::protocol::{DeviceInfo, PROTOCOL_VERSION};
 use crate::quickshare;
 use crate::sender::{self, SendItem};
-use crate::storage::Reservations;
+use crate::storage::{Partials, Reservations};
 use crate::transfers::{Direction, Status, Transfers};
 
 const DECISION_TIMEOUT: Duration = Duration::from_secs(300);
@@ -46,6 +46,8 @@ pub struct App {
     pub notifier: Notifier,
     pub companion: Hub,
     pub reservations: Reservations,
+    /// Partial downloads, so a crash leaves none behind after the next start.
+    pub partials: Partials,
     /// Files dropped into the window, copied to the cache until sent.
     pub staged: Mutex<HashMap<String, SendItem>>,
     /// Wrong PINs: a few per address, and a cap for everyone together so
@@ -89,6 +91,7 @@ impl App {
             notifier: Notifier::default(),
             companion: Hub::default(),
             reservations: Reservations::default(),
+            partials: Partials::new(config::data_dir().join("partials.json")),
             staged: Mutex::new(HashMap::new()),
             pin_failures: RateLimit::new(5, 20, Duration::from_secs(600)),
             requests: RateLimit::new(20, 120, Duration::from_secs(60)),

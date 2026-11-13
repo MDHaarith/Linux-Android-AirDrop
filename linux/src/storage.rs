@@ -70,6 +70,61 @@ impl Reservations {
     }
 }
 
+/// Partial files being written, also listed on disk so the ones a crash left
+/// behind are removed at the next start. Only files this profile created are
+/// ever listed, so another instance's uploads are never touched.
+pub struct Partials {
+    list: PathBuf,
+    active: Mutex<HashSet<PathBuf>>,
+}
+
+impl Partials {
+    /// Removes what the previous run left behind. Only the service that owns
+    /// the profile (see `lock_profile`) may call this.
+    pub fn new(list: PathBuf) -> Self {
+        let leftovers: Vec<PathBuf> = std::fs::read(&list)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+            .unwrap_or_default();
+        for part in leftovers {
+            let ours = part
+                .file_name()
+                .is_some_and(|n| n.to_string_lossy().ends_with(".airbridge-part"));
+            if ours && std::fs::remove_file(&part).is_ok() {
+                tracing::info!("Removed unfinished download {}", part.display());
+            }
+        }
+        let _ = std::fs::remove_file(&list);
+        Self {
+            list,
+            active: Mutex::default(),
+        }
+    }
+
+    fn change(&self, change: impl FnOnce(&mut HashSet<PathBuf>)) {
+        let mut active = self.active.lock().unwrap();
+        change(&mut active);
+        let saved = serde_json::to_vec(&*active)
+            .map_err(std::io::Error::from)
+            .and_then(|bytes| crate::config::write_private(&self.list, &bytes));
+        if let Err(err) = saved {
+            tracing::warn!("Could not record partial downloads: {err}");
+        }
+    }
+
+    fn add(&self, part: &Path) {
+        self.change(|active| {
+            active.insert(part.to_path_buf());
+        });
+    }
+
+    fn remove(&self, part: &Path) {
+        self.change(|active| {
+            active.remove(part);
+        });
+    }
+}
+
 /// A sender that goes quiet this long mid-file is dropped.
 const STALL_TIMEOUT: Duration = Duration::from_secs(60);
 
@@ -229,11 +284,14 @@ impl Drop for UploadGuard {
         if let Some(target) = &self.target {
             self.app.reservations.release(target);
         }
+        if let Some(part) = &self.part {
+            if !self.committed {
+                let _ = std::fs::remove_file(part);
+            }
+            self.app.partials.remove(part);
+        }
         if self.committed {
             return;
-        }
-        if let Some(part) = &self.part {
-            let _ = std::fs::remove_file(part);
         }
         {
             let mut transfers = self.app.transfers.lock().unwrap();
@@ -316,7 +374,15 @@ where
     #[cfg(windows)]
     let part = part.with_extension(format!("{}.airbridge-part", uuid::Uuid::new_v4().simple()));
 
-    let mut file = tokio::fs::File::from_std(create_part(&part)?);
+    // Recorded before it exists, so even a crash right after leaves no orphan.
+    app.partials.add(&part);
+    let mut file = match create_part(&part) {
+        Ok(file) => tokio::fs::File::from_std(file),
+        Err(err) => {
+            app.partials.remove(&part);
+            return Err(err.into());
+        }
+    };
     guard.part = Some(part.clone());
     let mut hasher = dto.sha256.as_ref().map(|_| Sha256::new());
     let mut received = 0u64;
@@ -472,6 +538,26 @@ mod tests {
                     .count()
             })
             .unwrap_or(0)
+    }
+
+    #[test]
+    fn partials_left_by_a_crash_are_removed_at_the_next_start() {
+        let dir = tempfile::tempdir().unwrap();
+        let list = dir.path().join("partials.json");
+        let part = dir.path().join(".a.bin.airbridge-part");
+        let finished = dir.path().join(".b.bin.airbridge-part");
+        let not_a_part = dir.path().join("keep.bin");
+        let partials = Partials::new(list.clone());
+        for path in [&part, &finished, &not_a_part] {
+            std::fs::write(path, b"x").unwrap();
+            partials.add(path);
+        }
+        partials.remove(&finished);
+        drop(partials); // the process dies without cleaning up
+        Partials::new(list.clone());
+        assert!(!part.exists());
+        assert!(finished.exists() && not_a_part.exists());
+        assert!(!list.exists());
     }
 
     #[tokio::test]
