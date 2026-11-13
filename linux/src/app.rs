@@ -110,19 +110,23 @@ impl App {
         self.settings.read().unwrap()
     }
 
-    pub fn update_settings<R>(&self, change: impl FnOnce(&mut Settings) -> R) -> R {
+    /// Changes and saves the settings. If they cannot be saved, nothing
+    /// changes: the app never shows a setting that would be lost on restart.
+    pub fn update_settings<R>(&self, change: impl FnOnce(&mut Settings) -> R) -> Result<R, String> {
         let mut settings = self.settings.write().unwrap();
         let before = settings.clone();
         let result = change(&mut settings);
         if *settings == before {
-            return result;
+            return Ok(result);
         }
         if let Err(err) = settings.save() {
             tracing::warn!("Could not save settings: {err}");
+            *settings = before;
+            return Err(format!("Could not save settings: {err}"));
         }
         drop(settings);
         self.bus.emit("settings", self.settings().public_json());
-        result
+        Ok(result)
     }
 
     /// How we describe ourselves to other devices.
@@ -457,14 +461,13 @@ impl App {
         }
     }
 
-    pub fn set_trusted(&self, peer_id: &str, trusted: bool) {
+    pub fn set_trusted(&self, peer_id: &str, trusted: bool) -> Result<(), String> {
         // Only devices with a provable id (a certificate) can be trusted:
         // Quick Share senders and browsers are known by address or by a
         // pairing key that travels in the clear.
         if trusted && !crate::protocol::is_localsend_id(peer_id) {
-            return;
+            return Ok(());
         }
-        self.registry.set_trusted(peer_id, trusted);
         let peer = self.registry.get(peer_id);
         self.update_settings(|s| {
             s.set_trusted(peer_id, trusted);
@@ -473,7 +476,9 @@ impl App {
                     s.remember_device(peer_id, &peer.info.alias, peer.info.port, [ip]);
                 }
             }
-        });
+        })?;
+        self.registry.set_trusted(peer_id, trusted);
+        Ok(())
     }
 
     /// TLS-confirmed LocalSend addresses can follow a trusted device between networks.
@@ -483,7 +488,8 @@ impl App {
             .upsert(info, ip, PeerKind::LocalSend, verified);
         if verified && self.registry.is_trusted(peer.id()) {
             if let IpAddr::V4(ip) = net::canonical(peer.ip) {
-                self.update_settings(|s| {
+                // Best effort: the address is only a hint for reaching it later.
+                let _ = self.update_settings(|s| {
                     s.remember_device(peer.id(), &peer.info.alias, peer.info.port, [ip]);
                 });
             }
@@ -771,6 +777,20 @@ pub fn test_app(settings: &str) -> (tempfile::TempDir, Arc<App>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn settings_that_cannot_be_saved_are_not_kept() {
+        let (home, app) =
+            test_app(r#"{"alias":"Before","notifications":false,"quickShare":false}"#);
+        let path = home.path().join("config/settings.json");
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir_all(path.join("blocked")).unwrap();
+        // The settings path is read from the profile variable when saving.
+        let _env = TEST_ENV.lock().unwrap_or_else(|e| e.into_inner());
+        std::env::set_var("AIRBRIDGE_HOME", home.path());
+        assert!(app.update_settings(|s| s.alias = "After".into()).is_err());
+        assert_eq!(app.settings().alias, "Before");
+    }
 
     #[test]
     fn share_phrases_read_like_airdrop() {

@@ -37,6 +37,14 @@ fn bad_request(message: impl Into<String>) -> Response {
         .into_response()
 }
 
+fn server_error(message: impl Into<String>) -> Response {
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        Json(json!({ "message": message.into() })),
+    )
+        .into_response()
+}
+
 pub fn router(app: Arc<App>) -> Router {
     let api = Router::new()
         .route("/ping", get(ping))
@@ -482,8 +490,9 @@ async fn transfer_action(
     };
     let ok = match action.as_str() {
         "accept" => {
+            // Still accept if trusting cannot be saved (update_settings logs it).
             if request.trust {
-                app.set_trusted(&peer_id, true);
+                let _ = app.set_trusted(&peer_id, true);
             }
             app.decide(&id, true)
         }
@@ -574,9 +583,11 @@ async fn trust(
     State(app): State<Arc<App>>,
     UrlPath(id): UrlPath<String>,
     Json(request): Json<TrustRequest>,
-) -> StatusCode {
-    app.set_trusted(&id, request.trusted);
-    StatusCode::NO_CONTENT
+) -> Response {
+    match app.set_trusted(&id, request.trusted) {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(message) => server_error(message),
+    }
 }
 
 // ---------------------------------------------------------------- settings
@@ -585,7 +596,10 @@ async fn update_settings(State(app): State<Arc<App>>, Json(changes): Json<Value>
     if let Err(message) = config::check_changes(&changes) {
         return bad_request(message);
     }
-    let changed = app.update_settings(|s| s.apply(&changes));
+    let changed = match app.update_settings(|s| s.apply(&changes)) {
+        Ok(changed) => changed,
+        Err(message) => return server_error(message),
+    };
     if changed.contains(&"alias") {
         if let Some(discovery) = app.discovery.get().cloned() {
             let app = app.clone();
@@ -612,12 +626,14 @@ async fn update_settings(State(app): State<Arc<App>>, Json(changes): Json<Value>
     Json(app.settings().public_json()).into_response()
 }
 
-async fn reset_pairing(State(app): State<Arc<App>>) -> Json<Value> {
-    app.update_settings(|s| s.regenerate_web_key());
+async fn reset_pairing(State(app): State<Arc<App>>) -> Response {
+    if let Err(message) = app.update_settings(|s| s.regenerate_web_key()) {
+        return server_error(message);
+    }
     app.companion.disconnect_all();
     let url = app.companion_url();
     app.bus.emit("companion", json!({ "url": url }));
-    Json(json!({ "url": url }))
+    Json(json!({ "url": url })).into_response()
 }
 
 async fn qr(State(app): State<Arc<App>>) -> Response {

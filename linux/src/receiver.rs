@@ -261,7 +261,9 @@ async fn pair(
     if !app.redeem_pair_token(token) {
         return error(403, "This QR code has expired");
     }
-    app.set_trusted(&id, true);
+    if app.set_trusted(&id, true).is_err() {
+        return error(500, "Could not save the pairing");
+    }
     let peer = app.registry.get(&id);
     let request = request.unwrap_or_else(|| PairRequest {
         alias: peer
@@ -276,7 +278,8 @@ async fn pair(
         IpAddr::V4(ip) => Some(ip),
         _ => None,
     };
-    app.update_settings(|s| {
+    // Trust is saved; the addresses are only hints for reaching it later.
+    let _ = app.update_settings(|s| {
         s.remember_device(
             &id,
             &request.alias,

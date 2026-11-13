@@ -998,10 +998,14 @@ function renameDevice() {
     input.select();
     const save = async () => {
       closeModal();
-      const s = await api("/settings", { body: { alias: input.value } });
-      state.settings = s;
-      renderMe();
-      toast("Renamed", `Nearby devices now see “${s.alias}”`, "ok");
+      try {
+        const s = await api("/settings", { body: { alias: input.value } });
+        state.settings = s;
+        renderMe();
+        toast("Renamed", `Nearby devices now see “${s.alias}”`, "ok");
+      } catch (err) {
+        toast("Couldn't rename", err.message, "bad");
+      }
     };
     card.querySelector("#renameSave").addEventListener("click", save);
     card.querySelector("[data-close]").addEventListener("click", closeModal);
