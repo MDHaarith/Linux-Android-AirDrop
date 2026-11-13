@@ -62,6 +62,8 @@ jobs:
         with:
           workspaces: linux
       - run: cargo build --release --locked
+      - run: ../.github/scripts/check_windows_exe.ps1
+        shell: pwsh
       - run: cargo test --locked
       - uses: actions/upload-artifact@v6
         with:

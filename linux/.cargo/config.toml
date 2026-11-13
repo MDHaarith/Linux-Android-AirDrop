@@ -1,0 +1,4 @@
+# Link the C runtime into airbridge.exe, so it starts on Windows installs
+# without the Visual C++ Redistributable (otherwise: 0xC0000135, no window).
+[target.'cfg(all(windows, target_env = "msvc"))']
+rustflags = ["-C", "target-feature=+crt-static"]

@@ -117,6 +117,10 @@ jobs:
       - name: Windows binary
         working-directory: linux
         run: cargo build --release --locked
+      - name: Check it starts without the Visual C++ runtime and has its icon
+        working-directory: linux
+        shell: pwsh
+        run: ../.github/scripts/check_windows_exe.ps1
       - uses: actions/upload-artifact@v6
         with:
           name: release-windows-x86_64
