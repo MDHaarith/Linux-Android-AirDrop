@@ -1,5 +1,6 @@
 /* AirBridge desktop window. Talks to the local service over /api (cookie auth). */
 "use strict";
+window.airbridgeStarted = true; // parsed fine: compat.js keeps its warning hidden
 
 const { icons, deviceIcon, fileIcon, sharePhrase, bytes, ago, esc, el, toast, center } = AB;
 const $ = (id) => document.getElementById(id);

@@ -18,6 +18,7 @@ assets! {
     "index.html" => "text/html; charset=utf-8",
     "app.css" => "text/css; charset=utf-8",
     "app.js" => "text/javascript; charset=utf-8",
+    "compat.js" => "text/javascript; charset=utf-8",
     "companion.html" => "text/html; charset=utf-8",
     "companion.css" => "text/css; charset=utf-8",
     "companion.js" => "text/javascript; charset=utf-8",

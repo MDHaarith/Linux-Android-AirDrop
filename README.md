@@ -181,7 +181,8 @@ Optional tools: `wl-clipboard` (Wayland) or `xclip`/`xsel` (X11) for clipboard s
 Download `airbridge.exe` from the newest
 [release](https://github.com/MDHaarith/Linux-Android-AirDrop/releases) and run it.
 Allow AirBridge through Windows Firewall on **private networks**. The UI opens in
-an Edge app window (or your default browser); pair the Android app by QR. Remembered
+an Edge app window (or your default browser, which must be a current Edge, Chrome or
+Firefox; the legacy EdgeHTML Edge of older Windows 10 cannot run it); pair the Android app by QR. Remembered
 addresses and Tailscale reconnect work the same way as on Linux.
 
 For a source build, install Rust with the MSVC toolchain and Visual Studio C++
