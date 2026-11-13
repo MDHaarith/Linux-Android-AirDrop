@@ -31,6 +31,9 @@ jobs:
       - name: Release version tests
         run: python3 -m unittest discover -s ../.github/scripts -p 'test_*.py'
       - run: cargo fmt --check
+      - name: UI TypeScript compiles and matches the committed JavaScript
+        working-directory: linux/ui
+        run: npm ci --no-audit --no-fund && npm run build && git diff --exit-code -- '*.js'
       - run: node tools/test-desktop-drop.js
       - run: cargo clippy --all-targets --locked -- -D warnings
       - run: cargo clippy --all-targets --locked --features webview,edge -- -D warnings

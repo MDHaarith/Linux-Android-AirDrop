@@ -428,7 +428,9 @@ Things worth knowing:
   `Platform` interface: storage, clipboard and the multicast lock. So the same Kotlin code runs in
   JVM tests against the Rust binary. The interop test covers discovery, files and folders both
   ways, text and clipboard, auto-accept for trusted devices, and declining.
-- **The desktop UI** is plain HTML/CSS/JS in `linux/ui/`, compiled into the binary. The native
+- **The desktop UI** is HTML/CSS and TypeScript in `linux/ui/` (sources in `ui/src/`), compiled into
+  the binary. The compiled `.js` files are committed, so building the Rust app needs no Node; after
+  editing a `.ts` file run `npm ci && npm run build` in `linux/ui/` (CI checks they match). The native
   window (`--features webview`) uses WebKitGTK through `wry`. Without it, the same UI opens as a
   Chromium app window.
 

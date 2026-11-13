@@ -1,0 +1,11 @@
+{
+  "private": true,
+  "description": "AirBridge UI: TypeScript sources in src/, compiled next to the HTML.",
+  "scripts": {
+    "build": "tsc -p tsconfig.app.json && tsc -p tsconfig.edge.json && tsc -p tsconfig.companion.json",
+    "check": "tsc --noEmit -p tsconfig.app.json && tsc --noEmit -p tsconfig.edge.json && tsc --noEmit -p tsconfig.companion.json"
+  },
+  "devDependencies": {
+    "typescript": "5.9.3"
+  }
+}
