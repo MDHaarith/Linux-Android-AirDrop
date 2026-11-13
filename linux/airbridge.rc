@@ -1,0 +1,3 @@
+// Windows resources of airbridge.exe. The lowest id is the icon Explorer,
+// shortcuts and the taskbar show. Paths are relative to this folder.
+1 ICON "packaging/windows/airbridge.ico"
