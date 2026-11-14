@@ -179,7 +179,20 @@ jobs:
     timeout-minutes: 10
     permissions:
       contents: write
+    env:
+      PUBLIC_REPO: MDHaarith/Airbridge
+      ASSETS: |
+        airbridge-x86_64.AppImage
+        airbridge-x86_64.AppImage.sig
+        airbridge-android.apk
+        airbridge.exe
+        airbridge.exe.sig
+        airbridge-setup.exe
     steps:
+      - name: Check the public release token
+        env:
+          TOKEN: ${{ secrets.AIRBRIDGE_RELEASE_TOKEN }}
+        run: '[ -n "$TOKEN" ] || { echo "::error::AIRBRIDGE_RELEASE_TOKEN secret is missing; cannot publish to $PUBLIC_REPO"; exit 1; }'
       - uses: actions/download-artifact@v8
         with:
           pattern: release-*
@@ -204,6 +217,20 @@ jobs:
             openssl pkeyutl -sign -rawin -inkey "$RUNNER_TEMP/key.pem" -in "$RUNNER_TEMP/message" -out "$asset.sig"
             test "$(stat -c %s "$asset.sig")" -eq 64
           done
+      - name: Release notes
+        run: |
+          cat > "$RUNNER_TEMP/notes.md" <<EOF
+          **Downloads**
+          - \`airbridge-android.apk\`: the Android app (Android 10 or newer). Allow installs from your browser or file manager when asked. Updates itself from the app.
+          - \`airbridge-setup.exe\`: the Windows installer (x64, no admin needed): Start menu and *Send to* shortcuts, optional start at sign-in, and the WebView2 runtime if missing.
+          - \`airbridge.exe\`: the Windows app without installing. Run it, allow Windows Firewall access on private networks, then pair your phone by QR. Both Windows downloads update themselves from the app's Update button.
+          - \`airbridge-x86_64.AppImage\`: the Linux app. Make it executable and run it (needs GTK 3 and WebKitGTK 4.1, present on most desktops). Updates itself from the app's Update button.
+          - \`*.sig\`: Ed25519 signatures the in-app updater checks. You do not need them.
+
+          See the [README](https://github.com/$PUBLIC_REPO#readme) for setup, pairing and security details.
+          EOF
+          echo "NOTES=$RUNNER_TEMP/notes.md" >> "$GITHUB_ENV"
+      # The source repository's own release keeps the generated changelog (it links private PRs).
       - uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ needs.prepare.outputs.tag }}
@@ -212,19 +239,19 @@ jobs:
           prerelease: false
           make_latest: legacy
           fail_on_unmatched_files: true
-          body: |
-            **Downloads**
-            - `airbridge-android.apk`: the Android app (Android 10 or newer). Allow installs from your browser or file manager when asked.
-            - `airbridge-setup.exe`: the Windows installer (x86_64, no admin needed): Start menu and *Send to* shortcuts, optional start at sign-in, and the WebView2 runtime if missing.
-            - `airbridge.exe`: the Windows app without installing. Run it, allow Windows Firewall access on private networks, then pair your phone by QR. Both update themselves from the app's Update button.
-            - `airbridge-x86_64.AppImage`: the Linux app. Make it executable and run it (needs GTK 3 and WebKitGTK 4.1, present on most desktops). Updates itself from the app's Update button.
-
-            The APK is signed with a debug key made for this build, not a private release key, so a newer release may need the old app uninstalled first. See [SECURITY.md](https://github.com/${{ github.repository }}/blob/${{ needs.prepare.outputs.tag }}/docs/SECURITY.md).
-          files: |
-            airbridge-x86_64.AppImage
-            airbridge-x86_64.AppImage.sig
-            airbridge-android.apk
-            airbridge.exe
-            airbridge.exe.sig
-            airbridge-setup.exe
+          body_path: ${{ env.NOTES }}
+          files: ${{ env.ASSETS }}
           generate_release_notes: true
+      # The apps update from the public repository, so a release that is missing there never reaches users.
+      - name: Publish to the public Airbridge repository
+        uses: softprops/action-gh-release@v3
+        with:
+          repository: ${{ env.PUBLIC_REPO }}
+          token: ${{ secrets.AIRBRIDGE_RELEASE_TOKEN }}
+          tag_name: ${{ needs.prepare.outputs.tag }}
+          name: ${{ needs.prepare.outputs.tag }}
+          prerelease: false
+          make_latest: legacy
+          fail_on_unmatched_files: true
+          body_path: ${{ env.NOTES }}
+          files: ${{ env.ASSETS }}

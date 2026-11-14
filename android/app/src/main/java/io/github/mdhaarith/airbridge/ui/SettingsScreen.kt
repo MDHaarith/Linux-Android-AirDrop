@@ -22,7 +22,9 @@ import androidx.compose.material.icons.rounded.ContentCopy
 import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material.icons.rounded.SwapHoriz
 import androidx.compose.material.icons.rounded.VerticalSplit
-import androidx.compose.material.icons.rounded.Wifi
+import androidx.compose.material.icons.rounded.Badge
+import androidx.compose.material.icons.rounded.VerifiedUser
+import androidx.compose.material.icons.rounded.Visibility
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -80,6 +82,9 @@ fun SettingsScreen(vm: AppViewModel, scrollState: ScrollState = rememberScrollSt
                         headlineContent = {
                             Text("Name", color = MaterialTheme.colorScheme.onSurface)
                         },
+                        leadingContent = {
+                            Icon(Icons.Rounded.Badge, null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                        },
                         trailingContent = {
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 Text(
@@ -95,13 +100,16 @@ fun SettingsScreen(vm: AppViewModel, scrollState: ScrollState = rememberScrollSt
                         modifier = Modifier.clickable(onClick = { renaming = true }),
                         colors = ListItemDefaults.colors(containerColor = Color.Transparent),
                     )
-                    HorizontalDivider(modifier = Modifier.padding(start = 16.dp))
+                    HorizontalDivider(modifier = Modifier.padding(start = 56.dp))
                     ListItem(
                         headlineContent = {
                             Text(
                                 "Visible to nearby devices",
                                 color = MaterialTheme.colorScheme.onSurface,
                             )
+                        },
+                        leadingContent = {
+                            Icon(Icons.Rounded.Visibility, null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
                         },
                         trailingContent = {
                             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -147,7 +155,7 @@ fun SettingsScreen(vm: AppViewModel, scrollState: ScrollState = rememberScrollSt
                         supportingContent = { Text("No prompt for devices you trust") },
                         leadingContent = {
                             Icon(
-                                Icons.Rounded.Wifi,
+                                Icons.Rounded.VerifiedUser,
                                 null,
                                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
                             )

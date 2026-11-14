@@ -260,7 +260,6 @@ function renderEmpty() {
     bluetooth.textContent = state.bluetoothProblem
         ? `Phones can't be woken over Bluetooth: ${state.bluetoothProblem}. On an Android phone, open Quick Share → Receive to show it here.`
         : "";
-    $("hint").hidden = empty || state.staged.length > 0;
     renderDropTarget();
 }
 /** Shows the latest transfer with a peer under its name, like the iOS share sheet. */
@@ -1067,8 +1066,9 @@ function openBrowserPairing() {
     });
 }
 function settingSwitch(key, title, text) {
-    return `<div class="switch-row"><div class="s-text"><b>${title}</b><span>${text}</span></div>
-    <label class="switch"><input type="checkbox" data-key="${key}" ${state.settings[key] ? "checked" : ""}><i></i></label></div>`;
+    // The whole row is the label: the text names the switch and toggles it too.
+    return `<label class="switch-row"><span class="s-text"><b>${title}</b><span>${text}</span></span>
+    <span class="switch"><input type="checkbox" data-key="${key}" ${state.settings[key] ? "checked" : ""}><i></i></span></label>`;
 }
 function openSettings() {
     const s = state.settings;

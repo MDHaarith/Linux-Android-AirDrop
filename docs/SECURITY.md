@@ -78,7 +78,8 @@ requests cannot crash the app.
 
 ## Updates
 
-The Linux AppImage updates itself only from stable `vMAJOR.MINOR.PATCH` releases on GitHub, over
+The Linux AppImage and the Windows exe update themselves only from stable `vMAJOR.MINOR.PATCH`
+releases in the public [MDHaarith/Airbridge](https://github.com/MDHaarith/Airbridge) repository, over
 HTTPS (system CA store, HTTPS-only redirects). CI signs each AppImage with an
 Ed25519 key kept in the `UPDATE_SIGNING_KEY` secret. The signature covers the
 file and its tag, and the public key is built into the app. A download with a
@@ -92,8 +93,9 @@ rename). Only the token-protected local UI can start an update.
   but always ask, and cannot become "my devices".
 - Quick Share senders have no lasting identity (their name and address are
   their only id), so they always ask too. Compare the PIN.
-- Release APKs built by CI are signed with the debug key; sign your own builds
-  with your own key.
+- The Android app updates from the same releases. It has no signature of its own
+  on top: Android itself refuses an APK that is not signed with the installed
+  app's release key.
 
 ## Reporting a problem
 

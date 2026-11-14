@@ -1,3 +1,32 @@
 // Windows resources of airbridge.exe. The lowest id is the icon Explorer,
-// shortcuts and the taskbar show. Paths are relative to this folder.
-1 ICON "packaging/windows/airbridge.ico"
+// shortcuts and the taskbar show. build.rs fills in the @...@ values and the
+// icon's absolute path. The version block names the program in Explorer's
+// Properties, Task Manager and SmartScreen prompts; an exe without one looks
+// more like malware to antivirus heuristics.
+1 ICON "@ICON@"
+
+1 VERSIONINFO
+FILEVERSION @MAJOR@,@MINOR@,@PATCH@,0
+PRODUCTVERSION @MAJOR@,@MINOR@,@PATCH@,0
+FILEOS 0x40004
+FILETYPE 0x1
+BEGIN
+  BLOCK "StringFileInfo"
+  BEGIN
+    BLOCK "040904B0"
+    BEGIN
+      VALUE "CompanyName", "AirBridge"
+      VALUE "FileDescription", "AirBridge file sharing"
+      VALUE "FileVersion", "@VERSION@"
+      VALUE "InternalName", "airbridge"
+      VALUE "LegalCopyright", "MIT License"
+      VALUE "OriginalFilename", "airbridge.exe"
+      VALUE "ProductName", "AirBridge"
+      VALUE "ProductVersion", "@VERSION@"
+    END
+  END
+  BLOCK "VarFileInfo"
+  BEGIN
+    VALUE "Translation", 0x409, 1200
+  END
+END

@@ -20,7 +20,8 @@
 }
 .toolbar .title { display: flex; align-items: center; gap: 9px; font-size: 13px; font-weight: 600; }
 .toolbar .title img { width: 22px; height: 22px; }
-.tool-actions { display: flex; gap: 2px; margin-left: auto; }
+.tool-actions { display: flex; align-items: center; gap: 2px; margin-left: auto; }
+.tool-actions .btn { margin-right: 6px; }
 
 /* ------------------------------------------------------------------ stage */
 .stage {
@@ -48,15 +49,31 @@ body.activity-open .stage, body.activity-open .beacon { right: 360px; }
 }
 .peers:empty { display: none; }
 
-.device-rail { position: fixed; top: 52px; bottom: 0; left: 0; width: 200px; z-index: 2; overflow-y: auto; display: flex; flex-direction: column; align-items: center; padding: 20px 12px; border-right: 1px solid var(--separator); background: var(--material); }
-.device-rail h2 { margin: 0 0 6px; font-size: 15px; }
+.device-rail {
+  position: fixed;
+  top: 52px;
+  bottom: 0;
+  left: 0;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 200px;
+  padding: 20px 12px;
+  overflow-y: auto;
+  border-right: 0.5px solid var(--separator);
+  background: var(--material);
+  scrollbar-width: thin;
+}
+.device-rail h2 { margin: 0 0 6px; font-size: 15px; font-weight: 600; }
 .device-rail > p { margin: 0 0 14px; color: var(--muted); font-size: 12px; text-align: center; }
+.device-rail .peers { gap: 6px; padding: 0; }
 .device-rail .peer { flex-shrink: 0; }
 .peer.selected { background: var(--accent-soft); }
 .peer.selected .avatar { box-shadow: 0 0 0 3px var(--accent); }
-.drop-prompt { max-width: 400px; padding: 24px; text-align: center; }
-.drop-prompt h2 { font-size: 22px; margin-bottom: 8px; }
-.drop-prompt p { color: var(--muted); font-size: 13px; }
+.drop-prompt { max-width: 400px; padding: 24px; text-align: center; animation: rise-in 0.4s var(--ease-out); }
+.drop-prompt h2 { margin: 0 0 8px; font-size: 22px; font-weight: 600; }
+.drop-prompt p { margin: 0 0 6px; color: var(--muted); font-size: 13px; }
 .beacon { margin-left: 200px; }
 
 /* ------------------------------------------------------------------ peers */
@@ -191,21 +208,22 @@ body.offline .beacon-mark .mark { background: var(--faint); box-shadow: none; }
 }
 .me-chip:hover { background: var(--fill); }
 .me-chip b { color: var(--text); font-weight: 600; }
-.hint { margin: 0; color: var(--faint); font-size: 12px; }
 .me-ip { color: var(--faint); font-size: 11px; font-variant-numeric: tabular-nums; }
 
 /* ------------------------------------------------------------------- tray */
 .tray {
   position: fixed;
-  left: 50%;
+  /* Centered in the stage, between the 200px device rail and the right edge (or the drawer). */
+  left: calc(50% + 100px);
   bottom: 22px;
   z-index: 15;
-  width: min(560px, calc(100vw - 32px));
+  width: min(560px, calc(100vw - 232px));
   padding: 12px 14px;
   transform: translateX(-50%);
   animation: tray-in 0.35s var(--ease-out);
+  transition: left 0.35s var(--ease-out);
 }
-body.activity-open .tray { margin-left: -180px; }
+body.activity-open .tray { left: calc(50% - 80px); width: min(560px, calc(100vw - 592px)); }
 @keyframes tray-in { from { opacity: 0; transform: translate(-50%, 12px); } }
 .tray-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; font-size: 13px; }
 .tray-head b { margin-right: 6px; font-weight: 600; }
@@ -254,7 +272,8 @@ body.activity-open .activity { transform: none; visibility: visible; transition:
 .activity-head h3 { margin: 0; font-size: 15px; font-weight: 600; }
 .activity-head .row { display: flex; gap: 4px; align-items: center; }
 .activity-list { flex: 1; overflow-y: auto; display: flex; flex-direction: column; padding-bottom: 20px; scrollbar-width: thin; }
-.activity-empty { padding: 40px 0; color: var(--faint); text-align: center; font-size: 13px; }
+.activity-list:empty { display: none; }
+.activity-empty { flex: 1; display: grid; place-content: center; padding-bottom: 60px; color: var(--muted); text-align: center; font-size: 13px; }
 
 .item {
   display: grid;
@@ -450,5 +469,5 @@ body.activity-open .toasts { right: 374px; }
 @media (max-width: 900px) {
   body.activity-open .stage, body.activity-open .beacon { right: 0; }
   body.activity-open .toasts { right: 14px; }
-  body.activity-open .tray { margin-left: 0; }
+  body.activity-open .tray { left: calc(50% + 100px); width: min(560px, calc(100vw - 232px)); }
 }

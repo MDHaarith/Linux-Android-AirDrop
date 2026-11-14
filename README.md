@@ -129,7 +129,7 @@ Received photos show up as a preview in the notification.
 ### Linux
 
 Download `airbridge-x86_64.AppImage` from the newest
-[release](https://github.com/MDHaarith/Linux-Android-AirDrop/releases), then:
+[release](https://github.com/MDHaarith/Airbridge/releases), then:
 
 ```bash
 chmod +x airbridge-x86_64.AppImage && ./airbridge-x86_64.AppImage
@@ -179,7 +179,7 @@ Optional tools: `wl-clipboard` (Wayland) or `xclip`/`xsel` (X11) for clipboard s
 ### Windows
 
 Download `airbridge-setup.exe` from the newest
-[release](https://github.com/MDHaarith/Linux-Android-AirDrop/releases) and run it (Windows 10
+[release](https://github.com/MDHaarith/Airbridge/releases) and run it (Windows 10
 or 11, x64, no admin rights needed). It adds AirBridge to the Start menu and, if you choose,
 to Explorer's **Send to** menu and to sign-in, and installs Microsoft's WebView2 runtime when
 it is missing. Or run `airbridge.exe` from the release without installing.
@@ -207,7 +207,7 @@ window says why, and you open **Quick Share → Receive** on the phone.
 
 ### Android (10 or newer)
 
-Download the APK from a [release](../../releases) or from the latest CI run (artifact
+Download the APK from a [release](https://github.com/MDHaarith/Airbridge/releases) or from the latest CI run (artifact
 `airbridge-android-apk`), or build it yourself:
 
 ```bash
@@ -404,7 +404,11 @@ the workflow does not create version-bump commits.
 
 The release contains the Android APK, the Windows installer and executable, and the Linux
 AppImage; the executable and the AppImage carry Ed25519 signatures for in-app updates.
-The repository's `UPDATE_SIGNING_KEY` secret must be configured. To choose a version
+The same release is published to the public
+[MDHaarith/Airbridge](https://github.com/MDHaarith/Airbridge) repository, where the apps look
+for updates (this source repository is private). Required secrets: `UPDATE_SIGNING_KEY`,
+`ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD`, and `AIRBRIDGE_RELEASE_TOKEN` (a
+fine-grained token with *Contents: read and write* on `MDHaarith/Airbridge` only). To choose a version
 manually, run **Release** from the Actions tab with e.g. `v0.2.0`, or push that tag.
 Leaving the manual version empty chooses the next patch automatically.
 
