@@ -79,7 +79,7 @@ requests cannot crash the app.
 ## Updates
 
 The Linux AppImage and the Windows exe update themselves only from stable `vMAJOR.MINOR.PATCH`
-releases in the public [MDHaarith/AirBridge](https://github.com/MDHaarith/AirBridge) repository, over
+releases in this repository ([MDHaarith/AirBridge](https://github.com/MDHaarith/AirBridge)), over
 HTTPS (system CA store, HTTPS-only redirects). CI signs each AppImage with an
 Ed25519 key kept in the `UPDATE_SIGNING_KEY` secret. The signature covers the
 file and its tag, and the public key is built into the app. A download with a

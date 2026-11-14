@@ -3,7 +3,26 @@
 AirDrop-style sharing between Linux, Windows and Android. Files, folders, photos, text and the
 clipboard go straight from device to device over your own network. No cloud, no cable, no account.
 
-Downloads, setup and full documentation: **[MDHaarith/AirBridge](https://github.com/MDHaarith/AirBridge)**.
+## Install
+
+Download from the newest [release](https://github.com/MDHaarith/AirBridge/releases/latest):
+
+- **Android 10+:** `airbridge-android.apk`. Allow installs from your browser or file manager.
+- **Windows 10/11 (x64):** `airbridge-setup.exe`, or `airbridge.exe` without installing. Allow it
+  through Windows Firewall on private networks.
+- **Linux (x86_64):** `airbridge-x86_64.AppImage`. Run `chmod +x` on it, then start it. Needs GTK 3
+  and WebKitGTK 4.1.
+
+Then scan the desktop app's **QR** code from the Android app's **Pair with QR Code**. All apps
+update themselves from the releases here.
+
+Windows SmartScreen may say "Windows protected your PC" (click **More info**, then **Run
+anyway**), and Play Protect may warn on Android (tap **More details**, then **Install anyway**).
+The apps are not code-signed with a paid certificate yet. These warnings do not mean a virus was
+found.
+
+Open ports if a firewall is on: 53317 TCP+UDP (LocalSend), 53318 TCP (browser page),
+53319 TCP and 5353 UDP (Quick Share).
 
 ## What it does
 
@@ -60,13 +79,10 @@ cd android && ./gradlew testDebugUnitTest verifyPaparazziDebug
 
 Every successful CI run on `main` triggers the **Release** workflow. It picks the next patch
 version, builds the Android APK, the Windows installer and exe, and the Linux AppImage, and
-publishes them here and to [MDHaarith/AirBridge](https://github.com/MDHaarith/AirBridge), where
-the apps look for updates. To choose a version, run **Release** from the Actions tab or push a
-`vX.Y.Z` tag.
+publishes them as a release here, where the apps look for updates. To choose a version, run
+**Release** from the Actions tab or push a `vX.Y.Z` tag.
 
-Required secrets: `UPDATE_SIGNING_KEY`, `ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD`,
-and `AIRBRIDGE_RELEASE_TOKEN` (a fine-grained token with *Contents: read and write* on
-`MDHaarith/AirBridge` only).
+Required secrets: `UPDATE_SIGNING_KEY`, `ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD`.
 
 ## License
 
