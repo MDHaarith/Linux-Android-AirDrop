@@ -230,7 +230,7 @@ jobs:
           See the [README](https://github.com/$PUBLIC_REPO#readme) for setup, pairing and security details.
           EOF
           echo "NOTES=$RUNNER_TEMP/notes.md" >> "$GITHUB_ENV"
-      # The source repository's own release keeps the generated changelog (it links private PRs).
+      # The source repository keeps the generated changelog; the public release gets the plain notes.
       - uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ needs.prepare.outputs.tag }}

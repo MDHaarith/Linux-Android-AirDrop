@@ -406,7 +406,7 @@ The release contains the Android APK, the Windows installer and executable, and 
 AppImage; the executable and the AppImage carry Ed25519 signatures for in-app updates.
 The same release is published to the public
 [MDHaarith/Airbridge](https://github.com/MDHaarith/Airbridge) repository, where the apps look
-for updates (this source repository is private). Required secrets: `UPDATE_SIGNING_KEY`,
+for updates. Required secrets: `UPDATE_SIGNING_KEY`,
 `ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD`, and `AIRBRIDGE_RELEASE_TOKEN` (a
 fine-grained token with *Contents: read and write* on `MDHaarith/Airbridge` only). To choose a version
 manually, run **Release** from the Actions tab with e.g. `v0.2.0`, or push that tag.
