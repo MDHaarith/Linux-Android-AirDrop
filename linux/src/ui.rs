@@ -24,7 +24,7 @@ use crate::assets;
 use crate::config;
 use crate::desktop;
 use crate::receiver::constant_time_eq;
-use crate::sender::{expand_paths, Selection, SendItem};
+use crate::sender::{check_readable, expand_paths, Selection, SendItem};
 use crate::update;
 
 const COOKIE: &str = "airbridge_token";
@@ -251,20 +251,41 @@ struct SendRequest {
     /// Only count what would be sent.
     #[serde(default)]
     dry_run: bool,
+    /// Send the readable files when some chosen ones cannot be read.
+    #[serde(default)]
+    skip_unavailable: bool,
 }
 
 async fn send(State(app): State<Arc<App>>, Json(request): Json<SendRequest>) -> Response {
-    let mut items = match expand_paths(&request.paths, &request.selection) {
+    let items = match expand_paths(&request.paths, &request.selection) {
         Ok(items) => items,
         Err(message) => return bad_request(message),
     };
+    // Before any long checksum pass: find files that cannot be read
+    // (online-only cloud files, no permission) and let the user decide.
+    let (mut items, unavailable) = tokio::task::spawn_blocking(move || check_readable(items))
+        .await
+        .unwrap_or_default();
     if request.dry_run {
         let bytes: u64 = items
             .iter()
             .filter_map(|i| std::fs::metadata(&i.path).ok())
             .map(|m| m.len())
             .sum();
-        return Json(json!({ "count": items.len(), "bytes": bytes })).into_response();
+        return Json(json!({ "count": items.len(), "bytes": bytes, "unavailable": unavailable }))
+            .into_response();
+    }
+    if !unavailable.is_empty() && !request.skip_unavailable {
+        let message = format!(
+            "{} of the chosen files cannot be read: {}",
+            unavailable.len(),
+            unavailable[0].reason
+        );
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({ "message": message, "count": items.len(), "unavailable": unavailable })),
+        )
+            .into_response();
     }
     {
         let mut staged = app.staged.lock().unwrap();
@@ -278,7 +299,16 @@ async fn send(State(app): State<Arc<App>>, Json(request): Json<SendRequest>) -> 
         return bad_request("Nothing to send");
     }
     match app.send_files(&request.peer, items, request.pin, request.verify) {
-        Ok(id) => Json(json!({ "id": id })).into_response(),
+        Ok(id) => {
+            if !unavailable.is_empty() {
+                let mut transfers = app.transfers.lock().unwrap();
+                if let Some(t) = transfers.get_mut(&id) {
+                    t.unavailable = unavailable;
+                    transfers.emit(&id, true);
+                }
+            }
+            Json(json!({ "id": id })).into_response()
+        }
         Err(message) => bad_request(message),
     }
 }
@@ -408,6 +438,7 @@ async fn stage(State(app): State<Arc<App>>, headers: HeaderMap, body: Body) -> R
                 path,
                 name: name.clone(),
                 temporary: true,
+                hashed: None,
             };
             app.staged.lock().unwrap().insert(id.clone(), item);
             Json(json!({ "id": id, "name": name, "size": size })).into_response()

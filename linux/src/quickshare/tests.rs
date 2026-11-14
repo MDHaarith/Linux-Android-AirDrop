@@ -70,16 +70,19 @@ async fn phone_and_laptop_share_over_quick_share() {
             path: source.path().join("photo.jpg"),
             name: "photo.jpg".into(),
             temporary: false,
+            hashed: None,
         },
         SendItem {
             path: source.path().join("empty.txt"),
             name: "empty.txt".into(),
             temporary: false,
+            hashed: None,
         },
         SendItem {
             path: source.path().join("note.md"),
             name: "Album/note.md".into(),
             temporary: false,
+            hashed: None,
         },
     ];
     let out_id = send_files(&app, phone.clone(), items).unwrap();
@@ -139,6 +142,7 @@ async fn phone_and_laptop_share_over_quick_share() {
             path: source.path().join("note.md"),
             name: "declined.md".into(),
             temporary: false,
+            hashed: None,
         }],
     )
     .unwrap();
@@ -162,6 +166,7 @@ async fn phone_and_laptop_share_over_quick_share() {
             path: source.path().join("photo.jpg"),
             name: "never.jpg".into(),
             temporary: false,
+            hashed: None,
         }],
     )
     .unwrap();

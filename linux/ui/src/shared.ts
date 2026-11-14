@@ -51,9 +51,20 @@ interface Transfer {
   files: TransferFile[];
   verify?: boolean;
   checked: number;
+  /** Failed because the device dropped off; resent when it is back. */
+  reconnecting?: boolean;
+  /** Chosen files left out because they could not be read. */
+  unavailable?: Unavailable[];
   total: number;
   done: number;
   speed: number;
+}
+
+/** `sender::Unavailable`: a chosen file that cannot be read. */
+interface Unavailable {
+  path: string;
+  name: string;
+  reason: string;
 }
 
 /** `config::Settings`, camelCase. */
@@ -74,6 +85,7 @@ interface Settings {
   dropRecipient?: string | null;
   openReceived?: boolean;
   verifySends?: boolean;
+  autoResume?: boolean;
   [key: string]: unknown;
 }
 
