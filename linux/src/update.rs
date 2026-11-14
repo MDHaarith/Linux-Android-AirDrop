@@ -15,7 +15,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::fetch::download;
 
-const REPO: &str = "MDHaarith/Linux-Android-AirDrop";
+/// The repository whose releases the app updates from.
+const REPO: &str = "MDHaarith/AirBridge";
 #[cfg(not(windows))]
 const ASSET: &str = "airbridge-x86_64.AppImage";
 #[cfg(windows)]

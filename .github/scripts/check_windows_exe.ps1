@@ -17,4 +17,6 @@ public static extern uint ExtractIconEx(string file, int index, IntPtr[] large, 
 '@
 $icons = [Native.Shell]::ExtractIconEx($path, -1, $null, $null, 0)
 if ($icons -lt 1) { throw "airbridge.exe has no embedded icon" }
-Write-Output "airbridge.exe: $icons icon group(s), no Visual C++ runtime DLLs"
+$info = (Get-Item $path).VersionInfo
+if ($info.ProductName -ne "AirBridge" -or -not $info.FileVersion) { throw "airbridge.exe has no version information" }
+Write-Output "airbridge.exe $($info.FileVersion): $icons icon group(s), no Visual C++ runtime DLLs"
