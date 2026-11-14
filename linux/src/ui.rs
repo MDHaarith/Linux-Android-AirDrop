@@ -748,17 +748,13 @@ async fn check_update() -> Response {
     }
 }
 
-/// Installs the newest build and restarts; outside the AppImage or exe it opens the release page.
+/// Installs the newest build in place and restarts.
 async fn apply_update(State(app): State<Arc<App>>) -> Response {
     let available = match update::check().await {
         Ok(Some(available)) => available,
         Ok(None) => return bad_request("AirBridge is up to date."),
         Err(err) => return bad_request(format!("Could not check for updates: {err:#}")),
     };
-    if update::program().is_none() {
-        desktop::open_url(&available.page);
-        return Json(json!({ "restarting": false })).into_response();
-    }
     if let Err(err) = update::install(&available).await {
         tracing::warn!("Update failed: {err:#}");
         return bad_request(format!("Update failed: {err:#}"));

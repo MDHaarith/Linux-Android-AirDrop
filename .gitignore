@@ -11,11 +11,20 @@ android/*.iml
 android/captures/
 android/.kotlin/
 
+# UI (TypeScript build tools)
+node_modules/
+npm-debug.log*
+
+# Code index
+.code-review-graph/
+
 # Editors / OS
 __pycache__/
 .DS_Store
+Thumbs.db
 *.swp
 .vscode/
+.idea/
 
 # Release signing key: keep it out of git
 *.p12

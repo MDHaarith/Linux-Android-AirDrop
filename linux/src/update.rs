@@ -7,6 +7,7 @@
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
+use std::sync::LazyLock;
 
 use anyhow::{anyhow, bail, Context, Result};
 use ring::signature::{UnparsedPublicKey, ED25519};
@@ -33,17 +34,22 @@ pub fn current_version() -> &'static str {
     env!("CARGO_PKG_VERSION")
 }
 
-/// The program file an update replaces: the AppImage, or the Windows exe.
-#[cfg(target_os = "linux")]
-pub fn program() -> Option<PathBuf> {
-    std::env::var_os("APPIMAGE")
+/// The program file an update replaces: the AppImage, else the running binary
+/// (e.g. `~/.local/bin/airbridge` from install.sh, which the AppImage replaces).
+/// Read once: after the swap, Linux reports the old binary as "… (deleted)".
+static PROGRAM: LazyLock<Option<PathBuf>> = LazyLock::new(|| {
+    #[cfg(target_os = "linux")]
+    if let Some(image) = std::env::var_os("APPIMAGE")
         .map(PathBuf::from)
         .filter(|p| p.is_absolute())
-}
-
-#[cfg(windows)]
-pub fn program() -> Option<PathBuf> {
+    {
+        return Some(image);
+    }
     std::env::current_exe().ok()
+});
+
+pub fn program() -> Option<PathBuf> {
+    PROGRAM.clone()
 }
 
 /// Where the replaced Windows exe goes: a running exe can be renamed, not deleted.
@@ -156,7 +162,7 @@ fn verify(data: &[u8], tag: &str, signature: &[u8]) -> Result<()> {
 
 /// Downloads, verifies and swaps in the new build. Takes effect on restart.
 pub async fn install(update: &Available) -> Result<()> {
-    let target = program().ok_or_else(|| anyhow!("only the AppImage can update itself"))?;
+    let target = program().ok_or_else(|| anyhow!("could not find the running program"))?;
     let signature = download(&update.sig_url, 1024).await?;
     let data = download(&update.app_url, MAX_SIZE).await?;
     verify(&data, &update.tag, &signature)?;
@@ -170,23 +176,83 @@ pub async fn install(update: &Available) -> Result<()> {
     }
     let dir = target.parent().context("the program has no folder")?;
     let temp = dir.join(format!(".{ASSET}.update"));
-    let written = (|| -> std::io::Result<()> {
-        use std::io::Write;
-        let mut file = std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(&temp)?;
-        file.write_all(&data)?;
-        #[cfg(target_os = "linux")]
-        file.set_permissions(std::fs::Permissions::from_mode(0o755))?;
-        file.sync_all()?;
-        drop(file);
-        replace(&temp, &target)
-    })();
-    if let Err(err) = written {
-        let _ = std::fs::remove_file(&temp);
-        return Err(err).with_context(|| format!("could not replace {}", target.display()));
+    let written = write_program(&temp, &data).and_then(|()| replace(&temp, &target));
+    let _ = std::fs::remove_file(&temp);
+    match written {
+        Ok(()) => return Ok(()),
+        Err(err) if err.kind() != std::io::ErrorKind::PermissionDenied => {
+            return Err(err).with_context(|| format!("could not replace {}", target.display()));
+        }
+        Err(_) => {}
+    }
+    // A system-wide install (/usr/bin, Program Files): stage in the private
+    // cache and let an administrator move it in.
+    let cache = crate::config::cache_dir();
+    std::fs::create_dir_all(&cache)?;
+    let temp = cache.join(format!(".{ASSET}.update"));
+    write_program(&temp, &data)?;
+    let result = replace_elevated(&temp, &target).await;
+    let _ = std::fs::remove_file(&temp);
+    result.with_context(|| format!("could not replace {}", target.display()))
+}
+
+fn write_program(path: &std::path::Path, data: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(path)?;
+    file.write_all(data)?;
+    #[cfg(target_os = "linux")]
+    file.set_permissions(std::fs::Permissions::from_mode(0o755))?;
+    file.sync_all()
+}
+
+/// Asks polkit for an administrator. `install` unlinks a busy target, so the
+/// running copy keeps its inode.
+#[cfg(not(windows))]
+async fn replace_elevated(new: &std::path::Path, target: &std::path::Path) -> Result<()> {
+    let status = tokio::process::Command::new("pkexec")
+        .arg("install")
+        .arg("-m755")
+        .arg(new)
+        .arg(target)
+        .status()
+        .await
+        .context("pkexec is not available")?;
+    if !status.success() {
+        bail!("administrator permission was not granted");
+    }
+    Ok(())
+}
+
+/// Asks UAC for an administrator, then moves the running exe aside like `replace`.
+#[cfg(windows)]
+async fn replace_elevated(new: &std::path::Path, target: &std::path::Path) -> Result<()> {
+    use base64::Engine;
+    let quote = |p: &std::path::Path| format!("'{}'", p.display().to_string().replace('\'', "''"));
+    let (new, old, target) = (quote(new), quote(&old_copy(target)), quote(target));
+    let inner = format!(
+        "$ErrorActionPreference='Stop'; Remove-Item -Force -LiteralPath {old} -ErrorAction SilentlyContinue; \
+         Move-Item -Force -LiteralPath {target} -Destination {old}; \
+         try {{ Copy-Item -Force -LiteralPath {new} -Destination {target} }} \
+         catch {{ Move-Item -Force -LiteralPath {old} -Destination {target}; exit 1 }}"
+    );
+    let utf16: Vec<u8> = inner.encode_utf16().flat_map(u16::to_le_bytes).collect();
+    let encoded = base64::engine::general_purpose::STANDARD.encode(utf16);
+    let outer = format!(
+        "$p = Start-Process powershell -Verb RunAs -Wait -PassThru -WindowStyle Hidden \
+         -ArgumentList '-NoProfile','-EncodedCommand','{encoded}'; exit $p.ExitCode"
+    );
+    let status = tokio::process::Command::new("powershell")
+        .args(["-NoProfile", "-WindowStyle", "Hidden", "-Command", &outer])
+        .creation_flags(0x08000000) // CREATE_NO_WINDOW
+        .status()
+        .await
+        .context("PowerShell is not available")?;
+    if !status.success() {
+        bail!("administrator permission was not granted");
     }
     Ok(())
 }

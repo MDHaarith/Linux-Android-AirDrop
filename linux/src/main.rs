@@ -164,6 +164,8 @@ fn init_logging() {
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
+    // Pin the program path before an update can replace the file.
+    let _ = update::program();
     #[cfg(windows)]
     hide_own_console();
     #[cfg(native_window)]
