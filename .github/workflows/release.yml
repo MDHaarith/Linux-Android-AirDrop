@@ -180,7 +180,6 @@ jobs:
     permissions:
       contents: write
     env:
-      PUBLIC_REPO: MDHaarith/AirBridge
       ASSETS: |
         airbridge-x86_64.AppImage
         airbridge-x86_64.AppImage.sig
@@ -189,10 +188,6 @@ jobs:
         airbridge.exe.sig
         airbridge-setup.exe
     steps:
-      - name: Check the public release token
-        env:
-          TOKEN: ${{ secrets.AIRBRIDGE_RELEASE_TOKEN }}
-        run: '[ -n "$TOKEN" ] || { echo "::error::AIRBRIDGE_RELEASE_TOKEN secret is missing; cannot publish to $PUBLIC_REPO"; exit 1; }'
       - uses: actions/download-artifact@v8
         with:
           pattern: release-*
@@ -227,10 +222,9 @@ jobs:
           - \`airbridge-x86_64.AppImage\`: the Linux app. Make it executable and run it (needs GTK 3 and WebKitGTK 4.1, present on most desktops). Updates itself from the app's Update button.
           - \`*.sig\`: Ed25519 signatures the in-app updater checks. You do not need them.
 
-          See the [README](https://github.com/$PUBLIC_REPO#readme) for setup, pairing and security details.
+          See the [README](https://github.com/$GITHUB_REPOSITORY#readme) for setup, pairing and security details.
           EOF
           echo "NOTES=$RUNNER_TEMP/notes.md" >> "$GITHUB_ENV"
-      # The source repository keeps the generated changelog; the public release gets the plain notes.
       - uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ needs.prepare.outputs.tag }}
@@ -242,16 +236,3 @@ jobs:
           body_path: ${{ env.NOTES }}
           files: ${{ env.ASSETS }}
           generate_release_notes: true
-      # The apps update from the public repository, so a release that is missing there never reaches users.
-      - name: Publish to the public Airbridge repository
-        uses: softprops/action-gh-release@v3
-        with:
-          repository: ${{ env.PUBLIC_REPO }}
-          token: ${{ secrets.AIRBRIDGE_RELEASE_TOKEN }}
-          tag_name: ${{ needs.prepare.outputs.tag }}
-          name: ${{ needs.prepare.outputs.tag }}
-          prerelease: false
-          make_latest: legacy
-          fail_on_unmatched_files: true
-          body_path: ${{ env.NOTES }}
-          files: ${{ env.ASSETS }}
