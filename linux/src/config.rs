@@ -224,6 +224,8 @@ pub struct Settings {
     pub open_received: bool,
     /// Send a SHA-256 of every file so the receiver checks the contents.
     pub verify_sends: bool,
+    /// Resend what is left when a device that dropped off comes back.
+    pub auto_resume: bool,
 }
 
 impl Default for Settings {
@@ -254,6 +256,7 @@ impl Default for Settings {
             drop_recipient: None,
             open_received: true,
             verify_sends: false,
+            auto_resume: true,
         }
     }
 }
@@ -422,6 +425,7 @@ impl Settings {
         set_bool!("edgeDrop", edge_drop);
         set_bool!("openReceived", open_received);
         set_bool!("verifySends", verify_sends);
+        set_bool!("autoResume", auto_resume);
         if let Some(value) = map.get("dropRecipient") {
             if value.is_null()
                 || value

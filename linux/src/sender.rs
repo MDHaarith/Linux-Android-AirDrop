@@ -7,7 +7,7 @@ use std::time::Duration;
 use bytes::Bytes;
 use futures_util::TryStreamExt;
 use hyper::Method;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tokio_util::io::ReaderStream;
 use tokio_util::sync::CancellationToken;
@@ -29,6 +29,70 @@ pub struct SendItem {
     pub name: String,
     /// A staged copy that is deleted once the transfer ends.
     pub temporary: bool,
+    /// Checksum from an earlier attempt, reused while the file is unchanged.
+    pub hashed: Option<Hashed>,
+}
+
+/// A file's SHA-256 and the size and modification time it was taken at.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Hashed {
+    pub sha256: String,
+    pub size: u64,
+    pub modified: Option<std::time::SystemTime>,
+}
+
+impl Hashed {
+    fn still_valid(&self, path: &Path) -> bool {
+        std::fs::metadata(path)
+            .is_ok_and(|m| m.len() == self.size && m.modified().ok() == self.modified)
+    }
+}
+
+/// A chosen file that cannot be read now, with the reason.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Unavailable {
+    pub path: String,
+    pub name: String,
+    pub reason: String,
+}
+
+/// Why a file cannot be sent, found without reading (or downloading) it.
+fn unreadable(path: &Path) -> Option<String> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        // OFFLINE, RECALL_ON_OPEN, RECALL_ON_DATA_ACCESS: an online-only cloud
+        // file. Reading it would download it, or fail if OneDrive is not running.
+        const ONLINE_ONLY: u32 = 0x1000 | 0x4_0000 | 0x40_0000;
+        match std::fs::metadata(path) {
+            Ok(m) if m.file_attributes() & ONLINE_ONLY != 0 => {
+                return Some(
+                    "Online-only file: choose \u{201c}Always keep on this device\u{201d} in OneDrive to send it"
+                        .into(),
+                )
+            }
+            Err(e) => return Some(e.to_string()),
+            Ok(_) => {}
+        }
+    }
+    std::fs::File::open(path).err().map(|e| e.to_string())
+}
+
+/// Splits the chosen files into those that can be read and those that cannot.
+pub fn check_readable(items: Vec<SendItem>) -> (Vec<SendItem>, Vec<Unavailable>) {
+    let mut readable = Vec::with_capacity(items.len());
+    let mut unavailable = Vec::new();
+    for item in items {
+        match unreadable(&item.path) {
+            None => readable.push(item),
+            Some(reason) => unavailable.push(Unavailable {
+                path: item.path.to_string_lossy().into_owned(),
+                name: item.name,
+                reason,
+            }),
+        }
+    }
+    (readable, unavailable)
 }
 
 /// Which files of the chosen folders to send, and under which folder name.
@@ -114,6 +178,7 @@ pub fn expand_paths(paths: &[PathBuf], selection: &Selection) -> Result<Vec<Send
                     path: entry.path(),
                     name,
                     temporary: false,
+                    hashed: None,
                 });
             }
         }
@@ -151,6 +216,7 @@ pub fn expand_paths(paths: &[PathBuf], selection: &Selection) -> Result<Vec<Send
                 path: path.clone(),
                 name,
                 temporary: false,
+                hashed: None,
             }),
             Ok(_) => return Err(format!("{}: not a file or folder", path.display())),
             Err(err) => return Err(format!("{}: {err}", path.display())),
@@ -163,11 +229,16 @@ enum Outcome {
     Done,
     Declined,
     Failed(String),
+    /// The device could not be reached: worth trying again when it is back.
+    Lost(String),
 }
 
 impl From<PeerError> for Outcome {
     fn from(err: PeerError) -> Self {
-        Outcome::Failed(err.to_string())
+        match err {
+            PeerError::Connect(_) | PeerError::Timeout => Outcome::Lost(err.to_string()),
+            _ => Outcome::Failed(err.to_string()),
+        }
     }
 }
 
@@ -183,12 +254,13 @@ pub fn send_files(
     }
     let mut files = Vec::with_capacity(items.len());
     for item in &items {
-        let dto = FileDto::for_path(&item.path, &item.name)
+        let mut dto = FileDto::for_path(&item.path, &item.name)
             .map_err(|e| format!("{}: {e}", item.path.display()))?;
-        files.push(FileState::new(
-            dto,
-            Some(item.path.to_string_lossy().into_owned()),
-        ));
+        let hashed = item.hashed.clone().filter(|h| h.still_valid(&item.path));
+        dto.sha256 = hashed.as_ref().map(|h| h.sha256.clone());
+        let mut file = FileState::new(dto, Some(item.path.to_string_lossy().into_owned()));
+        file.hashed = hashed;
+        files.push(file);
     }
     let mut transfer = Transfer::new(
         Direction::Out,
@@ -230,6 +302,8 @@ fn start(app: &Arc<App>, transfer: Transfer, peer: Peer, pin: Option<String>) ->
             _ = token.cancelled() => None,
         };
         app.unregister_cancel(&transfer_id);
+        let mut retry = false;
+        let auto_resume = app.settings().auto_resume;
         let cancelled_session = {
             let mut transfers = app.transfers.lock().unwrap();
             let remote = transfers
@@ -261,6 +335,14 @@ fn start(app: &Arc<App>, transfer: Transfer, peer: Peer, pin: Option<String>) ->
                     transfers.finish(&transfer_id, Status::Failed, Some(error));
                     remote
                 }
+                Some(Outcome::Lost(error)) => {
+                    if let Some(t) = transfers.get_mut(&transfer_id) {
+                        retry = auto_resume && !t.status.is_final();
+                        t.reconnecting = retry;
+                    }
+                    transfers.finish(&transfer_id, Status::Failed, Some(error));
+                    remote
+                }
                 None => {
                     let reason = transfers.get(&transfer_id).and_then(|t| t.error.clone());
                     transfers.finish(
@@ -274,6 +356,9 @@ fn start(app: &Arc<App>, transfer: Transfer, peer: Peer, pin: Option<String>) ->
         };
         if let Some(session) = cancelled_session {
             cancel_remote(&app, &peer, &session).await;
+        }
+        if retry {
+            app.resume_when_back(transfer_id);
         }
     });
     id
@@ -329,6 +414,7 @@ async fn hash_files(app: &Arc<App>, id: &str) -> Result<(), String> {
         };
         t.files
             .iter()
+            .filter(|f| f.hashed.is_none())
             .filter_map(|f| Some((f.id.clone(), PathBuf::from(f.path.clone()?))))
             .collect()
     };
@@ -341,6 +427,7 @@ async fn hash_files(app: &Arc<App>, id: &str) -> Result<(), String> {
         for (file_id, path) in files {
             let failed = |e: std::io::Error| format!("{}: {e}", path.display());
             let mut file = std::fs::File::open(&path).map_err(failed)?;
+            let meta = file.metadata().map_err(failed)?;
             let mut hasher = Sha256::new();
             loop {
                 let n = file.read(&mut buf).map_err(failed)?;
@@ -367,7 +454,14 @@ async fn hash_files(app: &Arc<App>, id: &str) -> Result<(), String> {
                 .and_then(|t| t.file_mut(&file_id))
                 .and_then(|f| f.dto.as_mut())
             {
-                dto.sha256 = Some(digest);
+                dto.sha256 = Some(digest.clone());
+            }
+            if let Some(f) = transfers.get_mut(&id).and_then(|t| t.file_mut(&file_id)) {
+                f.hashed = Some(Hashed {
+                    sha256: digest,
+                    size: meta.len(),
+                    modified: meta.modified().ok(),
+                });
             }
         }
         Ok(())
@@ -586,6 +680,24 @@ async fn upload(
     }
 }
 
+/// Whether the device answers at all (any HTTP reply counts).
+pub async fn reachable(app: &App, peer: &Peer) -> bool {
+    let options = Options {
+        connect_timeout: Duration::from_secs(4),
+        response_timeout: Some(Duration::from_secs(6)),
+    };
+    client::request(
+        &app.identity,
+        &peer.target(),
+        Method::GET,
+        &format!("{API}/info"),
+        Body::Empty,
+        options,
+    )
+    .await
+    .is_ok()
+}
+
 async fn cancel_remote(app: &App, peer: &Peer, session: &str) {
     let query = serde_urlencoded::to_string([("sessionId", session)]).unwrap_or_default();
     let options = Options {
@@ -757,5 +869,129 @@ mod tests {
         assert_eq!(again.status, Status::Done, "{:?}", again.error);
         assert!(again.files.iter().all(|f| f.status == FileStatus::Skipped));
         assert!(!downloads.join("Album/b (1).txt").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unreadable_files_are_listed_before_sending() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("ok.txt"), b"ok").unwrap();
+        let locked = dir.path().join("locked.txt");
+        std::fs::write(&locked, b"no").unwrap();
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+        if std::fs::File::open(&locked).is_ok() {
+            return; // running as root: nothing is unreadable
+        }
+        let items = expand_paths(&[dir.path().to_path_buf()], &Selection::default()).unwrap();
+        let (readable, unavailable) = check_readable(items);
+        assert_eq!(readable.len(), 1);
+        assert!(readable[0].name.ends_with("/ok.txt"));
+        assert_eq!(unavailable.len(), 1);
+        assert!(unavailable[0].name.ends_with("/locked.txt"));
+        assert!(!unavailable[0].reason.is_empty());
+    }
+
+    #[test]
+    fn a_checksum_is_reused_only_while_the_file_is_unchanged() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.bin");
+        std::fs::write(&path, b"abc").unwrap();
+        let meta = std::fs::metadata(&path).unwrap();
+        let hashed = Hashed {
+            sha256: "x".into(),
+            size: meta.len(),
+            modified: meta.modified().ok(),
+        };
+        assert!(hashed.still_valid(&path));
+        std::fs::write(&path, b"abcd").unwrap();
+        assert!(!hashed.still_valid(&path));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_send_to_a_device_that_dropped_off_resumes_when_it_is_back() {
+        let settings = r#"{"notifications":false,"quickShare":false}"#;
+        let (_a_home, a) = crate::app::test_app(settings);
+        let (_b_home, b) = crate::app::test_app(settings);
+        // Nothing listens on the port yet: the device is away.
+        let port = std::net::TcpListener::bind(("127.0.0.1", 0))
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let mut info = b.me();
+        info.port = port;
+        let peer = a.registry.upsert(
+            info,
+            "127.0.0.1".parse().unwrap(),
+            crate::peers::PeerKind::LocalSend,
+            true,
+        );
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.jpg"), vec![7u8; 200_000]).unwrap();
+        let items = expand_paths(&[dir.path().join("a.jpg")], &Selection::default()).unwrap();
+        let id = send_files(&a, peer, items, None, true).unwrap();
+        let (a2, id2) = (a.clone(), id.clone());
+        let lost = tokio::task::spawn_blocking(move || wait_final(&a2, &id2))
+            .await
+            .unwrap();
+        assert_eq!(lost.status, Status::Failed);
+        assert!(lost.reconnecting, "{:?}", lost.error);
+        assert!(lost.files[0].hashed.is_some());
+
+        // The device comes back and accepts.
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", port))
+            .await
+            .unwrap();
+        tokio::spawn(crate::receiver::serve(
+            b.clone(),
+            listener,
+            Some(b.identity.server_config()),
+        ));
+        let receiver = b.clone();
+        tokio::spawn(async move {
+            loop {
+                let waiting: Vec<String> = receiver
+                    .transfers
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .filter(|t| t.status == Status::Waiting)
+                    .map(|t| t.id.clone())
+                    .collect();
+                for id in waiting {
+                    receiver.decide(&id, true);
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        });
+        let a2 = a.clone();
+        let resumed = tokio::task::spawn_blocking(move || {
+            let deadline = std::time::Instant::now() + Duration::from_secs(30);
+            loop {
+                let next = a2
+                    .transfers
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .find(|t| t.id != id && t.direction == Direction::Out)
+                    .map(|t| t.id.clone());
+                if let Some(next) = next {
+                    return (
+                        wait_final(&a2, &next),
+                        a2.transfers.lock().unwrap().get(&id).cloned(),
+                    );
+                }
+                assert!(std::time::Instant::now() < deadline, "never resumed");
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        })
+        .await
+        .unwrap();
+        let (resumed, old) = resumed;
+        assert_eq!(resumed.status, Status::Done, "{:?}", resumed.error);
+        // The checksum from the first attempt was reused, not taken again.
+        assert_eq!(resumed.checked, 0);
+        assert!(!old.unwrap().reconnecting);
     }
 }

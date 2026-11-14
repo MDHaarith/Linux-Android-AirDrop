@@ -420,6 +420,15 @@ impl App {
 
     /// Cancels or declines a transfer in any state.
     pub fn cancel(&self, id: &str) {
+        {
+            // Stops waiting for a device to come back.
+            let mut transfers = self.transfers.lock().unwrap();
+            if let Some(t) = transfers.get_mut(id).filter(|t| t.reconnecting) {
+                t.reconnecting = false;
+                transfers.emit(id, true);
+                return;
+            }
+        }
         if self.decide(id, false) {
             return;
         }
@@ -475,6 +484,7 @@ impl App {
                         path: PathBuf::from(f.path.as_ref()?),
                         name: f.name.clone(),
                         temporary: false,
+                        hashed: f.hashed.clone(),
                     })
                 })
                 .collect();
@@ -484,7 +494,57 @@ impl App {
         if items.is_empty() {
             return Err("Nothing is left to send".into());
         }
-        self.send_files(&peer_id, items, pin, verify)
+        let new_id = self.send_files(&peer_id, items, pin, verify)?;
+        let mut transfers = self.transfers.lock().unwrap();
+        if let Some(t) = transfers.get_mut(id).filter(|t| t.reconnecting) {
+            t.reconnecting = false;
+            transfers.emit(id, true);
+        }
+        Ok(new_id)
+    }
+
+    /// After a send failed because the device dropped off, resends what is
+    /// left once the device answers again, waiting longer between tries.
+    /// Stops when the user cancels, resumes by hand, or after about a day.
+    pub fn resume_when_back(self: &Arc<Self>, id: String) {
+        const DELAYS: [u64; 6] = [3, 5, 10, 20, 40, 60];
+        let app = self.clone();
+        tokio::spawn(async move {
+            for attempt in 0..1500 {
+                let delay = DELAYS[attempt.min(DELAYS.len() - 1)];
+                tokio::select! {
+                    _ = tokio::time::sleep(Duration::from_secs(delay)) => {}
+                    _ = app.shutdown.cancelled() => return,
+                }
+                let peer_id = {
+                    let transfers = app.transfers.lock().unwrap();
+                    match transfers.get(&id) {
+                        Some(t) if t.reconnecting => {
+                            t.peer["id"].as_str().unwrap_or(&t.peer_id).to_string()
+                        }
+                        _ => return,
+                    }
+                };
+                let Some(peer) = app.registry.get(&peer_id) else {
+                    continue;
+                };
+                if !sender::reachable(&app, &peer).await {
+                    continue;
+                }
+                match app.resume(&id, None) {
+                    Ok(_) => return,
+                    Err(err) => {
+                        tracing::info!("Could not resume {id}: {err}");
+                        break;
+                    }
+                }
+            }
+            let mut transfers = app.transfers.lock().unwrap();
+            if let Some(t) = transfers.get_mut(&id) {
+                t.reconnecting = false;
+                transfers.emit(&id, true);
+            }
+        });
     }
 
     pub fn send_text(

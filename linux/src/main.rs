@@ -140,6 +140,10 @@ struct SendArgs {
     /// Only show how many files and bytes would be sent.
     #[arg(long)]
     dry_run: bool,
+    /// Send the readable files when some cannot be read (such as online-only
+    /// OneDrive files); the others are listed.
+    #[arg(long)]
+    skip_unavailable: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -634,6 +638,7 @@ async fn send(args: SendArgs) -> Result<ExitCode> {
         "extensions": extensions,
         "exclude": args.exclude,
         "root": args.root,
+        "skipUnavailable": args.skip_unavailable,
     });
     ensure_running().await?;
     if args.dry_run {
@@ -651,6 +656,7 @@ async fn send(args: SendArgs) -> Result<ExitCode> {
             response["count"].as_u64().unwrap_or(0),
             human_size(response["bytes"].as_u64().unwrap_or(0))
         );
+        print_unavailable(&response);
         return Ok(ExitCode::SUCCESS);
     }
     let Some(to) = args.to else {
@@ -669,6 +675,16 @@ async fn send(args: SendArgs) -> Result<ExitCode> {
     let mut body = options;
     body["peer"] = wait_for_device(&to).await?.into();
     let response = api(Method::POST, "/api/send", Some(body)).await?;
+    if response.0 == 409 {
+        print_unavailable(&response.1);
+        bail!(
+            "{} (use --skip-unavailable to send the other {})",
+            response.1["message"]
+                .as_str()
+                .unwrap_or("some files cannot be read"),
+            response.1["count"].as_u64().unwrap_or(0)
+        );
+    }
     let id = response.1["id"].as_str().unwrap_or_default().to_string();
     let code = follow(response).await?;
     if let Some(manifest) = args.manifest {
@@ -691,6 +707,25 @@ async fn send(args: SendArgs) -> Result<ExitCode> {
 }
 
 /// Prints the progress of a transfer started through the API until it ends.
+/// Lists files that cannot be read, one "path<TAB>reason" line each.
+fn print_unavailable(response: &Value) {
+    let list = response["unavailable"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    if list.is_empty() {
+        return;
+    }
+    eprintln!("{} file(s) cannot be read:", list.len());
+    for u in list {
+        println!(
+            "{}\t{}",
+            u["path"].as_str().unwrap_or_default(),
+            u["reason"].as_str().unwrap_or_default()
+        );
+    }
+}
+
 async fn follow((status, response): (u16, Value)) -> Result<ExitCode> {
     if status != 200 {
         bail!(
@@ -734,7 +769,19 @@ async fn follow((status, response): (u16, Value)) -> Result<ExitCode> {
                     t["peer"]["alias"].as_str().unwrap_or("device"),
                     " ".repeat(50)
                 );
+                if t["unavailable"].as_array().is_some_and(|u| !u.is_empty()) {
+                    // Partial: what was left out is not reported as sent.
+                    print_unavailable(&t);
+                    return Ok(ExitCode::from(2));
+                }
                 return Ok(ExitCode::SUCCESS);
+            }
+            "failed" if t["reconnecting"].as_bool() == Some(true) => {
+                eprintln!();
+                bail!(
+                    "{}; AirBridge resends the rest when the device is back",
+                    t["error"].as_str().unwrap_or(status)
+                );
             }
             "declined" | "cancelled" | "failed" => {
                 eprintln!();

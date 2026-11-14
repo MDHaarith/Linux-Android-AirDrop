@@ -19,6 +19,8 @@ const state = {
 const peerEls = new Map();
 const itemEls = new Map();
 const lastStatus = new Map();
+/** What changes an activity item's layout, besides progress. */
+const lastShape = new Map();
 const incomingQueue = [];
 let currentIncoming = null;
 let hoverPeer = null;
@@ -64,7 +66,7 @@ async function api(path, { method, body } = {}) {
     }
     catch (_) { /* empty body */ }
     if (!res.ok)
-        throw new Error((data && data.message) || `Request failed (${res.status})`);
+        throw Object.assign(new Error((data && data.message) || `Request failed (${res.status})`), { status: res.status, data });
     return data;
 }
 /* ---------------------------------------------------------------- updates */
@@ -317,7 +319,9 @@ function updateTransfer(t) {
         closeIncoming();
     if (peerId)
         refreshPeerState(peerId);
-    renderItem(t, before !== t.status);
+    const shape = `${t.status}/${!!t.reconnecting}/${t.unavailable?.length || 0}`;
+    renderItem(t, lastShape.get(t.id) !== shape);
+    lastShape.set(t.id, shape);
     updateBadge();
 }
 function onFinished(t, before) {
@@ -333,6 +337,9 @@ function onFinished(t, before) {
     }
     else if (t.status === "declined" && t.direction === "out") {
         toast(`${who} declined`, summary(t), "bad");
+    }
+    else if (t.status === "failed" && t.reconnecting) {
+        toast(`Lost ${who}`, "AirBridge sends the rest when it is back", "", 6000);
     }
     else if (t.status === "failed") {
         toast(t.direction === "out" ? `Couldn't send to ${who}` : `Transfer from ${who} failed`, t.error || "", "bad", 6000);
@@ -402,7 +409,8 @@ function renderItem(t, structural) {
     const pill = t.status === "done" ? `<span class="pill ok">${t.direction === "out" ? "Sent" : "Received"}</span>`
         : t.status === "transferring" ? `<span class="pill live">${t.direction === "out" ? "Sending" : "Receiving"}</span>`
             : t.status === "waiting" ? `<span class="pill live">Waiting</span>`
-                : `<span class="pill bad">${t.status[0].toUpperCase() + t.status.slice(1)}</span>`;
+                : t.reconnecting ? `<span class="pill live">Reconnecting</span>`
+                    : `<span class="pill bad">${t.status[0].toUpperCase() + t.status.slice(1)}</span>`;
     const images = t.status === "done" ? files.filter((f) => (f.type || "").startsWith("image/") && f.path).slice(0, 4) : [];
     const showFiles = !t.message && files.length > 1 ? files.slice(0, 4) : [];
     const hasPath = files.some((f) => f.path) && t.direction === "in";
@@ -418,6 +426,8 @@ function renderItem(t, structural) {
     ${showFiles.length ? `<div class="files">${showFiles.map((f) => `<div>${fileIcon(f.type, f.name)}<span>${esc(f.name)}</span><small class="faint">${bytes(f.size)}</small></div>`).join("")}${files.length > 4 ? `<div class="faint">+ ${files.length - 4} more</div>` : ""}</div>` : ""}
     ${!isFinal(t) && t.status === "transferring" ? `<div class="bar"><i style="width:${progress * 100}%"></i></div>` : ""}
     <div class="acts">
+      ${t.reconnecting ? `<button class="btn ghost small" data-act="cancel">Stop waiting</button>` : ""}
+      ${t.unavailable?.length ? `<button class="btn ghost small" data-act="unsent">Copy list of unsent files</button>` : ""}
       ${!isFinal(t) ? `<button class="btn ghost small" data-act="cancel">${t.status === "waiting" && t.direction === "in" ? "Decline" : "Cancel"}</button>` : ""}
       ${t.direction === "in" && t.status === "waiting" ? `<button class="btn small" data-act="review">Review</button>` : ""}
       ${t.status === "done" && hasPath ? `<button class="btn ghost small" data-act="open">Open</button><button class="btn ghost small" data-act="reveal">Show in folder</button>` : ""}
@@ -431,7 +441,7 @@ function renderItem(t, structural) {
     });
 }
 function canResume(t) {
-    return t.direction === "out" && !t.message && (t.status === "failed" || t.status === "cancelled")
+    return t.direction === "out" && !t.message && !t.reconnecting && (t.status === "failed" || t.status === "cancelled")
         && (t.files || []).some((f) => f.status !== "done" && f.status !== "skipped");
 }
 function statusText(t) {
@@ -445,15 +455,18 @@ function statusText(t) {
         const pin = t.peer?.pin ? ` · PIN ${t.peer.pin}` : "";
         return (t.direction === "out" ? `Waiting for ${t.peer?.alias || "device"}…` : "Waiting for you") + pin;
     }
+    if (t.reconnecting)
+        return `Lost ${t.peer?.alias || "the device"} · sends the rest when it is back`;
+    const unsent = t.unavailable?.length ? ` · ${t.unavailable.length} unreadable file(s) not sent` : "";
     if (t.status === "done") {
         const files = t.files || [];
         // Outgoing: the receiver rejects a checksum mismatch, so a verified send that finished is verified.
         const ok = t.direction === "out" ? t.verify
             : files.some((f) => f.verified) && files.every((f) => f.verified || f.status === "skipped");
         const verified = ok ? "Verified · " : "";
-        return `${t.message ? "" : bytes(t.total) + " · "}${verified}${when}`;
+        return `${t.message ? "" : bytes(t.total) + " · "}${verified}${when}${unsent}`;
     }
-    return `${t.error || t.status} · ${when}`;
+    return `${t.error || t.status} · ${when}${unsent}`;
 }
 async function itemAction(id, act) {
     try {
@@ -463,6 +476,13 @@ async function itemAction(id, act) {
             const t = state.transfers.get(id);
             if (t?.message && (await AB.copyText(t.message)))
                 return toast("Copied to clipboard", "", "ok", 2000);
+        }
+        if (act === "unsent") {
+            const t = state.transfers.get(id);
+            const list = (t?.unavailable || []).map((u) => `${u.path}\t${u.reason}`).join("\n");
+            if (await AB.copyText(list))
+                return toast("Copied", "Paths of the files that were not sent", "ok", 2000);
+            return;
         }
         if (act === "resume") {
             const t = state.transfers.get(id);
@@ -648,9 +668,40 @@ function browserPick(peerId, folder) {
     };
     input.click();
 }
+/** Sends files; when some cannot be read, asks whether to send the rest. */
+async function sendFiles(body) {
+    try {
+        await api("/send", { body });
+    }
+    catch (err) {
+        const { status, data } = err;
+        if (status !== 409 || !data?.unavailable)
+            throw err;
+        askSendReadable(body, data.count, data.unavailable);
+    }
+}
+function askSendReadable(body, count, unavailable) {
+    const shown = unavailable.slice(0, 8);
+    openModal(`
+    <h2>${unavailable.length} file(s) can't be read</h2>
+    <p class="muted">Nothing has been sent yet. You can send the other ${count} file(s) with their folders kept; these stay listed on the transfer so you can send them later.</p>
+    <div class="files">${shown.map((u) => `<div>${fileIcon("", u.name)}<span title="${esc(u.path)}">${esc(u.name)}</span><small class="faint">${esc(u.reason)}</small></div>`).join("")}${unavailable.length > shown.length ? `<div class="faint">+ ${unavailable.length - shown.length} more</div>` : ""}</div>
+    <div class="actions"><button class="btn ghost" data-close>Cancel</button>${count ? `<button class="btn" id="sendReadable">Send the other ${count}</button>` : ""}</div>`, (card) => {
+        card.querySelector("[data-close]").addEventListener("click", closeModal);
+        card.querySelector("#sendReadable")?.addEventListener("click", async () => {
+            closeModal();
+            try {
+                await api("/send", { body: { ...body, skipUnavailable: true } });
+            }
+            catch (err) {
+                toast("Couldn't send", errorText(err), "bad");
+            }
+        });
+    });
+}
 async function sendPaths(peerId, paths) {
     try {
-        await api("/send", { body: { peer: peerId, paths, pin: state.pins[peerId] } });
+        await sendFiles({ peer: peerId, paths, pin: state.pins[peerId] });
     }
     catch (err) {
         toast("Couldn't send", errorText(err), "bad");
@@ -731,7 +782,7 @@ async function sendStaged(peerId) {
         const staged = copies.filter((i) => i.id).map((i) => i.id);
         try {
             if (paths.length || staged.length)
-                await api("/send", { body: { peer, paths, staged, pin: state.pins[peer] } });
+                await sendFiles({ peer, paths, staged, pin: state.pins[peer] });
             for (const item of messages) {
                 await api(item.url ? "/send-url" : "/send-text", { body: { peer, ...(item.url ? { url: item.url } : { text: item.text }), pin: state.pins[peer] } });
             }
@@ -1047,6 +1098,7 @@ function openSettings() {
         <option value="right" ${s.edgeSide !== "left" ? "selected" : ""}>Right edge</option>
         <option value="left" ${s.edgeSide === "left" ? "selected" : ""}>Left edge</option></select></div>` : ""}
       ${settingSwitch("verifySends", "Verify contents", "Check every file with SHA-256 so a damaged copy is caught (slower to start)")}
+      ${settingSwitch("autoResume", "Resume when back", "If a device drops off mid-send, send the rest when it reconnects")}
       ${settingSwitch("webCompanion", "Phone browser companion", "Phones without an app pair with a QR code (plain HTTP on your Wi‑Fi; what they send asks you first)")}
       <div class="field"><label for="sPin">Require a PIN (optional)</label><input class="input" id="sPin" placeholder="No PIN" value="${esc(s.pin || "")}" autocomplete="off"></div>
     </div>

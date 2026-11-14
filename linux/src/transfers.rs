@@ -67,6 +67,9 @@ pub struct FileState {
     pub dto: Option<FileDto>,
     #[serde(skip)]
     pub token: Option<String>,
+    /// Outgoing: the checksum sent, kept so a resend need not hash again.
+    #[serde(skip)]
+    pub hashed: Option<crate::sender::Hashed>,
 }
 
 impl FileState {
@@ -82,6 +85,7 @@ impl FileState {
             verified: false,
             dto: Some(dto),
             token: None,
+            hashed: None,
         }
     }
 }
@@ -112,6 +116,12 @@ pub struct Transfer {
     /// Bytes hashed so far while preparing a verified send.
     #[serde(default)]
     pub checked: u64,
+    /// Failed because the device dropped off; resent when it is back.
+    #[serde(default)]
+    pub reconnecting: bool,
+    /// Chosen files left out because they could not be read.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unavailable: Vec<crate::sender::Unavailable>,
     #[serde(skip)]
     pub peer_id: String,
     #[serde(skip)]
@@ -157,6 +167,8 @@ impl Transfer {
             files,
             verify: false,
             checked: 0,
+            reconnecting: false,
+            unavailable: Vec::new(),
             peer_id: peer_id.to_string(),
             peer_ip: None,
             session_id: None,
@@ -256,6 +268,7 @@ impl Transfers {
         match serde_json::from_str::<Vec<Transfer>>(&text) {
             Ok(list) => {
                 for mut transfer in list {
+                    transfer.reconnecting = false;
                     if !transfer.status.is_final() {
                         transfer.status = Status::Failed;
                         transfer.error = Some("Interrupted".into());

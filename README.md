@@ -295,6 +295,13 @@ airbridge send Archive/ --to pixel --verify --manifest archive.sha256
 to files found inside folders. *Verify contents* in Settings does the same as `--verify` for
 every send. If a send fails or is cancelled, **Resume** in the activity list sends the files
 that did not arrive; the receiver skips files it already has with the same size and date.
+If the device dropped off, AirBridge does this by itself once the device answers again
+(*Resume when back* in Settings), reusing the checksums of files that did not change.
+
+Files that cannot be read, such as online-only OneDrive files or files without permission, are
+found before anything is sent; `--dry-run` lists them. The app asks whether to send the rest,
+and `--skip-unavailable` does that from the command line. Nothing is downloaded from the cloud,
+and the transfer keeps the list of files it left out (the command exits with code 2).
 
 **Android**
 

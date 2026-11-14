@@ -207,6 +207,7 @@ async fn stage(name: &str, data: &[u8]) -> Result<SendItem> {
         path,
         name: name.to_string(),
         temporary: true,
+        hashed: None,
     })
 }
 
@@ -277,6 +278,7 @@ async fn stage_stream(name: &str, body: hyper::body::Incoming) -> Result<SendIte
         path,
         name: name.to_string(),
         temporary: true,
+        hashed: None,
     })
 }
 
