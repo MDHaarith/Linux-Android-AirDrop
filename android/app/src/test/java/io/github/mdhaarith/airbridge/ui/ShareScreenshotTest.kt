@@ -241,7 +241,7 @@ class ShareScreenshotTest {
             ShareSheetUi(
                 SharePreview(
                     "github.com",
-                    "https://github.com/MDHaarith/Linux-Android-AirDrop",
+                    "https://github.com/MDHaarith/AirBridge",
                     isLink = true,
                 ),
                 peers = emptyList(),

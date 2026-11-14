@@ -1,7 +1,7 @@
 /* AirBridge desktop window. Talks to the local service over /api (cookie auth). */
 "use strict";
 window.airbridgeStarted = true; // parsed fine: compat.js keeps its warning hidden
-const { icons, deviceIcon, fileIcon, sharePhrase, bytes, ago, esc, el, toast, center } = AB;
+const { icons, deviceIcon, fileIcon, sharePhrase, bytes, ago, duration, esc, el, toast, center } = AB;
 /** An element the page's HTML always has. */
 const $ = (id) => document.getElementById(id);
 const state = {
@@ -445,11 +445,13 @@ function canResume(t) {
 }
 function statusText(t) {
     const when = ago(t.finished || t.created);
+    // Upload or download time: live while transferring, final once done.
+    const took = t.started ? duration((t.finished || Date.now() / 1000) - t.started) : "";
     if (t.status === "waiting" && t.direction === "out" && t.verify && t.checked < t.total) {
         return `Checking files… ${Math.floor((100 * t.checked) / (t.total || 1))}%`;
     }
     if (t.status === "transferring")
-        return `${bytes(t.done)} of ${bytes(t.total)} · ${bytes(t.speed)}/s`;
+        return `${bytes(t.done)} of ${bytes(t.total)} · ${bytes(t.speed)}/s · ${took}`;
     if (t.status === "waiting") {
         const pin = t.peer?.pin ? ` · PIN ${t.peer.pin}` : "";
         return (t.direction === "out" ? `Waiting for ${t.peer?.alias || "device"}…` : "Waiting for you") + pin;
@@ -463,7 +465,7 @@ function statusText(t) {
         const ok = t.direction === "out" ? t.verify
             : files.some((f) => f.verified) && files.every((f) => f.verified || f.status === "skipped");
         const verified = ok ? "Verified · " : "";
-        return `${t.message ? "" : bytes(t.total) + " · "}${verified}${when}${unsent}`;
+        return `${t.message ? "" : bytes(t.total) + " · "}${verified}${took && !t.message ? `took ${took} · ` : ""}${when}${unsent}`;
     }
     return `${t.error || t.status} · ${when}${unsent}`;
 }
@@ -1210,7 +1212,18 @@ function init() {
     $("btnSettings").addEventListener("click", openSettings);
     $("btnUpdate").addEventListener("click", installUpdate);
     checkUpdate();
-    setInterval(checkUpdate, 6 * 60 * 60 * 1000);
+    setInterval(checkUpdate, 60 * 60 * 1000);
+    // The page lives on in the tray, where hidden webviews pause timers: check
+    // again whenever the window comes back, at most every 15 minutes.
+    let lastCheck = Date.now();
+    const recheck = () => {
+        if (document.hidden || Date.now() - lastCheck < 15 * 60 * 1000)
+            return;
+        lastCheck = Date.now();
+        checkUpdate();
+    };
+    window.addEventListener("focus", recheck);
+    document.addEventListener("visibilitychange", recheck);
     $("btnActivity").addEventListener("click", () => toggleActivity());
     $("closeActivity").addEventListener("click", () => toggleActivity(false));
     $("clearHistory").addEventListener("click", () => api("/history", { method: "DELETE" }));

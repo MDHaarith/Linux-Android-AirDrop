@@ -39,6 +39,7 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import io.github.mdhaarith.airbridge.core.Transfer
 
 // ------------------------------------------------------------- formatting
 
@@ -54,6 +55,17 @@ fun formatBytes(bytes: Long): String {
     return if (value >= 100) "%.0f %s".format(value, units[unit])
     else "%.1f %s".format(value, units[unit])
 }
+
+/** Milliseconds as m:ss, or h:mm:ss past an hour. */
+fun formatDuration(millis: Long): String {
+    val s = (millis / 1000).coerceAtLeast(0)
+    return if (s >= 3600) "%d:%02d:%02d".format(s / 3600, s / 60 % 60, s % 60)
+    else "%d:%02d".format(s / 60, s % 60)
+}
+
+/** Upload or download time: live while transferring, final once done; null before it starts. */
+val Transfer.elapsed: Long?
+    get() = started?.let { (finished ?: System.currentTimeMillis()) - it }
 
 fun timeAgo(millis: Long): String {
     val seconds = (System.currentTimeMillis() - millis) / 1000

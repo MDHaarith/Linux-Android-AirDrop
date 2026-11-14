@@ -244,12 +244,14 @@ private fun TransferRow(t: Transfer, vm: AppViewModel) {
                     val detail =
                         when (t.status) {
                             Status.TRANSFERRING ->
-                                "${formatBytes(t.done)} of ${formatBytes(t.total)} · ${formatBytes(t.speed)}/s"
+                                "${formatBytes(t.done)} of ${formatBytes(t.total)} · ${formatBytes(t.speed)}/s" +
+                                    (t.elapsed?.let { " · ${formatDuration(it)}" } ?: "")
                             Status.WAITING ->
                                 if (t.direction == Direction.OUT) "Waiting for ${t.peerAlias}…"
                                 else "Waiting for you"
                             Status.DONE ->
                                 (if (t.message == null) "${formatBytes(t.total)} · " else "") +
+                                    (t.elapsed?.takeIf { t.message == null }?.let { "took ${formatDuration(it)} · " } ?: "") +
                                     timeAgo(t.finished ?: t.created)
                             else -> "${t.error ?: ""} · ${timeAgo(t.finished ?: t.created)}"
                         }

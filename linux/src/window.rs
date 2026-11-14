@@ -30,11 +30,19 @@ pub fn run(url: &str) -> Result<()> {
     };
     #[cfg(not(windows))]
     let icon = None;
+    // Fit small or scaled screens (1366×768 at 125% is only 1093×614 logical).
+    let (width, height) = event_loop
+        .primary_monitor()
+        .map(|m| {
+            let size = m.size().to_logical::<f64>(m.scale_factor());
+            (size.width * 0.9, size.height * 0.85)
+        })
+        .unwrap_or((f64::MAX, f64::MAX));
     let window = WindowBuilder::new()
         .with_window_icon(icon)
         .with_title("AirBridge")
-        .with_inner_size(LogicalSize::new(1120.0, 780.0))
-        .with_min_inner_size(LogicalSize::new(720.0, 560.0))
+        .with_inner_size(LogicalSize::new(width.min(1120.0), height.min(780.0)))
+        .with_min_inner_size(LogicalSize::new(width.min(720.0), height.min(560.0)))
         .build(&event_loop)?;
 
     // WebView2 would otherwise keep its data next to the exe, which may be read-only.

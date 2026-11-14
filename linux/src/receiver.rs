@@ -418,20 +418,52 @@ async fn prepare_upload(
 
     transfer.session_id = Some(uuid::Uuid::new_v4().to_string());
     let total = transfer.total();
-    let id = {
+    let mut resumed = false;
+    let (id, stale) = {
         let mut transfers = app.transfers.lock().unwrap();
-        if transfers.active_incoming().is_some() {
-            return error(409, "Blocked by another session");
+        let mut stale = None;
+        if let Some(active) = transfers.active_incoming() {
+            // The same proven sender asking again means its last session broke off
+            // (it resumes or resends): drop the one we still wait on. Never for an
+            // unproven id, or anyone could end your transfers by claiming it.
+            if !(verified && active.peer_verified && active.peer_id == transfer.peer_id) {
+                return error(409, "Blocked by another session");
+            }
+            // You already accepted these files once: the rest comes in without asking.
+            resumed = active.status == Status::Transferring
+                && transfer.files.iter().all(|f| {
+                    active
+                        .files
+                        .iter()
+                        .any(|a| a.name == f.name && a.size == f.size)
+                });
+            let active = active.id.clone();
+            transfers.finish(
+                &active,
+                Status::Failed,
+                Some("Interrupted · the sender started again".into()),
+            );
+            stale = Some(active);
         }
-        transfers.add(transfer)
+        (transfers.add(transfer), stale)
     };
+    if let Some(stale) = stale {
+        app.finish(&stale, Status::Failed, None); // also drops a pending prompt
+    }
 
     let mut guard = WaitGuard {
         app: app.clone(),
         id: id.clone(),
         armed: true,
     };
-    let accepted = app.ask_accept(&id).await;
+    let accepted = if resumed {
+        if let Some(t) = app.transfers.lock().unwrap().get_mut(&id) {
+            t.auto_accepted = true;
+        }
+        true
+    } else {
+        app.ask_accept(&id).await
+    };
     guard.armed = false;
 
     if app
