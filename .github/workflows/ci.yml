@@ -1,17 +1,54 @@
 name: CI
 
 on:
+  # main still builds on every push: Release runs after CI there.
   push:
-    branches: ["**"]
+    branches: [main]
   pull_request:
+    # `edited`: adding "Closes #n" lines to the description re-checks the gate.
+    types: [opened, edited, synchronize, reopened]
 
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
+  # A pull request is only tested (and, with the main-branch rule, only merged)
+  # once it closes at least 10 issues ("Closes #n" in its description).
+  issue-gate:
+    name: Closes 10+ issues
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: read
+      pull-requests: read
+    steps:
+      - name: Count the issues this pull request closes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          MIN: 10
+        run: |
+          count=$(gh api graphql -F owner="${REPO%/*}" -F name="${REPO#*/}" -F pr="$PR" -f query='
+            query($owner: String!, $name: String!, $pr: Int!) {
+              repository(owner: $owner, name: $name) {
+                pullRequest(number: $pr) { closingIssuesReferences { totalCount } }
+              }
+            }' --jq '.data.repository.pullRequest.closingIssuesReferences.totalCount')
+          echo "This pull request closes $count issue(s); $MIN are needed."
+          if [ "$count" -lt "$MIN" ]; then
+            echo "::error::Link at least $MIN issues with \"Closes #n\" in the description (found $count). Tests run once it does."
+            exit 1
+          fi
+
   linux:
     name: Linux app (Rust)
+    needs: issue-gate
+    # Also runs on pushes to main, where the gate is skipped.
+    if: ${{ !failure() && !cancelled() }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     defaults:
@@ -53,6 +90,8 @@ jobs:
 
   windows:
     name: Windows app (Rust)
+    needs: issue-gate
+    if: ${{ !failure() && !cancelled() }}
     runs-on: windows-latest
     timeout-minutes: 30
     defaults:
@@ -80,6 +119,8 @@ jobs:
 
   android:
     name: Android app + interop with Linux
+    needs: issue-gate
+    if: ${{ !failure() && !cancelled() }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
