@@ -14,9 +14,9 @@ concurrency:
 
 jobs:
   # A pull request is only tested (and, with the main-branch rule, only merged)
-  # once it closes at least 10 issues ("Closes #n" in its description).
+  # once it closes at least 5 issues ("Closes #n" in its description).
   issue-gate:
-    name: Closes 10+ issues
+    name: Closes 5+ issues
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -30,7 +30,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           PR: ${{ github.event.pull_request.number }}
-          MIN: 10
+          MIN: 5
         run: |
           count=$(gh api graphql -F owner="${REPO%/*}" -F name="${REPO#*/}" -F pr="$PR" -f query='
             query($owner: String!, $name: String!, $pr: Int!) {

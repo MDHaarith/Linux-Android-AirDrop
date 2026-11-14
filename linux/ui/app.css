@@ -68,6 +68,14 @@ body.activity-open .stage, body.activity-open .beacon { right: 360px; }
 .device-rail > p { margin: 0 0 14px; color: var(--muted); font-size: 12px; text-align: center; }
 .device-rail .peers { gap: 6px; padding: 0; }
 .device-rail .peer { flex-shrink: 0; }
+/* Short windows (laptops, scaled screens): smaller bubbles so more devices fit. */
+@media (max-height: 720px) {
+  .device-rail { padding-top: 14px; }
+  .device-rail > p { display: none; }
+  .device-rail .peer { gap: 4px; padding: 4px 0; }
+  .device-rail .peer .bubble { width: 58px; height: 58px; }
+  .device-rail .peer .avatar { inset: 5px; }
+}
 .peer.selected { background: var(--accent-soft); }
 .peer.selected .avatar { box-shadow: 0 0 0 3px var(--accent); }
 .drop-prompt { max-width: 400px; padding: 24px; text-align: center; animation: rise-in 0.4s var(--ease-out); }
@@ -467,7 +475,10 @@ body.dragging .drop-overlay { opacity: 1; }
 body.activity-open .toasts { right: 374px; }
 
 @media (max-width: 900px) {
-  body.activity-open .stage, body.activity-open .beacon { right: 0; }
+  /* Too narrow to sit side by side: the panel floats over the drop area, which
+     hides rather than showing half its text behind the panel. */
+  body.activity-open .stage, body.activity-open .beacon { right: 0; visibility: hidden; }
+  body.activity-open .activity { box-shadow: -12px 0 32px rgba(0, 0, 0, 0.18); }
   body.activity-open .toasts { right: 14px; }
   body.activity-open .tray { left: calc(50% + 100px); width: min(560px, calc(100vw - 232px)); }
 }
