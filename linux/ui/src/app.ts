@@ -1204,7 +1204,17 @@ function init() {
   $("btnSettings").addEventListener("click", openSettings);
   $("btnUpdate").addEventListener("click", installUpdate);
   checkUpdate();
-  setInterval(checkUpdate, 6 * 60 * 60 * 1000);
+  setInterval(checkUpdate, 60 * 60 * 1000);
+  // The page lives on in the tray, where hidden webviews pause timers: check
+  // again whenever the window comes back, at most every 15 minutes.
+  let lastCheck = Date.now();
+  const recheck = () => {
+    if (document.hidden || Date.now() - lastCheck < 15 * 60 * 1000) return;
+    lastCheck = Date.now();
+    checkUpdate();
+  };
+  window.addEventListener("focus", recheck);
+  document.addEventListener("visibilitychange", recheck);
   $("btnActivity").addEventListener("click", () => toggleActivity());
   $("closeActivity").addEventListener("click", () => toggleActivity(false));
   $("clearHistory").addEventListener("click", () => api("/history", { method: "DELETE" }));
