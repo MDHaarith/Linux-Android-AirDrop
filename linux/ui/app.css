@@ -63,7 +63,6 @@ body.activity-open .stage, body.activity-open .beacon { right: 360px; }
   overflow-y: auto;
   border-right: 0.5px solid var(--separator);
   background: var(--material);
-  scrollbar-width: thin;
 }
 .device-rail h2 { margin: 0 0 6px; font-size: 15px; font-weight: 600; }
 .device-rail > p { margin: 0 0 14px; color: var(--muted); font-size: 12px; text-align: center; }
@@ -227,7 +226,7 @@ body.activity-open .tray { left: calc(50% - 80px); width: min(560px, calc(100vw 
 @keyframes tray-in { from { opacity: 0; transform: translate(-50%, 12px); } }
 .tray-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; font-size: 13px; }
 .tray-head b { margin-right: 6px; font-weight: 600; }
-.tray-files { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 2px; scrollbar-width: thin; }
+.tray-files { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 2px; }
 .chip {
   position: relative;
   display: flex;
@@ -271,7 +270,8 @@ body.activity-open .activity { transform: none; visibility: visible; transition:
 .activity-head { display: flex; align-items: center; justify-content: space-between; padding-bottom: 8px; }
 .activity-head h3 { margin: 0; font-size: 15px; font-weight: 600; }
 .activity-head .row { display: flex; gap: 4px; align-items: center; }
-.activity-list { flex: 1; overflow-y: auto; display: flex; flex-direction: column; padding-bottom: 20px; scrollbar-width: thin; }
+/* The scroll bar sits in the panel's side padding, not over the items. */
+.activity-list { flex: 1; overflow-y: auto; scrollbar-gutter: stable; display: flex; flex-direction: column; margin-right: -12px; padding: 0 2px 20px 0; }
 .activity-list:empty { display: none; }
 .activity-empty { flex: 1; display: grid; place-content: center; padding-bottom: 60px; color: var(--muted); text-align: center; font-size: 13px; }
 
