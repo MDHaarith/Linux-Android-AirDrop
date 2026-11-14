@@ -140,7 +140,7 @@ class ScreenshotTest {
                     "Fedora",
                     Status.DONE,
                     listOf(TFile("m", "m.txt", 40, "text/plain", 40, FileStatus.DONE)),
-                    message = "https://github.com/MDHaarith/Linux-Android-AirDrop",
+                    message = "https://github.com/MDHaarith/AirBridge",
                     created = now - 600_000,
                     started = now - 600_000,
                     finished = now - 600_000,
