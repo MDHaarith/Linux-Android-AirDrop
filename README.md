@@ -1,488 +1,73 @@
 # AirBridge
 
-**AirDrop-style sharing between your Linux or Windows computer and your Android phone.**
-Drop a file on your phone and it arrives. Send links, notes and the clipboard in one tap.
-There is no cloud, no cable and no account. It looks and behaves like AirDrop between a Mac and
-an iPhone: clean frosted cards, gray device avatars, one blue accent and calm animations, in
-light and dark.
+AirDrop-style sharing between Linux, Windows and Android. Files, folders, photos, text and the
+clipboard go straight from device to device over your own network. No cloud, no cable, no account.
 
-<p align="center">
-  <img src="docs/screenshots/desktop-incoming.png" width="62%" alt="Desktop: “Studio PC” would like to share a photo, with a preview of the photo, Decline and Accept">
-  <img src="docs/screenshots/android-incomingRequest.png" width="27%" alt="Android: Material receive dialog with a photo preview">
-</p>
+Downloads, setup and full documentation: **[MDHaarith/AirBridge](https://github.com/MDHaarith/AirBridge)**.
 
-AirBridge speaks the open **[LocalSend](https://github.com/localsend/localsend) v2 protocol**, so it
-also works with the official LocalSend apps (Windows, macOS, iOS, Android, Linux). The Linux app
-also speaks **Google Quick Share**, so a stock Android phone with no app installed can share to
-your computer from its own share sheet, just like an iPhone with a Mac. Background: **[docs/RESEARCH.md](docs/RESEARCH.md)**.
+## What it does
 
-## What's inside
+- Finds nearby devices automatically on the same Wi-Fi, and paired devices over Tailscale or any VPN.
+- Sends files of any size, whole folders, photos with previews, text, links and the clipboard, both ways.
+- Asks before receiving, with a photo preview. Your own trusted devices are accepted without asking.
+- Speaks the LocalSend v2 protocol, so it works with the official LocalSend apps (including iPhone and Mac).
+- Speaks Google Quick Share on Linux and Windows, so a stock Android phone can share with no app installed.
+- Serves a browser page, so a phone with no app at all can send and receive after scanning a QR code.
+- Encrypts everything with TLS and pinned certificates. Updates are signed (Ed25519).
 
-| Part | Tech | Highlights |
-|---|---|---|
-| **Linux app** (`linux/`) | Rust (tokio, axum, rustls) + an embedded web UI | AirDrop-style window and requests, drag & drop, **Quick Share for stock Android**, **screen-edge drop zone** (KDE Plasma, wlroots, X11), tray icon, notifications with Accept/Decline, CLI, file-manager "Send with AirBridge" |
-| **Windows app** (same `linux/` crate) | Rust + the same embedded web UI | LocalSend HTTPS, QR pairing, remembered addresses / Tailscale, own WebView2 window, tray icon, toast notifications with Accept/Decline, **screen-edge drop zone**, Quick Share with Bluetooth wake-up, installer with *Send to* shortcut, self-update |
-| **Android app** (`android/`) | Kotlin + Jetpack Compose | iOS-style app and requests, **your devices in the system share sheet (Direct Share)**, a one-tap share sheet, **edge panel over any app**, photo previews in notifications, Quick Settings tile, background receiving |
-| **Phone browser companion** | Served by the desktop app | A phone with *no app at all* scans a QR code and shares through its browser |
+Received files go to `Downloads/AirBridge` on Android and to your Downloads folder on Windows and
+Linux.
 
-### Like AirDrop on a Mac
+## Repository layout
 
-**Receiving looks like AirDrop.** When someone shares with you, an alert pops up with a preview
-of the photo: “Studio PC” would like to share a photo, with Decline and Accept. Several photos
-show as a small stack, other files as their icon. Photos travel with a small preview in the
-request (LocalSend's `preview` field), so you see what is coming before you accept, on the
-computer and on the phone, and in the notification too. Your own devices skip the question:
-mark them as trusted and what they send is accepted and opened right away (one photo in its
-viewer, several files in their folder, a link in the browser).
-
-<p align="center">
-  <img src="docs/screenshots/android-incomingPhotos.png" width="24%" alt="Android: several photos as a small stack">
-  <img src="docs/screenshots/desktop-sending.png" width="72%" alt="Desktop: sending, with a blue progress ring around the device">
-</p>
-
-**Share from any Android phone, no app needed.** AirBridge shows up in Android's built-in
-*Quick Share* sheet like any Chromebook or Windows PC. Pick it, check that the four-digit PIN
-matches the one on your computer, accept, done. Links open with one click from the
-notification. When you send *to* a phone, AirBridge wakes nearby phones over Bluetooth (BlueZ on
-Linux, the built-in Bluetooth LE stack on Windows) so they appear as targets.
-
-**Drag to the edge of the screen.** Drag an image out of a web page, files out of Dolphin, or a
-piece of text to the right edge of the screen. A card slides out with your devices. Drop it on
-one and it's sent. Images come straight from the browser in their original format, and web
-links are downloaded first when they point to a file.
-
-<p align="center">
-  <img src="docs/screenshots/edge-drop-flow.png" width="96%" alt="Screen-edge drop zone: hover a device, waiting for the phone to accept, sent">
-</p>
-**And from the phone.** Your computers show up in the first row of Android's own share sheet
-(Direct Share), like AirDrop on an iPhone. Tap one and a small sheet sends it right there, with a
-progress ring, then folds away. Or turn on the **edge panel**: a slim handle on the side of the
-screen, over any app, that sends your clipboard, your latest photo, or whatever you drop on it.
-While you drag something, the handle opens into a list of nearby devices: drop on one to send it
-there. (Android then shows its own "displaying over other apps" notice; long-press it to hide it.)
-Received photos show up as a preview in the notification.
-
-<p align="center">
-  <img src="docs/screenshots/android-shareSheet.png" width="24%" alt="Android share sheet: tap a device">
-  <img src="docs/screenshots/android-shareSheetSending.png" width="24%" alt="Sending with a progress ring">
-  <img src="docs/screenshots/android-shareSheetSent.png" width="24%" alt="Sent">
-  <img src="docs/screenshots/android-edgePanel.png" width="24%" alt="Edge panel over another app">
-</p>
-
-<p align="center">
-  <img src="docs/screenshots/android-dropTab.png" width="24%" alt="Dragging a photo to the screen edge: nearby devices, the one under the finger in blue">
-</p>
-
-<p align="center">
-  <img src="docs/screenshots/edge-drop-devices.png" width="60%" alt="Drop zone with several devices (light), and while looking for devices (dark)">
-  <img src="docs/screenshots/desktop-quickshare-pin.png" width="36%" alt="Quick Share request from an Android phone, with the PIN">
-</p>
-
-### Features
-
-- **Find devices automatically**: multicast discovery on your Wi‑Fi, with a "Scan network"
-  fallback for routers that block multicast.
-- **Files, folders, photos, text and clipboard**, in both directions. Folders keep their structure.
-- **Accept or decline** from the AirDrop-style alert or straight from the notification, with a
-  preview of the photos. **Trusted devices** (your own phone) are accepted automatically and
-  what they send opens right away.
-- **One device, one entry**: a computer that answers over both LocalSend and Quick Share shows
-  up once.
-- **Apple-style design everywhere** (desktop window, phone app, share sheet, edge panels, browser
-  page):
-  - Frosted cards, gray device avatars and one blue accent, in light and dark
-  - A blue ring fills around the device while sending, then "Sent" in blue
-  - Calm motion: alerts scale in, sheets slide, the "visible" beacon sends out slow waves
-  - Reduced-motion settings are respected
-- **Secure by default**: TLS everywhere, certificates pinned by fingerprint, and mutual TLS.
-  Only your own devices that prove their identity with their certificate are accepted without
-  asking. Floods are rate-limited, an optional PIN must be at least 6 characters, and nothing
-  runnable opens by itself. Details: **[docs/SECURITY.md](docs/SECURITY.md)**.
-
-<table>
-<tr>
-<td><img src="docs/screenshots/desktop-incoming.png" alt="Incoming request on the desktop"></td>
-<td><img src="docs/screenshots/desktop-activity.png" alt="Activity drawer"></td>
-</tr>
-<tr>
-<td><img src="docs/screenshots/desktop-pair.png" alt="Pair a phone browser with a QR code"></td>
-<td><img src="docs/screenshots/desktop-dark.png" alt="Dark theme"></td>
-</tr>
-</table>
-
-<p align="center">
-  <img src="docs/screenshots/android-home.png" width="19%" alt="Android: Material 3 nearby devices">
-  <img src="docs/screenshots/android-home-dark.png" width="19%" alt="Android: Material 3 dark theme">
-  <img src="docs/screenshots/android-settings.png" width="19%" alt="Android: settings">
-  <img src="docs/screenshots/android-activity.png" width="19%" alt="Android: activity">
-  <img src="docs/screenshots/android-pickADevice.png" width="19%" alt="Android: pick a device">
-</p>
-
-<p align="center">
-  <img src="docs/screenshots/phone-companion.png" width="19%" alt="Browser companion">
-  <img src="docs/screenshots/phone-companion-offer.png" width="19%" alt="Browser companion: something from the computer">
-  <img src="docs/screenshots/phone-companion-sent.png" width="19%" alt="Browser companion: sent">
-</p>
-
-## Install
-
-### Linux
-
-Download `airbridge-x86_64.AppImage` from the newest
-[release](https://github.com/MDHaarith/Airbridge/releases), then:
-
-```bash
-chmod +x airbridge-x86_64.AppImage && ./airbridge-x86_64.AppImage
+```
+linux/      Rust service, CLI and embedded web UI for Linux and Windows (ui/ is TypeScript)
+android/    Kotlin + Jetpack Compose app; core/ is the protocol engine, ui/ the screens
+docs/       SECURITY.md, RESEARCH.md, ROADMAP.md
 ```
 
-It uses the system's GTK 3, WebKitGTK 4.1 and gtk-layer-shell, which most desktops already have.
-When a newer version is released after `main` passes CI, an **Update** button appears in the toolbar. It
-downloads the new AppImage, checks its Ed25519 signature against the key built into the app,
-swaps the file and restarts. Unsigned or older versions are refused.
-If you installed an older `main-N` AppImage, download v0.1.5 once to switch to versioned updates.
+## Build
 
-#### From source
-
-You need [Rust](https://rustup.rs) 1.89 or newer and the Wayland client headers
-(`libwayland-dev` / `wayland-devel`, used by the file picker). For a native app window, also
-install WebKitGTK. Without it, AirBridge opens in a Chromium app window or your default browser.
+Linux (Rust 1.89 or newer):
 
 ```bash
-# Debian/Ubuntu (optional: native window + screen-edge drop zone)
-sudo apt install libwayland-dev libwebkit2gtk-4.1-dev libgtk-3-dev libxdo-dev libgtk-layer-shell-dev
-# Fedora:  sudo dnf install wayland-devel webkit2gtk4.1-devel gtk3-devel libxdo-devel gtk-layer-shell-devel
-# Arch:    sudo pacman -S webkit2gtk-4.1 gtk3 xdotool gtk-layer-shell
-
-git clone https://github.com/MDHaarith/Linux-Android-AirDrop
-cd Linux-Android-AirDrop/linux
-./packaging/install.sh
-```
-
-The installer puts `airbridge` in `~/.local/bin` and adds:
-
-- an app-menu entry
-- autostart at login (it stays visible to your phone in the background)
-- a tray icon
-- "Send with AirBridge" in Nautilus, Dolphin and Nemo
-
-If a firewall is active, the installer prints the exact commands to open the ports. You can also
-open them yourself:
-
-```bash
-sudo ufw allow 53317/tcp && sudo ufw allow 53317/udp && sudo ufw allow 53318/tcp
-sudo ufw allow 53319/tcp && sudo ufw allow 5353/udp    # Quick Share
-```
-
-Optional tools: `wl-clipboard` (Wayland) or `xclip`/`xsel` (X11) for clipboard sharing, and
-`xdg-desktop-portal` or `zenity` for the file picker.
-
-### Windows
-
-Download `airbridge-setup.exe` from the newest
-[release](https://github.com/MDHaarith/Airbridge/releases) and run it (Windows 10
-or 11, x64, no admin rights needed). It adds AirBridge to the Start menu and, if you choose,
-to Explorer's **Send to** menu and to sign-in, and installs Microsoft's WebView2 runtime when
-it is missing. Or run `airbridge.exe` from the release without installing.
-
-Allow AirBridge through Windows Firewall on **private networks**, then pair the Android app by
-QR. AirBridge opens in its own window (WebView2); without the WebView2 runtime it uses an Edge
-app window or your default browser, which must be a current Edge, Chrome or Firefox (the
-legacy EdgeHTML Edge of older Windows 10 cannot run it). Closing the window keeps AirBridge
-receiving: its tray icon opens the window or the received files, and quits. Remembered
-addresses and Tailscale reconnect work the same way as on Linux.
-
-For a source build, install Rust with the MSVC toolchain and Visual Studio C++
-build tools, then run `cargo build --release --locked` in `linux/`. The executable
-is `linux/target/release/airbridge.exe`.
-
-The Update button replaces `airbridge.exe` with the new signed release and restarts it, so
-keep the exe in a folder you can write to (not *Program Files*; the installer uses your own
-`AppData\Local\Programs`). Settings and pairings stay.
-
-Incoming files ask in a Windows notification with **Accept** / **Decline** (answer it while
-AirBridge runs; without notifications the window asks instead). The screen-edge drop zone is a
-thin handle on the side of the main screen: drag files or text onto it and drop them on a device.
-Quick Share wakes nearby phones over Bluetooth when the PC's adapter can advertise; otherwise the
-window says why, and you open **Quick Share → Receive** on the phone.
-
-### Android (10 or newer)
-
-Download the APK from a [release](https://github.com/MDHaarith/Airbridge/releases) or from the latest CI run (artifact
-`airbridge-android-apk`), or build it yourself:
-
-```bash
-cd android
-./gradlew assembleRelease   # → app/build/outputs/apk/release/app-release.apk
-```
-
-Install it, open it once and allow notifications. AirBridge keeps a small "Visible as …"
-notification while it can receive. Turn it off from the notification or the Quick Settings tile.
-
-### Pair with a QR code
-
-<img src="docs/screenshots/android-pair.png" width="24%" alt="Android: confirm pairing with the scanned computer by name">
-
-With AirBridge on your Android phone, tap **Pair with QR Code** and scan the code from the **QR**
-button in the desktop app, or from **Share to Any Phone → Other phone has AirBridge**
-on another Android phone (no router needed). The code holds the device's certificate fingerprint
-and a one-time key. For a phone's code it also holds the Wi‑Fi Direct details, so the scanner joins
-that network by itself and nobody sees or types a password. Confirm on the scanning phone, and both
-devices trust each other from then on. The computer's code lasts 5 minutes, and each code works once.
-
-### Find paired devices over Tailscale
-
-After pairing once, your devices find each other over Tailscale, or any VPN/private network
-both are on, even when they are on different Wi‑Fi networks. No extra AirBridge setup is needed.
-The first QR pairing can also happen over Tailscale; you do not need to share Wi‑Fi first.
-
-### No app on the phone?
-
-Click the **QR** button in the desktop app, choose **Phone Without the App** and scan the code with
-the phone's camera. A page opens that
-can send files, photos and messages to the computer, and receive from it. The QR code carries a
-secret key, so only someone who can see your screen can connect.
-
-## Using it
-
-**Desktop**
-
-- **Drop files, folders, images, links or text** on a device bubble in the left panel to send
-  directly. **Send to all** sends to every nearby device.
-- **Click a device** to save it as the default for future drops anywhere in the window or on
-  the screen edge. Right-click for files, a folder, a message, the clipboard or trust options.
-- Incoming requests slide up with **Accept / Decline**. The desktop notification has the same
-  buttons.
-- The tray icon offers *Open*, *Send clipboard to …*, *Open received files* and *Quit*.
-
-**From anywhere**
-
-- **Drag to the screen edge** (right by default; Settings → *Screen-edge drop zone*). The drop
-  zone is a thin invisible strip that only reacts to drags, so scroll bars at the screen edge
-  keep working. It needs KDE Plasma (or another wlroots/layer-shell compositor) on Wayland, or
-  any X11 desktop. GNOME on Wayland can't host it.
-
-**From a stock Android phone (Quick Share)**
-
-- *Share → Quick Share* and pick your computer. Compare the PIN, accept on the computer, done.
-  On the phone, set Quick Share's visibility to *Everyone* (temporarily is fine): *Contacts* and
-  *Your devices* rely on Google accounts, which AirBridge doesn't have.
-- To send to a phone, open Quick Share's *Receive* screen on it (or let AirBridge wake it over
-  Bluetooth), and it appears among your devices like any other.
-
-**Command line**
-
-```bash
-airbridge                              # open the window (starts the service if needed)
-airbridge send photo.jpg Docs/ --to pixel   # send right away, with a progress bar
-airbridge send *.pdf                   # opens the window with files ready: click a device
-airbridge text "https://example.com" --to pixel
-airbridge clipboard --to pixel
-airbridge devices                      # list nearby devices
-airbridge quit
-```
-
-Sending a drive or a big folder:
-
-```bash
-# Only photos and videos, no system or app folders, received as one "Laptop D" folder.
-airbridge send D:\ --to pixel --only photos,videos --exclude AppData,node_modules --as "Laptop D"
-airbridge send ~/Pictures --only raw,heic --dry-run   # how many files and bytes, sends nothing
-# The receiver checks every file's SHA-256; keep the list as a sha256sum manifest.
-airbridge send Archive/ --to pixel --verify --manifest archive.sha256
-```
-
-`--only` takes `photos`, `videos`, `audio`, `documents` and/or file extensions; filters apply
-to files found inside folders. *Verify contents* in Settings does the same as `--verify` for
-every send. If a send fails or is cancelled, **Resume** in the activity list sends the files
-that did not arrive; the receiver skips files it already has with the same size and date.
-If the device dropped off, AirBridge does this by itself once the device answers again
-(*Resume when back* in Settings), reusing the checksums of files that did not change.
-
-Files that cannot be read, such as online-only OneDrive files or files without permission, are
-found before anything is sent; `--dry-run` lists them. The app asks whether to send the rest,
-and `--skip-unavailable` does that from the command line. Nothing is downloaded from the cloud,
-and the transfer keeps the list of files it left out (the command exits with code 2).
-
-**Android**
-
-- **Share from any app**: your devices are right in the share sheet's top row; tap one and it
-  sends. Or pick *AirBridge* and tap a device in the sheet that slides up.
-- **Edge panel** (Settings → *Edge panel*): a handle on the side of the screen over every app.
-  Tap or swipe it for your clipboard, latest photo or files; drop text or files on it to send
-  them. During a drag it expands into device bubbles: release on a device or **Send to all**
-  to transfer immediately. Use the circle beside a device in the panel to save it as the
-  default for drops on the handle. Drag the handle up or down to move it.
-- Long-press the AirBridge icon for *Send to …* shortcuts to your devices.
-- In the app: tap **Send files**, **Photos** or **Text**, then tap a device.
-- Tap a device for more: send a message, the clipboard, or trust it.
-- Received files go to **Downloads/AirBridge**. Text from trusted devices goes to your
-  clipboard.
-
-## How it works
-
-```mermaid
-sequenceDiagram
-    participant P as Phone (AirBridge / LocalSend)
-    participant L as Laptop (AirBridge)
-    P->>L: UDP multicast 224.0.0.167:53317 {"alias", "fingerprint", "announce": true}
-    L->>P: POST /api/localsend/v2/register (mutual TLS, phone's certificate pinned)
-    Note over P,L: Both devices now see each other
-    L->>P: POST /prepare-upload {files…}
-    P-->>P: "Laptop wants to share 3 files" → Accept
-    P->>L: 200 {sessionId, tokens}
-    L->>P: POST /upload?sessionId&fileId&token (streamed, one per file)
-```
-
-- **Identity.** Each device has a self-signed RSA certificate. Its fingerprint (SHA-256 of the
-  DER, uppercase hex) is the device ID, as in LocalSend.
-- **TLS.** Clients pin the fingerprint they discovered during the TLS handshake and present their
-  own certificate. Servers check that a device's claimed fingerprint matches its certificate.
-- **Text.** A short message is a single `text/plain` "file" with the text in `preview`, and is
-  answered with `204`.
-- **Ports.** 53317 TCP+UDP is the LocalSend protocol, and 53318 TCP is the phone browser
-  companion (plain HTTP plus the QR key). 53319 TCP plus mDNS (5353 UDP) is Quick Share. The
-  desktop UI runs on `127.0.0.1` only, behind a random token.
-
-### Quick Share
-
-AirBridge implements the Wi‑Fi LAN part of Google's Nearby Connections / Nearby Share protocol in
-Rust (`linux/src/quickshare/`), from the protobuf definitions and NearDrop's write-up:
-
-- **Discovery**: an mDNS service `_FC9F5ED42C8A._tcp` whose name encodes a random endpoint ID and
-  whose TXT record carries the device name and type. Phones only advertise while receiving; the
-  Bluetooth LE advertisement for service `0xFE2C` asks nearby phones to start.
-- **Handshake**: UKEY2 with P-256 ECDH. Both sides derive AES-256-CBC + HMAC-SHA256 keys
-  (SecureMessage) and a four-digit PIN shown on both screens.
-- **Transfer**: length-prefixed protobuf frames with sequence numbers; files stream in 512 KB
-  payload chunks, with keep-alives every 10 seconds.
-
-The key derivation is checked against an independent Python implementation
-(`linux/tools/quickshare_kat.py`), and a loopback test drives the real client into the real
-server.
-
-### Screen-edge drop zone
-
-`airbridge edge` is a small GTK 3 process the service starts and restarts. On Wayland it is a
-layer-shell surface anchored to the screen edge; on X11 a dock window. Only a 3‑pixel strip takes
-input, and it steps aside when the pointer merely passes over it. When a drag arrives, it asks
-the drag source for the best format (file list, original image bytes, URL, text), and sends it
-through the local API. URLs are downloaded by the service; web pages are sent as links.
-
-On Windows it is an always-on-top WebView2 window showing `ui/edge.html`: a 10-pixel handle
-that opens into the device list while a drag is over it. Files go through the native drop
-handler, text through the page, both to the same local API.
-
-## Works with LocalSend
-
-The Linux app was tested against **LocalSend's own Rust CLI**, built from the official
-repository. Both directions worked: discovery, mutual TLS, files (byte-identical) and text
-messages. So you can mix and match: AirBridge on Linux with LocalSend on your phone, or AirBridge
-on Android with LocalSend on Windows or a Mac.
-
-## Troubleshooting
-
-| Problem | Fix |
-|---|---|
-| Devices don't show up | Put both devices on the same Wi‑Fi (not a guest network with "client isolation"). Press **Scan network**. Check the firewall ports above. |
-| "Port 53317 is busy" | The official LocalSend app is running on the same computer. AirBridge then uses the next free port automatically. |
-| Phone receives nothing in the background | Some vendors kill background apps. Exclude AirBridge from battery optimization. |
-| No tray icon on GNOME | Install the *AppIndicator and KStatusNotifierItem Support* extension. |
-| The computer doesn't show up in Quick Share | Set the phone's Quick Share visibility to *Everyone*, keep both on the same Wi‑Fi, and allow 53319/tcp and 5353/udp. Some routers block mDNS between Wi‑Fi and Ethernet. |
-| Phones don't appear when sending over Quick Share | Open *Quick Share → Receive* on the phone, or make sure Bluetooth is on so AirBridge can wake it. |
-| No drop zone at the screen edge | It needs the `edge` build feature (`libgtk-layer-shell-dev`), and KDE Plasma/wlroots on Wayland or any X11 desktop. Check Settings → *Screen-edge drop zone*. |
-| Wrong PIN or "PIN required" | The receiver has a PIN set in its settings. AirBridge asks you for it and remembers it. |
-
-## Development
-
-### Releases
-
-Every successful push CI run on `main` triggers the **Release** workflow. It chooses
-`v0.1.5` first, then `v0.1.6`, `v0.1.7`, and so on from the highest stable tag.
-Release runs queue so they cannot choose the same version. Retries reuse the tag
-already attached to that commit. Both app versions are stamped in the build checkout;
-the workflow does not create version-bump commits.
-
-The release contains the Android APK, the Windows installer and executable, and the Linux
-AppImage; the executable and the AppImage carry Ed25519 signatures for in-app updates.
-The same release is published to the public
-[MDHaarith/Airbridge](https://github.com/MDHaarith/Airbridge) repository, where the apps look
-for updates. Required secrets: `UPDATE_SIGNING_KEY`,
-`ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD`, and `AIRBRIDGE_RELEASE_TOKEN` (a
-fine-grained token with *Contents: read and write* on `MDHaarith/Airbridge` only). To choose a version
-manually, run **Release** from the Actions tab with e.g. `v0.2.0`, or push that tag.
-Leaving the manual version empty chooses the next patch automatically.
-
-### Checks
-
-```bash
-# Release version selection and package stamping
-python3 -m unittest discover -s .github/scripts -p 'test_*.py'
-
-# Linux
 cd linux
-node tools/test-desktop-drop.js             # desktop drop recipient and broadcast regression check
-cargo test && cargo clippy --all-targets -- -D warnings
-cargo test --features edge edge::            # drop-zone logic + renders to target/edge-snapshots
-cargo build --features edge --examples && tools/edge-e2e.sh /tmp/shots   # real drag & drop under Xvfb
-AIRBRIDGE_HOME=/tmp/ab cargo run -- daemon   # isolated settings/downloads, logs: AIRBRIDGE_LOG=debug
-AIRBRIDGE_EDGE_PREVIEW=1 cargo run --features edge -- edge   # show the drop zone without dragging
+cargo build --release --features webview,edge   # needs WebKitGTK 4.1, GTK 3, gtk-layer-shell
+./packaging/install.sh                          # optional: menu entry, autostart, file manager action
+```
 
-# Android: unit tests, the interop test against the real Linux binary, and screenshot tests
+Windows: install Rust with the MSVC toolchain, then run `cargo build --release --locked` in `linux/`.
+
+Android (JDK 21):
+
+```bash
 cd android
-AIRBRIDGE_LINUX_BIN="$PWD/../linux/target/debug/airbridge" ./gradlew testDebugUnitTest
-./gradlew recordPaparazziDebug               # render the screens to PNG (app/src/test/snapshots), no emulator needed
+./gradlew assembleRelease
 ```
 
-Things worth knowing:
+After editing a `.ts` file in `linux/ui/src/`, run `npm ci && npm run build` in `linux/ui/`. The
+compiled `.js` files are committed, and CI checks that they match.
 
-- **The networking core is shared and testable.** The Android engine depends only on a small
-  `Platform` interface: storage, clipboard and the multicast lock. So the same Kotlin code runs in
-  JVM tests against the Rust binary. The interop test covers discovery, files and folders both
-  ways, text and clipboard, auto-accept for trusted devices, and declining.
-- **The desktop UI** is HTML/CSS and TypeScript in `linux/ui/` (sources in `ui/src/`), compiled into
-  the binary. The compiled `.js` files are committed, so building the Rust app needs no Node; after
-  editing a `.ts` file run `npm ci && npm run build` in `linux/ui/` (CI checks they match). The native
-  window (`--features webview`) uses WebKitGTK through `wry`. Without it, the same UI opens as a
-  Chromium app window.
+## Checks
 
-Project layout:
-
+```bash
+python3 -m unittest discover -s .github/scripts -p 'test_*.py'
+cd linux && cargo test && cargo clippy --all-targets -- -D warnings
+cd android && ./gradlew testDebugUnitTest verifyPaparazziDebug
 ```
-linux/      Rust service + CLI + embedded UI (ui/), packaging/
-android/    Kotlin/Compose app; core/ is the protocol engine, ui/ the screens
-docs/       RESEARCH.md, screenshots
-```
+
+## Releases
+
+Every successful CI run on `main` triggers the **Release** workflow. It picks the next patch
+version, builds the Android APK, the Windows installer and exe, and the Linux AppImage, and
+publishes them here and to [MDHaarith/AirBridge](https://github.com/MDHaarith/AirBridge), where
+the apps look for updates. To choose a version, run **Release** from the Actions tab or push a
+`vX.Y.Z` tag.
+
+Required secrets: `UPDATE_SIGNING_KEY`, `ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD`,
+and `AIRBRIDGE_RELEASE_TOKEN` (a fine-grained token with *Contents: read and write* on
+`MDHaarith/AirBridge` only).
 
 ## License
 
-MIT. See [LICENSE](LICENSE). AirBridge is not affiliated with Apple, Google or the LocalSend
-project. The Android app uses the [Inter](https://rsms.me/inter/) typeface, under the SIL Open
-Font License ([android/third_party/inter/OFL.txt](android/third_party/inter/OFL.txt)).
-
-### Share with a phone without the app (Wi-Fi Direct)
-
-On Android, choose **Share with a phone without the app**. Grant Nearby Wi-Fi
-permission (Location on Android 12 and older; Location services may also need to
-be enabled). AirBridge creates a Wi-Fi Direct network and tries 5 GHz first,
-falling back to the device's automatic band selection.
-
-If the other phone has AirBridge, choose **Other phone has AirBridge** and see
-[Pair with a QR code](#pair-with-a-qr-code): no password is involved. A phone
-without the app can only join with the network's WPA2 password, so for those,
-on the other Android phone or iPhone, scan the first QR to join Wi-Fi, or enter
-the displayed network name and password. Stay connected when warned that the
-network has no internet. Then show and scan the second QR to open the browser
-companion. Choose files in the browser to send to AirBridge and accept the
-request on the app phone; received files go to Downloads/AirBridge. Use **Offer
-files to the other phone** on the app phone to send in the other direction.
-
-No router, internet connection, shared home Wi-Fi password, or second app is
-needed. Keep the sharing screen open; leaving it, stopping the service, losing
-the group, or reaching the 30-minute session limit removes the network. The
-session link grants access: share it only with the intended recipient. Data uses
-plain HTTP inside the password-protected Wi-Fi Direct network. Browser downloads
-support byte ranges for resuming; uploads stream to storage with three files in
-parallel. The 2 GB in 30–60 seconds target needs real-device verification and is
-not guaranteed: storage speed, Wi-Fi hardware, vendor 5 GHz support, and iPhone
-joining behavior all affect it. Android versions below the app's minimum API 29
-are not supported.
+MIT. See [LICENSE](LICENSE). Not affiliated with Apple, Google or the LocalSend project.

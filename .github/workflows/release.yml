@@ -180,7 +180,7 @@ jobs:
     permissions:
       contents: write
     env:
-      PUBLIC_REPO: MDHaarith/Airbridge
+      PUBLIC_REPO: MDHaarith/AirBridge
       ASSETS: |
         airbridge-x86_64.AppImage
         airbridge-x86_64.AppImage.sig

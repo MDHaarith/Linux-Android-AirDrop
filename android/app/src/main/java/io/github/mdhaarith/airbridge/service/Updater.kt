@@ -23,7 +23,7 @@ import java.io.IOException
  * with this app's key, and the session only accepts this package, so a swapped asset can't install.
  */
 object Updater {
-    private const val LATEST = "https://api.github.com/repos/MDHaarith/Airbridge/releases/latest"
+    private const val LATEST = "https://api.github.com/repos/MDHaarith/AirBridge/releases/latest"
     private const val ASSET = "airbridge-android.apk"
     private const val MAX_SIZE = 200L * 1024 * 1024
 

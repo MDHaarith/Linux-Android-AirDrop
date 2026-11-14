@@ -5,7 +5,7 @@ edition = "2021"
 rust-version = "1.89"
 description = "AirDrop-style file and text sharing between Linux, Windows and Android (LocalSend protocol compatible)"
 license = "MIT"
-repository = "https://github.com/MDHaarith/Airbridge"
+repository = "https://github.com/MDHaarith/AirBridge"
 readme = "../README.md"
 keywords = ["airdrop", "localsend", "file-sharing", "android", "linux"]
 
