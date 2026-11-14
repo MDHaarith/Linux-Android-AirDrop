@@ -1,5 +1,5 @@
 // Windows resources of airbridge.exe. The lowest id is the icon Explorer,
-// shortcuts and the taskbar show. build.rs fills in the @...@ values and the
+// shortcuts and the taskbar show. build.rs fills in the placeholders and the
 // icon's absolute path. The version block names the program in Explorer's
 // Properties, Task Manager and SmartScreen prompts; an exe without one looks
 // more like malware to antivirus heuristics.

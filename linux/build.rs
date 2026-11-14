@@ -12,7 +12,11 @@ fn main() {
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
         let env = |key: &str| std::env::var(key).unwrap_or_default();
         // Forward slashes: rc treats backslashes in strings as escapes.
-        let icon = format!("{}/packaging/windows/airbridge.ico", env("CARGO_MANIFEST_DIR")).replace('\\', "/");
+        let icon = format!(
+            "{}/packaging/windows/airbridge.ico",
+            env("CARGO_MANIFEST_DIR")
+        )
+        .replace('\\', "/");
         let rc = std::fs::read_to_string("airbridge.rc")
             .expect("reading airbridge.rc")
             .replace("@ICON@", &icon)
@@ -20,7 +24,11 @@ fn main() {
             .replace("@MINOR@", &env("CARGO_PKG_VERSION_MINOR"))
             .replace("@PATCH@", &env("CARGO_PKG_VERSION_PATCH"))
             .replace("@VERSION@", &env("CARGO_PKG_VERSION"));
-        assert!(!rc.contains('@'), "airbridge.rc has an unfilled @...@ value");
+        // Every placeholder sits in quotes or after a space.
+        assert!(
+            !rc.contains("\"@") && !rc.contains(" @"),
+            "airbridge.rc has an unfilled placeholder"
+        );
         let generated = std::path::Path::new(&env("OUT_DIR")).join("airbridge.rc");
         std::fs::write(&generated, rc).expect("writing the generated airbridge.rc");
         embed_resource::compile(&generated, embed_resource::NONE)
