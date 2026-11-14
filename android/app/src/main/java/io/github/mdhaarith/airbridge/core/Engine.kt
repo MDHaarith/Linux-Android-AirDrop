@@ -480,13 +480,24 @@ class Engine(private val platform: Platform) {
 
         // The decision handle exists before the request becomes visible, so an
         // answer can never arrive "too early".
-        val decision = if (autoAccept) null else CompletableDeferred<Boolean>()
-        val session = Session(peerIp = req.remoteIp, sessionId = UUID.randomUUID().toString(), decision = decision)
-        synchronized(this) {
-            val busy = _transfers.value.any { it.direction == Direction.IN && !it.status.isFinal && sessions[it.id]?.sessionId != null }
-            if (busy) return HttpResponse.error(409, "Blocked by another session")
+        val session = Session(peerIp = req.remoteIp, sessionId = UUID.randomUUID().toString())
+        val decision = synchronized(this) {
+            var resumed = false
+            val active = _transfers.value.firstOrNull { it.direction == Direction.IN && !it.status.isFinal && sessions[it.id]?.sessionId != null }
+            if (active != null) {
+                // The same proven sender asking again means its last session broke off
+                // (it resumes or resends): drop the one we still wait on. Never for an
+                // unproven id, or anyone could end your transfers by claiming it.
+                if (!(verified && active.peerVerified && active.peerId == base.peerId)) return HttpResponse.error(409, "Blocked by another session")
+                // You already accepted these files once: the rest comes in without asking.
+                resumed = active.status == Status.TRANSFERRING &&
+                    base.files.all { f -> active.files.any { it.name == f.name && it.size == f.size } }
+                finish(active.id, Status.FAILED, "Interrupted · the sender started again")
+            }
+            session.decision = if (autoAccept || resumed) null else CompletableDeferred()
             sessions[base.id] = session
-            add(base)
+            add(if (resumed) base.copy(autoAccepted = true) else base)
+            session.decision
         }
 
         val accepted = try { if (decision == null) {
