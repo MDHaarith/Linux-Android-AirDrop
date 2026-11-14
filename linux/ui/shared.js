@@ -88,6 +88,14 @@ const AB = (() => {
         }
         return i === 0 ? `${n} B` : `${v >= 100 ? v.toFixed(0) : v.toFixed(1)} ${units[i]}`;
     }
+    /** Seconds as m:ss, or h:mm:ss past an hour. */
+    function duration(seconds) {
+        const s = Math.max(0, Math.floor(seconds));
+        const pad = (n) => String(n).padStart(2, "0");
+        const h = Math.floor(s / 3600);
+        const m = Math.floor((s % 3600) / 60);
+        return h ? `${h}:${pad(m)}:${pad(s % 60)}` : `${m}:${pad(s % 60)}`;
+    }
     function ago(seconds) {
         const d = Date.now() / 1000 - seconds;
         if (d < 45)
@@ -173,5 +181,5 @@ const AB = (() => {
         area.remove();
         return ok;
     }
-    return { icons, deviceIcon, fileIcon, sharePhrase, bytes, ago, esc, el, toast, center, copyText, reducedMotion };
+    return { icons, deviceIcon, fileIcon, sharePhrase, bytes, ago, duration, esc, el, toast, center, copyText, reducedMotion };
 })();

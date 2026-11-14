@@ -17,7 +17,9 @@ import io.github.mdhaarith.airbridge.R
 import io.github.mdhaarith.airbridge.core.Direction
 import io.github.mdhaarith.airbridge.core.Transfer
 import io.github.mdhaarith.airbridge.core.sharePhrase
+import io.github.mdhaarith.airbridge.ui.elapsed
 import io.github.mdhaarith.airbridge.ui.formatBytes
+import io.github.mdhaarith.airbridge.ui.formatDuration
 
 object Notifications {
     const val CHANNEL_VISIBLE = "visible"
@@ -130,7 +132,10 @@ object Notifications {
             .setSmallIcon(R.drawable.ic_notification)
             .setColor(ACCENT)
             .setContentTitle(if (t.direction == Direction.OUT) "Sending to ${t.peerAlias}" else "Receiving from ${t.peerAlias}")
-            .setContentText("${formatBytes(t.done)} of ${formatBytes(t.total)} · ${formatBytes(t.speed)}/s")
+            .setContentText(
+                "${formatBytes(t.done)} of ${formatBytes(t.total)} · ${formatBytes(t.speed)}/s" +
+                    (t.elapsed?.let { " · ${formatDuration(it)}" } ?: "")
+            )
             .setProgress(1000, (t.progress * 1000).toInt(), false)
             .setOngoing(true)
             .setSilent(true)

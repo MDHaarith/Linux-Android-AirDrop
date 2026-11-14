@@ -1,7 +1,7 @@
 /* AirBridge desktop window. Talks to the local service over /api (cookie auth). */
 "use strict";
 window.airbridgeStarted = true; // parsed fine: compat.js keeps its warning hidden
-const { icons, deviceIcon, fileIcon, sharePhrase, bytes, ago, esc, el, toast, center } = AB;
+const { icons, deviceIcon, fileIcon, sharePhrase, bytes, ago, duration, esc, el, toast, center } = AB;
 /** An element the page's HTML always has. */
 const $ = (id) => document.getElementById(id);
 const state = {
@@ -445,11 +445,13 @@ function canResume(t) {
 }
 function statusText(t) {
     const when = ago(t.finished || t.created);
+    // Upload or download time: live while transferring, final once done.
+    const took = t.started ? duration((t.finished || Date.now() / 1000) - t.started) : "";
     if (t.status === "waiting" && t.direction === "out" && t.verify && t.checked < t.total) {
         return `Checking files… ${Math.floor((100 * t.checked) / (t.total || 1))}%`;
     }
     if (t.status === "transferring")
-        return `${bytes(t.done)} of ${bytes(t.total)} · ${bytes(t.speed)}/s`;
+        return `${bytes(t.done)} of ${bytes(t.total)} · ${bytes(t.speed)}/s · ${took}`;
     if (t.status === "waiting") {
         const pin = t.peer?.pin ? ` · PIN ${t.peer.pin}` : "";
         return (t.direction === "out" ? `Waiting for ${t.peer?.alias || "device"}…` : "Waiting for you") + pin;
@@ -463,7 +465,7 @@ function statusText(t) {
         const ok = t.direction === "out" ? t.verify
             : files.some((f) => f.verified) && files.every((f) => f.verified || f.status === "skipped");
         const verified = ok ? "Verified · " : "";
-        return `${t.message ? "" : bytes(t.total) + " · "}${verified}${when}${unsent}`;
+        return `${t.message ? "" : bytes(t.total) + " · "}${verified}${took && !t.message ? `took ${took} · ` : ""}${when}${unsent}`;
     }
     return `${t.error || t.status} · ${when}${unsent}`;
 }
